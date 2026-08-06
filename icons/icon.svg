@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dashboard-Designer - Plugin-Symbol.
+     Hausstandard: runde Scheibe in LoxBerry-Gruen #6dac20. Motiv: vier
+     Kacheln unterschiedlicher Groesse auf einem Raster - genau das, was das
+     Plugin baut. Bewusst KEINE fremden Wortmarken oder Logos. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <circle cx="256" cy="256" r="256" fill="#6dac20"/>
+  <g fill="#ffffff" stroke="#3d6412" stroke-width="10">
+    <rect x="112" y="120" width="128" height="128" rx="22"/>
+    <rect x="264" y="120" width="136" height="60"  rx="22"/>
+    <rect x="264" y="204" width="136" height="188" rx="22"/>
+    <rect x="112" y="272" width="128" height="120" rx="22"/>
+  </g>
+  <g fill="#6dac20">
+    <circle cx="176" cy="184" r="26"/>
+    <rect x="140" y="316" width="72" height="14" rx="7"/>
+    <rect x="140" y="342" width="48" height="14" rx="7"/>
+    <rect x="292" y="252" width="80" height="14" rx="7"/>
+    <rect x="292" y="286" width="56" height="14" rx="7"/>
+    <rect x="292" y="320" width="68" height="14" rx="7"/>
+  </g>
+  <rect x="292" y="140" width="80" height="20" rx="10" fill="#3d6412"/>
+</svg>

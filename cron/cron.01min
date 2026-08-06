@@ -1,0 +1,4 @@
+#!/bin/sh
+# Dashboard-Designer - Waechter, minuetlich.
+# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad ersetzt.
+"REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1
