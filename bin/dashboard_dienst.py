@@ -76,6 +76,14 @@ DATEI_CONFIG = os.path.join(CONFIGDIR, "dashboard.json")
 DATEI_GEHEIM = os.path.join(CONFIGDIR, "zugang.json")      # Rechte 0600
 DATEI_DASHBOARD = os.path.join(CONFIGDIR, "seiten.json")
 DATEI_KACHELN = os.path.join(TEMPLATES, "kacheln.json")
+# Der Rueckfallweg gilt dem ARCHIV, nicht der Installation.
+#
+# Installiert liegt die Tabelle unter <home>/templates/plugins/<ordner>/ -
+# das ist DATEI_KACHELN. Im ausgepackten Archiv dagegen liegt bin/ neben
+# templates/, und dann stimmt HIER.parent/"templates". Auf einem
+# installierten System zeigt dieser Pfad ins Leere
+# (<home>/bin/plugins/templates/) - das ist kein Fehler, sondern der
+# Normalfall fuer einen zweiten Versuch, der nicht greift.
 DATEI_KACHELN_ARCHIV = str(HIER.parent / "templates" / "kacheln.json")
 DATEI_STRUKTUR = os.path.join(DATADIR, "struktur.json")
 DATEI_ABBILD = os.path.join(DATADIR, "abbild.json")
@@ -306,8 +314,20 @@ def befehl_erlaubt(uuid: str, befehl: str, struktur: dict) -> tuple[bool, str]:
                     return True, ""
                 except ValueError:
                     continue
-            if e.endswith("/$wert") and befehl.startswith(e[:-5]):
-                rest = befehl[len(e) - 5:]
+            if e.endswith("/$wert"):
+                # Muster wie "jalousie/$wert": alles vor dem Platzhalter muss
+                # woertlich stimmen, der Rest muss eine Zahl sein.
+                #
+                # Bis 0.9.0 stand hier e[:-5] und befehl[len(e)-5:]. Das ging
+                # gut, aber nur zufaellig: '/$wert' ist SECHS Zeichen lang,
+                # abgeschnitten wurden fuenf - der Schraegstrich blieb also
+                # stehen und gehoerte zum Vergleichsstueck. Wer den Platzhalter
+                # spaeter in '$w' oder '/$value' aendert, bekommt eine stille
+                # Fehlfunktion. Jetzt wird geteilt statt gerechnet.
+                vorspann = e[:-len("$wert")]
+                if not befehl.startswith(vorspann):
+                    continue
+                rest = befehl[len(vorspann):]
                 try:
                     float(rest)
                     return True, ""

@@ -103,6 +103,7 @@ if ($db_post && isset($_POST['speichern'])) {
     $db_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $db_cfg['vollbild'] = isset($_POST['vollbild']) ? 1 : 0;
     $db_cfg['wach'] = isset($_POST['wach']) ? 1 : 0;
+    $db_cfg['haptik'] = isset($_POST['haptik']) ? 1 : 0;
 
     /* Eigene Zugangsdaten. Sie landen in zugang.json mit Rechten 0600 und
      * NIE in der Konfiguration, die diese Seite anzeigt. */
@@ -400,16 +401,16 @@ if ($db_rahmen) {
 </table>
 
 <div class="sm-tabs">
-  <a href="#" class="sm-tab" data-ziel="tab-settings"><?= db_e(db_t('REITER.EINSTELLUNGEN')) ?></a>
-  <a href="#" class="sm-tab" data-ziel="tab-boards"><?= db_e(db_t('REITER.DASHBOARDS')) ?></a>
-  <a href="#" class="sm-tab" data-ziel="tab-designer"><?= db_e(db_t('REITER.DESIGNER')) ?></a>
-  <a href="#" class="sm-tab" data-ziel="tab-loxone"><?= db_e(db_t('REITER.LOXONE')) ?></a>
-  <a href="#" class="sm-tab" data-ziel="tab-test"><?= db_e(db_t('REITER.TEST')) ?></a>
-  <a href="#" class="sm-tab" data-ziel="tab-log"><?= db_e(db_t('REITER.LOG')) ?></a>
+  <a href="index.php?form=settings" class="sm-tab<?= $db_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings"><?= db_e(db_t('REITER.EINSTELLUNGEN')) ?></a>
+  <a href="index.php?form=boards" class="sm-tab<?= $db_tab === 'tab-boards' ? ' sm-active' : '' ?>" data-ziel="tab-boards"><?= db_e(db_t('REITER.DASHBOARDS')) ?></a>
+  <a href="index.php?form=designer" class="sm-tab<?= $db_tab === 'tab-designer' ? ' sm-active' : '' ?>" data-ziel="tab-designer"><?= db_e(db_t('REITER.DESIGNER')) ?></a>
+  <a href="index.php?form=loxone" class="sm-tab<?= $db_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone"><?= db_e(db_t('REITER.LOXONE')) ?></a>
+  <a href="index.php?form=test" class="sm-tab<?= $db_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test"><?= db_e(db_t('REITER.TEST')) ?></a>
+  <a href="index.php?form=log" class="sm-tab<?= $db_tab === 'tab-log' ? ' sm-active' : '' ?>" data-ziel="tab-log"><?= db_e(db_t('REITER.LOG')) ?></a>
 </div>
 
 <!-- ================= Einstellungen ================= -->
-<div class="sm-seite" id="tab-settings">
+<div class="sm-seite<?= $db_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 <div class="sm-hinweis"><?= db_t('EINST.WAS_IST_DAS') ?></div>
 
 <h2><?= db_e(db_t('EINST.H_DIENST')) ?></h2>
@@ -419,15 +420,15 @@ if ($db_rahmen) {
   <span style="background:#6b7280"></span><?= db_t('LEGENDE.TECHNIK') ?><br>
   <span style="background:#d97706"></span><?= db_t('LEGENDE.AKTION') ?>
 </div>
-<form method="post">
-  <input type="hidden" name="activetab" value="tab-settings">
-  <button class="sm-b sm-b-aktion" name="dienst" value="start"><?= db_e(db_t('EINST.K_START')) ?></button>
-  <button class="sm-b sm-b-aktion" name="dienst" value="restart"><?= db_e(db_t('EINST.K_NEUSTART')) ?></button>
-  <button class="sm-b sm-b-aktion" name="dienst" value="stop"><?= db_e(db_t('EINST.K_STOP')) ?></button>
+<form action="index.php" method="post">
+  <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+  <button data-role="none" class="sm-b sm-b-aktion" name="dienst" value="start"><?= db_e(db_t('EINST.K_START')) ?></button>
+  <button data-role="none" class="sm-b sm-b-aktion" name="dienst" value="restart"><?= db_e(db_t('EINST.K_NEUSTART')) ?></button>
+  <button data-role="none" class="sm-b sm-b-aktion" name="dienst" value="stop"><?= db_e(db_t('EINST.K_STOP')) ?></button>
 </form>
 
-<form method="post">
-<input type="hidden" name="activetab" value="tab-settings">
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
 <h2><?= db_e(db_t('EINST.H_MS')) ?></h2>
 <p class="sm-hilfe"><?= db_t('EINST.MS_ERKLAERUNG') ?></p>
@@ -501,23 +502,26 @@ if ($db_rahmen) {
 <label><input data-role="none" type="checkbox" name="wach" value="1"<?= !empty($db_cfg['wach']) ? ' checked' : '' ?>>
   <?= db_e(db_t('EINST.L_WACH')) ?></label>
 <p class="sm-hilfe"><?= db_t('EINST.H_WACH') ?></p>
+<label><input data-role="none" type="checkbox" name="haptik" value="1"<?= !empty($db_cfg['haptik']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_HAPTIK')) ?></label>
+<p class="sm-hilfe"><?= db_t('EINST.H_HAPTIK') ?></p>
 <label><input data-role="none" type="checkbox" name="steuerung_ein" value="1"<?= !empty($db_cfg['steuerung_ein']) ? ' checked' : '' ?>>
   <?= db_e(db_t('EINST.L_STEUERUNG')) ?></label>
 <p class="sm-hilfe"><?= db_t('EINST.H_STEUERUNG') ?></p>
 
-<button class="sm-b sm-b-aktion" name="speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
+<button data-role="none" class="sm-b sm-b-aktion" name="speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
 </form>
 </div>
 
 <!-- ================= Dashboards ================= -->
-<div class="sm-seite" id="tab-boards">
+<div class="sm-seite<?= $db_tab === 'tab-boards' ? ' sm-active' : '' ?>" id="tab-boards">
 <h2><?= db_e(db_t('BOARD.H_ENTWURF')) ?></h2>
 <p class="sm-hilfe"><?= db_t('BOARD.ENTWURF_ERKLAERUNG') ?></p>
-<form method="post">
-  <input type="hidden" name="activetab" value="tab-boards">
-  <button class="sm-b sm-b-lesen" name="struktur_holen" value="1"><?= db_e(db_t('BOARD.K_STRUKTUR')) ?></button>
-  <button class="sm-b sm-b-aktion" name="entwurf" value="ergaenzen"><?= db_e(db_t('BOARD.K_ENTWURF')) ?></button>
-  <button class="sm-b sm-b-aktion" name="entwurf" value="vonvorn"
+<form action="index.php" method="post">
+  <input data-role="none" type="hidden" name="activetab" value="tab-boards">
+  <button data-role="none" class="sm-b sm-b-lesen" name="struktur_holen" value="1"><?= db_e(db_t('BOARD.K_STRUKTUR')) ?></button>
+  <button data-role="none" class="sm-b sm-b-aktion" name="entwurf" value="ergaenzen"><?= db_e(db_t('BOARD.K_ENTWURF')) ?></button>
+  <button data-role="none" class="sm-b sm-b-aktion" name="entwurf" value="vonvorn"
           onclick="return confirm(<?= json_encode(strip_tags(html_entity_decode(db_t('BOARD.VONVORN_FRAGE'), ENT_QUOTES, 'UTF-8'))) ?>)"><?= db_e(db_t('BOARD.K_VONVORN')) ?></button>
 </form>
 <div class="sm-warnung"><?= db_t('BOARD.VONVORN_WARNUNG') ?></div>
@@ -526,8 +530,8 @@ if ($db_rahmen) {
 <?php if (!$db_seiten) { ?>
 <div class="sm-warnung"><?= db_t('BOARD.KEINE_SEITEN') ?></div>
 <?php } else { ?>
-<form method="post">
-<input type="hidden" name="activetab" value="tab-boards">
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-boards">
 <table class="sm-tabelle">
 <tr><th><?= db_e(db_t('BOARD.T_NAME')) ?></th><th><?= db_e(db_t('BOARD.T_KACHELN')) ?></th>
     <th><?= db_e(db_t('BOARD.T_SPALTEN')) ?></th><th><?= db_e(db_t('BOARD.T_PIN')) ?></th>
@@ -554,7 +558,7 @@ if ($db_rahmen) {
 </tr>
 <?php } ?>
 </table>
-<button class="sm-b sm-b-aktion" name="seiten_speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
+<button data-role="none" class="sm-b sm-b-aktion" name="seiten_speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
 </form>
 <div class="sm-hinweis"><?= db_t('BOARD.ADRESSE_HINWEIS') ?></div>
 <?php } ?>
@@ -566,7 +570,7 @@ if ($db_rahmen) {
 </div>
 
 <!-- ================= Designer ================= -->
-<div class="sm-seite" id="tab-designer">
+<div class="sm-seite<?= $db_tab === 'tab-designer' ? ' sm-active' : '' ?>" id="tab-designer">
 <h2><?= db_e(db_t('DESIGN.H_TITEL')) ?></h2>
 <?php if (!$db_bausteine) { ?>
 <div class="sm-warnung"><?= db_t('DESIGN.KEINE_STRUKTUR') ?></div>
@@ -576,17 +580,17 @@ if ($db_rahmen) {
 
 <div id="dz-bau"></div>
 
-<form method="post" id="dz-form">
-  <input type="hidden" name="activetab" value="tab-designer">
-  <input type="hidden" name="aufbau" id="dz-aufbau" value="">
-  <button class="sm-b sm-b-aktion" name="designer_speichern" value="1"><?= db_e(db_t('DESIGN.K_SPEICHERN')) ?></button>
+<form action="index.php" method="post" id="dz-form">
+  <input data-role="none" type="hidden" name="activetab" value="tab-designer">
+  <input data-role="none" type="hidden" name="aufbau" id="dz-aufbau" value="">
+  <button data-role="none" class="sm-b sm-b-aktion" name="designer_speichern" value="1"><?= db_e(db_t('DESIGN.K_SPEICHERN')) ?></button>
   <span class="sm-hilfe" id="dz-stand"></span>
 </form>
 <?php } ?>
 </div>
 
 <!-- ================= Einbindung in Loxone ================= -->
-<div class="sm-seite" id="tab-loxone">
+<div class="sm-seite<?= $db_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= db_e(db_t('LOX.H_TITEL')) ?></h2>
 <p class="sm-hilfe"><?= db_t('LOX.EINLEITUNG') ?></p>
 
@@ -605,9 +609,9 @@ if ($db_rahmen) {
   <td><?= db_t($db_info[1]) ?><?= $db_info[0] !== '' ? ' [' . db_e($db_info[0]) . ']' : '' ?></td></tr>
 <?php } ?>
 </table>
-<form method="post" style="display:inline">
-  <input type="hidden" name="activetab" value="tab-loxone">
-  <button class="sm-b sm-b-lesen" name="vorlage" value="1"><?= db_e(db_t('LOX.K_VORLAGE')) ?></button>
+<form action="index.php" method="post" style="display:inline">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <button data-role="none" class="sm-b sm-b-lesen" name="vorlage" value="1"><?= db_e(db_t('LOX.K_VORLAGE')) ?></button>
 </form>
 </div>
 
@@ -655,9 +659,9 @@ foreach ($db_bausteinliste as $db_z) { ?>
 <table class="sm-tabelle">
 <tr><th><?= db_e(db_t('LOX.T_TOKEN')) ?></th><td class="sm-mono"><?= db_e($db_token) ?></td></tr>
 </table>
-<form method="post" style="display:inline">
-  <input type="hidden" name="activetab" value="tab-loxone">
-  <button class="sm-b sm-b-aktion" name="token_neu" value="1"
+<form action="index.php" method="post" style="display:inline">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <button data-role="none" class="sm-b sm-b-aktion" name="token_neu" value="1"
     onclick="return confirm(<?= json_encode(strip_tags(html_entity_decode(db_t('LOX.TOKEN_FRAGE'), ENT_QUOTES, 'UTF-8'))) ?>)"><?= db_e(db_t('LOX.K_TOKEN_NEU')) ?></button>
 </form>
 </div>
@@ -675,7 +679,7 @@ foreach ($db_bausteinliste as $db_z) { ?>
 </div>
 
 <!-- ================= Test ================= -->
-<div class="sm-seite" id="tab-test">
+<div class="sm-seite<?= $db_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
 <h2><?= db_e(db_t('TEST.H_SELBSTPRUEFUNG')) ?></h2>
 <p class="sm-hilfe"><?= db_t('TEST.EINLEITUNG') ?></p>
 <?= db_pruefungen_html() ?>
@@ -685,11 +689,11 @@ foreach ($db_bausteinliste as $db_z) { ?>
   <span style="background:#4f7d17"></span><?= db_t('LEGENDE.LESEN') ?><br>
   <span style="background:#6b7280"></span><?= db_t('LEGENDE.TECHNIK') ?>
 </div>
-<form method="post">
-  <input type="hidden" name="activetab" value="tab-test">
-  <button class="sm-b sm-b-lesen" name="test" value="status"><?= db_e(db_t('TEST.K_STATUS')) ?></button>
-  <button class="sm-b sm-b-technik" name="test" value="roh"><?= db_e(db_t('TEST.K_ROH')) ?></button>
-  <button class="sm-b sm-b-technik" name="selbsttest" value="1"><?= db_e(db_t('TEST.K_SELBSTTEST')) ?></button>
+<form action="index.php" method="post">
+  <input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <button data-role="none" class="sm-b sm-b-lesen" name="test" value="status"><?= db_e(db_t('TEST.K_STATUS')) ?></button>
+  <button data-role="none" class="sm-b sm-b-technik" name="test" value="roh"><?= db_e(db_t('TEST.K_ROH')) ?></button>
+  <button data-role="none" class="sm-b sm-b-technik" name="selbsttest" value="1"><?= db_e(db_t('TEST.K_SELBSTTEST')) ?></button>
 </form>
 
 <?php if ($db_ausgabe !== '' && $db_tab === 'tab-test') { ?>
@@ -701,7 +705,7 @@ foreach ($db_bausteinliste as $db_z) { ?>
 </div>
 
 <!-- ================= Logdateien ================= -->
-<div class="sm-seite" id="tab-log">
+<div class="sm-seite<?= $db_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <h2><?= db_e(db_t('LOG.H_TITEL')) ?></h2>
 <p class="sm-hilfe"><?= db_t('LOG.ERKLAERUNG') ?></p>
 <p class="sm-hilfe sm-mono"><?= db_e($db_p['log']) ?></p>
@@ -717,9 +721,9 @@ if (!$db_zeilen) { ?>
 <div class="sm-log"><?= db_e(implode("\n", $db_zeilen)) ?></div>
 <?php } ?>
 <div class="sm-legende"><span style="background:#d97706"></span><?= db_t('LEGENDE.AKTION_LOG') ?></div>
-<form method="post">
-  <input type="hidden" name="activetab" value="tab-log">
-  <button class="sm-b sm-b-aktion" name="log_leeren" value="1"><?= db_e(db_t('LOG.K_LEEREN')) ?></button>
+<form action="index.php" method="post">
+  <input data-role="none" type="hidden" name="activetab" value="tab-log">
+  <button data-role="none" class="sm-b sm-b-aktion" name="log_leeren" value="1"><?= db_e(db_t('LOG.K_LEEREN')) ?></button>
 </form>
 </div>
 
@@ -812,7 +816,7 @@ if (!$db_zeilen) { ?>
 		kopf.innerHTML =
 			'<input data-role="none" type="text" id="dz-suche" placeholder="' + e(TEXT.suchen) + '" style="flex:1;min-width:180px;padding:7px 10px;border:1px solid #ccc;border-radius:6px">' +
 			'<label style="font-size:.86em"><input data-role="none" type="checkbox" id="dz-nur"> ' + e(TEXT.unbenutzt) + '</label>' +
-			'<button type="button" class="sm-b sm-b-aktion" id="dz-neu">+ ' + e(TEXT.neue) + '</button>';
+			'<button data-role="none" type="button" class="sm-b sm-b-aktion" id="dz-neu">+ ' + e(TEXT.neue) + '</button>';
 		bau.appendChild(kopf);
 
 		var flaeche = document.createElement('div');
@@ -837,7 +841,7 @@ if (!$db_zeilen) { ?>
 			titel.style.cssText = 'display:flex;gap:8px;align-items:center;padding:8px 10px;background:#f2f7ea;border-bottom:1px solid #ddd;border-radius:8px 8px 0 0';
 			titel.innerHTML = '<b style="flex:1">' + e(s.name) + '</b>' +
 				'<span class="sm-hilfe">' + (s.kacheln || []).length + '</span>' +
-				'<button type="button" class="sm-b sm-b-technik" data-seiteweg="' + si + '" style="padding:4px 10px;margin:0">&times;</button>';
+				'<button data-role="none" type="button" class="sm-b sm-b-technik" data-seiteweg="' + si + '" style="padding:4px 10px;margin:0">&times;</button>';
 			kasten.appendChild(titel);
 
 			var liste = document.createElement('div');
@@ -861,9 +865,9 @@ if (!$db_zeilen) { ?>
 				kk.innerHTML =
 					'<div style="display:flex;gap:5px;align-items:center">' +
 					'<input data-role="none" type="text" data-feld="titel" value="' + e(k.titel) + '" style="flex:1;min-width:80px;padding:3px 5px;border:1px solid #ddd;border-radius:4px;font-size:1em">' +
-					'<button type="button" data-hoch="1" style="padding:1px 6px">&uarr;</button>' +
-					'<button type="button" data-runter="1" style="padding:1px 6px">&darr;</button>' +
-					'<button type="button" data-weg="1" style="padding:1px 6px">&times;</button></div>' +
+					'<button data-role="none" type="button" data-hoch="1" style="padding:1px 6px">&uarr;</button>' +
+					'<button data-role="none" type="button" data-runter="1" style="padding:1px 6px">&darr;</button>' +
+					'<button data-role="none" type="button" data-weg="1" style="padding:1px 6px">&times;</button></div>' +
 					'<div style="display:flex;gap:5px;margin-top:4px">' +
 					'<select data-role="none" data-feld="kachel" style="flex:1;font-size:.95em">' + topt + '</select>' +
 					'<select data-role="none" data-feld="groesse" style="font-size:.95em">' + opt + '</select>' +

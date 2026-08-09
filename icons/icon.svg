@@ -1,23 +1,76 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Dashboard-Designer - Plugin-Symbol.
-     Hausstandard: runde Scheibe in LoxBerry-Gruen #6dac20. Motiv: vier
-     Kacheln unterschiedlicher Groesse auf einem Raster - genau das, was das
-     Plugin baut. Bewusst KEINE fremden Wortmarken oder Logos. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <circle cx="256" cy="256" r="256" fill="#6dac20"/>
-  <g fill="#ffffff" stroke="#3d6412" stroke-width="10">
-    <rect x="112" y="120" width="128" height="128" rx="22"/>
-    <rect x="264" y="120" width="136" height="60"  rx="22"/>
-    <rect x="264" y="204" width="136" height="188" rx="22"/>
-    <rect x="112" y="272" width="128" height="120" rx="22"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Main Tablet Frame -->
+    <rect x="151" y="90" width="210" height="155" rx="18" fill="#ffffff" />
+    
+    <!-- Tablet Screen Bezel Cutout / Inner Display Area -->
+    <rect x="163" y="102" width="186" height="131" rx="8" fill="#6dac20" />
+
+    <!-- Dashboard Widgets inside Screen -->
+    <!-- Widget 1: Top Left - Gauge / Weather Card -->
+    <rect x="171" y="110" width="82" height="56" rx="6" fill="#ffffff" />
+    <circle cx="193" cy="138" r="14" fill="#6dac20" />
+    <circle cx="193" cy="138" r="8" fill="#ffffff" />
+    <rect x="213" y="124" width="30" height="6" rx="3" fill="#6dac20" />
+    <rect x="213" y="135" width="22" height="5" rx="2.5" fill="#6dac20" opacity="0.7" />
+    <rect x="213" y="145" width="26" height="5" rx="2.5" fill="#6dac20" opacity="0.7" />
+
+    <!-- Widget 2: Top Right - Toggle / Switch Card -->
+    <rect x="259" y="110" width="82" height="26" rx="6" fill="#ffffff" />
+    <rect x="267" y="118" width="32" height="10" rx="5" fill="#6dac20" />
+    <circle cx="293" cy="123" r="4" fill="#ffffff" />
+    <rect x="307" y="119" width="26" height="8" rx="4" fill="#6dac20" opacity="0.6" />
+
+    <!-- Widget 3: Middle Right - Graph / Status Card -->
+    <rect x="259" y="142" width="82" height="83" rx="6" fill="#ffffff" />
+    <rect x="267" y="196" width="10" height="20" rx="3" fill="#6dac20" />
+    <rect x="282" y="180" width="10" height="36" rx="3" fill="#6dac20" />
+    <rect x="297" y="166" width="10" height="50" rx="3" fill="#6dac20" />
+    <rect x="312" y="188" width="10" height="28" rx="3" fill="#6dac20" />
+
+    <!-- Widget 4: Bottom Left - Controls Card -->
+    <rect x="171" y="172" width="82" height="53" rx="6" fill="#ffffff" />
+    <rect x="179" y="182" width="66" height="8" rx="4" fill="#6dac20" />
+    <circle cx="198" cy="186" r="6" fill="#6dac20" />
+    <rect x="179" y="202" width="66" height="8" rx="4" fill="#6dac20" />
+    <circle cx="226" cy="206" r="6" fill="#6dac20" />
+
+    <!-- Flanking Left Symbol: Touch Tablet / Smart Screen -->
+    <g transform="translate(112, 170)">
+      <circle cx="0" cy="0" r="20" fill="#ffffff" />
+      <rect x="-8" y="-11" width="16" height="22" rx="3" fill="#6dac20" />
+      <circle cx="0" cy="7" r="1.5" fill="#ffffff" />
+      <path d="M 5 -2 C 9 -2 11 1 11 4 L 11 8" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" />
+    </g>
+
+    <!-- Flanking Right Symbol: Home Automation / Loxone Controls -->
+    <g transform="translate(400, 170)">
+      <circle cx="0" cy="0" r="20" fill="#ffffff" />
+      <path d="M -9 2 L 0 -7 L 9 2 L 9 9 C 9 10.5 7.5 11 6 11 L -6 11 C -7.5 11 -9 10.5 -9 9 Z" fill="#6dac20" />
+      <rect x="-3" y="4" width="6" height="7" fill="#ffffff" />
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
   </g>
-  <g fill="#6dac20">
-    <circle cx="176" cy="184" r="26"/>
-    <rect x="140" y="316" width="72" height="14" rx="7"/>
-    <rect x="140" y="342" width="48" height="14" rx="7"/>
-    <rect x="292" y="252" width="80" height="14" rx="7"/>
-    <rect x="292" y="286" width="56" height="14" rx="7"/>
-    <rect x="292" y="320" width="68" height="14" rx="7"/>
-  </g>
-  <rect x="292" y="140" width="80" height="20" rx="10" fill="#3d6412"/>
+
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Dashboard4Lox</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
 </svg>

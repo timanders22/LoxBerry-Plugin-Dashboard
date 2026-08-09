@@ -89,6 +89,9 @@ function db_vorgaben()
         'wartezeit'      => 8,
         'vollbild'       => 1,
         'wach'           => 1,
+        // Kurzes Ruetteln beim Antippen. Nur Android kann das; wo nicht,
+        // passiert nichts.
+        'haptik'         => 1,
         'farbe'          => 'dunkel',
     );
 }
@@ -432,6 +435,10 @@ function db_befehl_absetzen($befehl, $wartezeit = null)
     for ($i = 0; $i < $wartezeit * 10; $i++) {
         if (is_file($antwort)) {
             $a = db_json_lesen($antwort);
+            // Gleich wegraeumen. Der Dienst kehrt sie zwar nach 120 s selbst
+            // aus, aber solange sie liegt, belegt sie einen Namen, und bei
+            // einem Wandtablet mit Dauerbetrieb sind das viele Namen.
+            @unlink($antwort);
             return array((int) (isset($a['ok']) ? $a['ok'] : 0),
                          (string) (isset($a['meldung']) ? $a['meldung'] : ''));
         }
@@ -440,86 +447,18 @@ function db_befehl_absetzen($befehl, $wartezeit = null)
     return array(2, 'Eingereiht, aber der Dienst hat innerhalb von ' . $wartezeit . ' s nicht geantwortet.');
 }
 
-/* ---------------- MQTT-Gateway des LoxBerry ----------------
+/* Es gibt bewusst KEINE MQTT-Funktionen mehr.
  *
- * Das MQTT-Gateway ist seit LoxBerry 3 Bestandteil des Systems, kein Plugin.
- * Es wird nicht nachinstalliert, sondern unter System -> MQTT Gateway
- * eingeschaltet.
+ * Bis 0.9.0 standen hier db_mqtt_zustand() und db_mqtt_senden() - aufgerufen
+ * wurden sie von nirgends. Das passt auch nicht zum Entwurf: dieses Plugin
+ * haelt die Werte im Zwischenspeicher des Dienstes und liefert sie der
+ * Anzeigeseite als JSON. Ein Umweg ueber einen Broker braeuchte es nicht,
+ * und in der Oberflaeche steht ausdruecklich, dass es ihn nicht gibt.
  *
- * Mqtt.Brokerhost ist ab Werk auf 'localhost' gesetzt. Eine Pruefung darauf
- * beantwortet also NICHT die Frage, ob Nachrichten ankommen koennen -
- * massgeblich ist Gatewayautostart.
+ * Toter Code, der einen ganzen Uebertragungsweg andeutet, ist schlimmer als
+ * gar keiner: der naechste Leser haelt ihn fuer benutzt.
  */
 
-function db_mqtt_zustand()
-{
-    $p = db_paths();
-    $leer = array('gefunden' => 0, 'autostart' => 0, 'udpport' => 0, 'broker' => '',
-                  'brokerport' => '', 'user' => '', 'pw' => '', 'lokal' => 0);
-    if ($p['home'] === '') {
-        return $leer;
-    }
-    $gen = db_json_lesen($p['home'] . '/config/system/general.json');
-    $m = array();
-    if (isset($gen['Mqtt']) && is_array($gen['Mqtt'])) {
-        $m = $gen['Mqtt'];
-    } elseif (isset($gen['mqtt']) && is_array($gen['mqtt'])) {
-        $m = $gen['mqtt'];
-    }
-    if (!$m) {
-        return $leer;
-    }
-    $hol = function ($gross, $klein) use ($m) {
-        if (isset($m[$gross])) {
-            return $m[$gross];
-        }
-        return isset($m[$klein]) ? $m[$klein] : '';
-    };
-    return array(
-        'gefunden'   => 1,
-        'autostart'  => in_array((string) $hol('Gatewayautostart', 'gatewayautostart'), array('1', 'true'), true) ? 1 : 0,
-        'udpport'    => (int) $hol('Udpinport', 'udpinport'),
-        'broker'     => (string) $hol('Brokerhost', 'brokerhost'),
-        'brokerport' => (string) $hol('Brokerport', 'brokerport'),
-        'user'       => (string) $hol('Brokeruser', 'brokeruser'),
-        'pw'         => (string) $hol('Brokerpass', 'brokerpass'),
-        'lokal'      => in_array((string) $hol('Uselocalbroker', 'uselocalbroker'), array('1', 'true'), true) ? 1 : 0,
-    );
-}
-
-/**
- * Werte ueber das LoxBerry-Gateway veroeffentlichen.
- *
- * Bewusst ueber den UDP-Eingang des Gateways und nicht mit einem eigenen
- * MQTT-Client: so muss das Plugin ueberhaupt keine Broker-Zugangsdaten
- * kennen, um zu senden. Das Gateway hat sie ohnehin.
- */
-function db_mqtt_senden(array $paare, $praefix)
-{
-    $z = db_mqtt_zustand();
-    if (!$z['udpport']) {
-        db_log_gebremst('mqtt_kein_port', 'MQTT: kein UDP-Eingangsport in der general.json gefunden - nichts gesendet.');
-        return false;
-    }
-    if (!$z['autostart']) {
-        db_log_gebremst('mqtt_aus', 'MQTT: das Gateway ist nicht auf Autostart gestellt '
-            . '(System, MQTT Gateway). Es wird gesendet, aber vermutlich hoert niemand zu.');
-    }
-    $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
-    if (!$s) {
-        db_log_gebremst('mqtt_socket', 'MQTT: Socket nicht moeglich.');
-        return false;
-    }
-    foreach ($paare as $k => $v) {
-        if ($v === null || $v === '') {
-            continue;   // fehlender Wert: nichts senden statt eine erfundene 0
-        }
-        $msg = 'publish ' . $praefix . '/' . $k . ' ' . $v;
-        @socket_sendto($s, $msg, strlen($msg), 0, '127.0.0.1', $z['udpport']);
-    }
-    socket_close($s);
-    return true;
-}
 
 /* ==================================================================
  * Loxone-Vorlagen

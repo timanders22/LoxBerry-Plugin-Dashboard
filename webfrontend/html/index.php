@@ -20,7 +20,9 @@
  *   roh                    das vollstaendige Abbild als JSON
  *
  * Schaltend:
- *   befehl   &uuid=...&befehl=...[&pin=...]
+ *   befehl   &seite=...&uuid=...&befehl=...[&pin=...]
+ *            seite ist PFLICHT: die PIN haengt an der Seite, von der aus
+ *            geschaltet wird - nicht am Baustein.
  *
  * Der Endpunkt spricht NIE selbst mit dem Miniserver. Er liest den
  * Zwischenspeicher und legt Befehle in einer Warteschlange ab, die der
@@ -138,26 +140,65 @@ if (!preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{16}$
     db_json_raus(array('ok' => 0, 'grund' => 'UUID_UNGUELTIG',
                        'meldung' => 'Das ist keine Loxone-UUID.'), 400);
 }
-if (!preg_match('#^[A-Za-z0-9_./+:-]{1,80}$#', $db_befehl)) {
+/* Zeichenvorrat des Befehls.
+ *
+ * Bis 0.9.0 fehlten Klammern und Komma. Der ColorPickerV2 schickt aber
+ * genau solche Befehle: hsv(240,100,80) fuer eine Farbe, temp(4000) fuer
+ * ein Weiss. Jeder Farbwechsel lief damit in HTTP 400 - der Baustein stand
+ * in der Kacheltabelle, war aber nicht bedienbar.
+ *
+ * Erlaubt sind jetzt zusaetzlich ( ) , und das Leerzeichen. Weiterhin NICHT
+ * erlaubt sind & ? # % " ' < > und der Backslash: der Befehl wandert in die
+ * Adresse einer Anfrage an den Miniserver, und ein & oder ? dort haenge
+ * einen zweiten Parameter an. Die Laenge steigt auf 120 Zeichen, weil
+ * hsv(...) mit drei dreistelligen Zahlen schon 18 braucht und Textbefehle
+ * laenger werden.
+ *
+ * Die eigentliche Sicherung ist ohnehin die zweite Pruefung weiter unten:
+ * db_befehl_erlaubt() laesst nur durch, was die Kacheltabelle fuer genau
+ * diesen Bausteintyp nennt. Diese Regel hier haelt nur Zeichen fern, die
+ * die Adresse zerlegen wuerden.
+ */
+if (!preg_match('#^[A-Za-z0-9_./+:() ,-]{1,120}$#', $db_befehl)) {
     db_json_raus(array('ok' => 0, 'grund' => 'BEFEHL_UNGUELTIG',
                        'meldung' => 'Der Befehl enthaelt unerlaubte Zeichen.'), 400);
 }
 
-/* Steht der Baustein ueberhaupt auf einer Seite? Sonst koennte jeder, der das
- * Token kennt, jeden Baustein im Haus schalten - auch solche, die absichtlich
- * auf keinem Dashboard stehen. */
+/* Von WELCHER Seite kommt der Befehl?
+ *
+ * Bis 0.9.0 wurde die erstbeste Seite genommen, auf der der Baustein steht
+ * ('break 2'). Das war eine Luecke: liegt ein Tuerschloss auf Seite "flur"
+ * ohne PIN und zusaetzlich auf Seite "sicherheit" mit PIN, entschied die
+ * Reihenfolge in der Konfiguration darueber, ob eine PIN verlangt wird.
+ * Stand die ungeschuetzte Seite vorn, liess sich die PIN der geschuetzten
+ * Seite umgehen - ohne jeden Trick, einfach durch Aufruf.
+ *
+ * Deshalb ist &seite= jetzt PFLICHT fuer schaltende Aufrufe. Geprueft wird
+ * genau die PIN der Seite, von der der Befehl kommt, und ob die Kachel dort
+ * ueberhaupt liegt. Die Anzeigeseite schickt den Parameter mit; wer die
+ * Adresse von Hand baut, bekommt eine Meldung, die sagt was fehlt.
+ */
+if ($db_seite === '') {
+    db_json_raus(array('ok' => 0, 'grund' => 'SEITE_FEHLT',
+                       'meldung' => 'Fuer einen Befehl ist &seite= Pflicht - die PIN '
+                                  . 'haengt an der Seite, von der aus geschaltet wird.'), 400);
+}
 $db_gefunden = null;
 foreach (db_seiten() as $s) {
+    if ((string) $s['schluessel'] !== $db_seite) {
+        continue;
+    }
     foreach ((isset($s['kacheln']) ? $s['kacheln'] : array()) as $k) {
         if ((string) $k['uuid'] === $db_uuid) { $db_gefunden = $s; break 2; }
     }
 }
 if ($db_gefunden === null) {
-    db_json_raus(array('ok' => 0, 'grund' => 'NICHT_AUF_EINER_SEITE',
-                       'meldung' => 'Dieser Baustein steht auf keinem Dashboard.'), 403);
+    db_json_raus(array('ok' => 0, 'grund' => 'NICHT_AUF_DIESER_SEITE',
+                       'meldung' => 'Dieser Baustein steht nicht auf der Seite "'
+                                  . $db_seite . '".'), 403);
 }
 
-/* PIN der Seite, falls gesetzt. */
+/* PIN GENAU DIESER Seite. */
 if (!empty($db_gefunden['pin'])) {
     $db_pin = isset($_GET['pin']) ? (string) $_GET['pin'] : '';
     if (!hash_equals((string) $db_gefunden['pin'], $db_pin)) {
@@ -179,6 +220,6 @@ if (db_dienst_pid() === 0) {
 }
 
 list($db_erg, $db_meldung) = db_befehl_absetzen(
-    array('uuid' => $db_uuid, 'befehl' => $db_befehl));
+    array('uuid' => $db_uuid, 'befehl' => $db_befehl, 'seite' => $db_seite));
 db_json_raus(array('ok' => $db_erg, 'meldung' => $db_meldung),
              $db_erg === 0 ? 500 : 200);

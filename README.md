@@ -8,6 +8,89 @@ Loxone-App aufrufen lassen.
 > geprüft gegen eine Attrappe, die streng nach den Loxone-Dokumenten gebaut
 > ist. Deshalb 0.9.0 und nicht 1.0.0.
 
+## Neu in 0.9.1
+
+### Zwei Blocker
+
+- **TLS lief überhaupt nicht.** Mit eingeschaltetem TLS gingen `urllib` und
+  `websockets` ohne SSL-Kontext an den Miniserver — Python prüft dann nach den
+  Regeln des offenen Internets, und ein Miniserver trägt ein selbstsigniertes
+  Zertifikat. Die Verbindung brach mit `CERTIFICATE_VERIFY_FAILED` ab, bevor
+  ein Byte floss. Jetzt ein ausdrücklicher Kontext mit `check_hostname=False`
+  und `CERT_NONE` — über die öffentliche API, nicht über
+  `ssl._create_unverified_context()`, damit beim Lesen sichtbar bleibt, was
+  abgeschaltet ist. **Was das bedeutet, steht im Code und im Protokoll:** die
+  Verbindung ist verschlüsselt, der Gegenüber aber nicht beglaubigt. Damit die
+  Abwägung nachprüfbar bleibt, wird der SHA-256-Fingerabdruck des Zertifikats
+  einmal ins Protokoll geschrieben.
+- **Die PIN ließ sich umgehen.** Der Endpunkt suchte die erstbeste Seite, auf
+  der der Baustein liegt (`break 2`). Liegt ein Türschloss auf einer
+  ungeschützten *und* auf einer geschützten Seite, entschied die Reihenfolge in
+  der Konfiguration darüber, ob eine PIN verlangt wird — stand die
+  ungeschützte vorn, war die PIN wirkungslos. `&seite=` ist jetzt Pflicht;
+  geprüft wird genau die Seite, von der der Druck kam. Nachgestellt: alle fünf
+  Fälle verhalten sich wie erwartet.
+
+### Weitere Korrekturen
+
+- **Der ColorPickerV2 war nicht bedienbar.** Er schickt `hsv(240,100,80)` und
+  `temp(4000,80)`; Klammern und Komma fehlten im erlaubten Zeichenvorrat, jeder
+  Farbwechsel lief in HTTP 400. Erweitert — `&`, `?`, `#` und
+  Anführungszeichen bleiben gesperrt, weil der Befehl in eine Adresse wandert.
+- **Offline-Installation.** `pip install` setzte eine Internetverbindung
+  voraus, und `cryptography` ohne fertiges Paket braucht einen C- *und* einen
+  Rust-Übersetzer — auf einem Raspberry Pi eine halbe Stunde, meist mit
+  Abbruch. Jetzt: erst nachsehen, ob das System die Module hat, dann `apt`
+  (`python3-websockets`, `python3-cryptography`), und die venv wird mit
+  `--system-site-packages` angelegt. `pip` ist nur noch der letzte Ausweg.
+- **`preupgrade.sh` löschte den Sollmerker nicht.** Der minütliche Wächter
+  konnte den Dienst mitten im Update wieder hochziehen — mit halb
+  ausgetauschten Dateien. Jetzt über `dienst.sh stop`.
+- **`dienst.sh` setzt sich auf `loxberry` herunter**, falls es als root
+  aufgerufen wird, und löst Symlinks mit `readlink -f` auf. Sonst gehörten
+  PID-Datei und Protokoll nach einem Cron-Lauf als root dem falschen Benutzer,
+  und die Oberfläche konnte den Dienst nicht mehr anhalten.
+- **Toter MQTT-Code entfernt.** `db_mqtt_senden()` und `db_mqtt_zustand()`
+  wurden von nirgends aufgerufen — und in der Oberfläche steht ausdrücklich,
+  dass dieses Plugin keinen Broker braucht. Toter Code, der einen ganzen
+  Übertragungsweg andeutet, ist schlimmer als gar keiner.
+- **Antwortdateien werden nach dem Lesen entfernt**, statt auf die
+  120-Sekunden-Kehrschleife des Dienstes zu warten.
+- **Der Platzhalter-Vergleich** rechnete mit `e[:-5]`, obwohl `/$wert` sechs
+  Zeichen hat — es ging gut, weil der Schrägstrich zum Vergleichsstück gehörte.
+  Jetzt wird geteilt statt gerechnet; 0 Abweichungen im Vergleich beider
+  Fassungen.
+- **UUID-Längenprüfung.** Genau nachgemessen: bei acht Bytes stürzte 0.9.0
+  *nicht* ab, sondern lieferte eine falsche UUID; erst unterhalb von acht Bytes
+  kam `struct.error` und riss die Leseschleife des WebSockets mit. Beide Fälle
+  liefern jetzt einen leeren String.
+
+### Erweiterungen
+
+- **Ältere Bausteine.** `LightController` und `IRoomController` (V1) fehlten.
+  Sie bekommen **eigene Einträge**, keine Aliase auf V2: die V1-Lichtsteuerung
+  kennt Szenen als Nummern statt als Stimmungsliste und sendet kein
+  `moodList` — ein Alias hätte die Kachel auf ein Feld gelenkt, das nie kommt,
+  und sie wäre leer geblieben.
+- **Abdunkeln bei Verbindungsverlust.** Einen neun Pixel großen Punkt sieht man
+  am Wandtablet aus drei Metern nicht. Das Raster wird gedämpft und ein Band am
+  unteren Rand eingeblendet — aber erst nach dem **zweiten** Fehlversuch, damit
+  ein einzelner verlorener WLAN-Takt nicht jedes Mal aufblinkt. Die Kacheln
+  bleiben bedienbar: eine Kachel, die gar nicht mehr reagiert, hält man für
+  kaputt, und ein Befehl in einer Störung wird ohnehin sauber abgewiesen.
+- **Kurzes Rütteln beim Antippen** (40 ms, abschaltbar). Wer keine Rückmeldung
+  spürt, drückt ein zweites Mal — und schaltet damit wieder zurück.
+
+### Nicht zutreffend
+
+Die gemeldete **Race Condition** beim Ablegen der Befehle gibt es nicht:
+`db_befehl_absetzen()` schreibt seit jeher in eine `.tmp`-Datei und benennt sie
+mit `rename()` um, und der Zwischenname endet nicht auf `.json`, wird vom
+Dienst also gar nicht erst gesehen. Der **Archiv-Pfad** zur Kacheltabelle ist
+ebenfalls richtig — er gilt dem ausgepackten Archiv, wo `bin/` neben
+`templates/` liegt; für die Installation greift der erste Pfad. Beide Stellen
+haben jetzt einen Kommentar, damit sie niemand „repariert".
+
 ## Warum ein Dienst dazwischen hängt
 
     Miniserver ──WebSocket (ws/rfc6455)──> Dienst auf dem LoxBerry

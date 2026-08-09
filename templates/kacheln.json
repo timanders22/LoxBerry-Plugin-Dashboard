@@ -1,223 +1,416 @@
 {
-  "_hinweis": [
-    "Zuordnung: Loxone-Steuerungstyp aus der LoxAPP3.json -> Kacheltyp im Dashboard.",
-    "EINE Datei fuer Dienst, Designer und Anzeigeseite - so kann nichts auseinanderlaufen.",
-    "",
-    "Alle Zustandsnamen und Befehle stammen aus den Loxone-Dokumenten",
-    "'Structure File' und 'Communicating with the Miniserver' (Stand 16.0, 03.06.2025)",
-    "sowie der Fassung 12.2 fuer die Abschnitte, die im 16.0-Auszug fehlten.",
-    "Nichts davon ist geraten. Wo ein Feld nur in bestimmten Fassungen vorkommt,",
-    "steht es in 'wahlweise' und darf fehlen.",
-    "",
-    "kachel:    welches Bedienelement die Anzeigeseite baut",
-    "haupt:     der Zustand, der gross auf der Kachel steht",
-    "zustaende: alle Zustaende, die der Dienst fuer diesen Typ abonniert",
-    "befehle:   erlaubte Befehle. Ein $ am Anfang bedeutet: der Wert wird angehaengt.",
-    "           Die Anzeigeseite darf NUR diese Befehle senden, der Endpunkt",
-    "           prueft es ein zweites Mal.",
-    "einheit:   wird aus details.format gelesen, wenn vorhanden"
-  ],
-
-  "typen": {
-    "Switch": {
-      "kachel": "schalter",
-      "haupt": "active",
-      "zustaende": ["active"],
-      "befehle": ["on", "off"],
-      "text": "Schalter"
-    },
-    "Pushbutton": {
-      "kachel": "taster",
-      "haupt": "active",
-      "zustaende": ["active"],
-      "befehle": ["pulse", "on", "off"],
-      "text": "Taster"
-    },
-    "TimedSwitch": {
-      "kachel": "treppenlicht",
-      "haupt": "deactivationDelay",
-      "zustaende": ["deactivationDelay", "deactivationDelayTotal"],
-      "befehle": ["on", "off", "pulse"],
-      "text": "Treppenlicht"
-    },
-    "Dimmer": {
-      "kachel": "dimmer",
-      "haupt": "position",
-      "zustaende": ["position", "min", "max", "step"],
-      "befehle": ["on", "off", "$wert"],
-      "text": "Dimmer"
-    },
-    "LightControllerV2": {
-      "kachel": "licht",
-      "haupt": "activeMoods",
-      "zustaende": ["activeMoods", "moodList", "favoriteMoods", "additionalMoods", "circuitNames"],
-      "befehle": ["changeTo/$wert", "addMood/$wert", "removeMood/$wert", "plus", "minus", "on", "off"],
-      "text": "Lichtsteuerung V2"
-    },
-    "Jalousie": {
-      "kachel": "jalousie",
-      "haupt": "position",
-      "zustaende": ["up", "down", "position", "shadePosition", "autoActive", "autoAllowed",
-                    "safetyActive", "locked", "infoText"],
-      "befehle": ["FullUp", "FullDown", "stop", "shade", "auto", "NoAuto",
-                  "manualPosition/$wert", "manualLamelle/$wert"],
-      "text": "Jalousie"
-    },
-    "Gate": {
-      "kachel": "tor",
-      "haupt": "position",
-      "zustaende": ["position", "active", "preventOpen", "preventClose"],
-      "befehle": ["open", "close", "stop"],
-      "text": "Tor"
-    },
-    "IRoomControllerV2": {
-      "kachel": "raumregler",
-      "haupt": "tempActual",
-      "zustaende": ["tempActual", "tempTarget", "activeMode", "operatingMode",
-                    "comfortTemperature", "openWindow", "prepareState"],
-      "befehle": ["setComfortTemperature/$wert", "setOperatingMode/$wert", "stopOverride"],
-      "text": "Raumregler V2"
-    },
-    "ColorPickerV2": {
-      "kachel": "farbe",
-      "haupt": "color",
-      "zustaende": ["color", "favorites", "sequence", "sequenceColorIdx"],
-      "befehle": ["$wert"],
-      "text": "Farbwahl"
-    },
-    "Alarm": {
-      "kachel": "alarm",
-      "haupt": "armed",
-      "zustaende": ["armed", "level", "nextLevel", "nextLevelDelay", "nextLevelDelayTotal",
-                    "sensors", "disabledMove"],
-      "befehle": ["on", "off", "quit", "delayedon"],
-      "text": "Alarmanlage",
-      "warnung": 1
-    },
-
-    "InfoOnlyAnalog": {
-      "kachel": "wert",
-      "haupt": "value",
-      "zustaende": ["value"],
-      "befehle": [],
-      "text": "Analoger Wert"
-    },
-    "InfoOnlyDigital": {
-      "kachel": "zustand",
-      "haupt": "active",
-      "zustaende": ["active"],
-      "befehle": [],
-      "text": "Digitaler Zustand"
-    },
-    "InfoOnlyText": {
-      "kachel": "text",
-      "haupt": "text",
-      "zustaende": ["text"],
-      "befehle": [],
-      "text": "Text"
-    },
-    "TextState": {
-      "kachel": "text",
-      "haupt": "textAndIcon",
-      "zustaende": ["textAndIcon"],
-      "befehle": [],
-      "text": "Statustext"
-    },
-    "Slider": {
-      "kachel": "schieber",
-      "haupt": "value",
-      "zustaende": ["value", "error"],
-      "befehle": ["$wert"],
-      "text": "Schieberegler"
-    },
-    "ValueSelector": {
-      "kachel": "schieber",
-      "haupt": "value",
-      "zustaende": ["value"],
-      "befehle": ["$wert"],
-      "text": "Wertwahl"
-    },
-    "Radio": {
-      "kachel": "auswahl",
-      "haupt": "activeOutput",
-      "zustaende": ["activeOutput"],
-      "befehle": ["$wert", "reset"],
-      "text": "Auswahl"
-    },
-    "Meter": {
-      "kachel": "zaehler",
-      "haupt": "actual",
-      "zustaende": ["actual", "total"],
-      "befehle": [],
-      "text": "Zaehler"
-    },
-    "Hourcounter": {
-      "kachel": "zaehler",
-      "haupt": "total",
-      "zustaende": ["total", "remaining", "overdue", "lastActivation"],
-      "befehle": [],
-      "text": "Betriebsstunden"
-    },
-    "PresenceDetector": {
-      "kachel": "zustand",
-      "haupt": "active",
-      "zustaende": ["active"],
-      "befehle": [],
-      "text": "Praesenzmelder"
-    },
-    "SmokeAlarm": {
-      "kachel": "alarm",
-      "haupt": "level",
-      "zustaende": ["level", "alarmCause", "acousticAlarm", "testAlarm"],
-      "befehle": ["quit"],
-      "text": "Brandmelder",
-      "warnung": 1
-    },
-    "Webpage": {
-      "kachel": "generisch",
-      "haupt": "",
-      "zustaende": [],
-      "befehle": [],
-      "text": "Webseite"
-    }
+ "_hinweis": [
+  "Zuordnung: Loxone-Steuerungstyp aus der LoxAPP3.json -> Kacheltyp im Dashboard.",
+  "EINE Datei fuer Dienst, Designer und Anzeigeseite - so kann nichts auseinanderlaufen.",
+  "",
+  "Alle Zustandsnamen und Befehle stammen aus den Loxone-Dokumenten",
+  "'Structure File' und 'Communicating with the Miniserver' (Stand 16.0, 03.06.2025)",
+  "sowie der Fassung 12.2 fuer die Abschnitte, die im 16.0-Auszug fehlten.",
+  "Nichts davon ist geraten. Wo ein Feld nur in bestimmten Fassungen vorkommt,",
+  "steht es in 'wahlweise' und darf fehlen.",
+  "",
+  "kachel:    welches Bedienelement die Anzeigeseite baut",
+  "haupt:     der Zustand, der gross auf der Kachel steht",
+  "zustaende: alle Zustaende, die der Dienst fuer diesen Typ abonniert",
+  "befehle:   erlaubte Befehle. Ein $ am Anfang bedeutet: der Wert wird angehaengt.",
+  "           Die Anzeigeseite darf NUR diese Befehle senden, der Endpunkt",
+  "           prueft es ein zweites Mal.",
+  "einheit:   wird aus details.format gelesen, wenn vorhanden"
+ ],
+ "typen": {
+  "Switch": {
+   "kachel": "schalter",
+   "haupt": "active",
+   "zustaende": [
+    "active"
+   ],
+   "befehle": [
+    "on",
+    "off"
+   ],
+   "text": "Schalter"
   },
-
-  "generisch": {
-    "kachel": "generisch",
-    "haupt": "",
-    "zustaende": [],
-    "befehle": [],
-    "text": "Ohne eigenes Bedienelement",
-    "_hinweis": [
-      "Fuer jeden Typ, der oben nicht steht. Der Dienst abonniert dann ALLE",
-      "Zustaende, die die Struktur fuer diesen Baustein nennt, und die Kachel",
-      "zeigt sie als Liste. Geschaltet wird nicht - welcher Befehl fuer einen",
-      "unbekannten Typ richtig waere, weiss hier niemand, und ein geratener",
-      "Befehl an eine Alarmanlage ist schlimmer als ein fehlender Knopf."
-    ]
+  "Pushbutton": {
+   "kachel": "taster",
+   "haupt": "active",
+   "zustaende": [
+    "active"
+   ],
+   "befehle": [
+    "pulse",
+    "on",
+    "off"
+   ],
+   "text": "Taster"
   },
-
-  "groessen": {
-    "1x1": { "spalten": 1, "zeilen": 1, "text": "klein" },
-    "2x1": { "spalten": 2, "zeilen": 1, "text": "breit" },
-    "1x2": { "spalten": 1, "zeilen": 2, "text": "hoch" },
-    "2x2": { "spalten": 2, "zeilen": 2, "text": "gross" },
-    "4x1": { "spalten": 4, "zeilen": 1, "text": "sehr breit" },
-    "4x2": { "spalten": 4, "zeilen": 2, "text": "Bandbreite" }
+  "TimedSwitch": {
+   "kachel": "treppenlicht",
+   "haupt": "deactivationDelay",
+   "zustaende": [
+    "deactivationDelay",
+    "deactivationDelayTotal"
+   ],
+   "befehle": [
+    "on",
+    "off",
+    "pulse"
+   ],
+   "text": "Treppenlicht"
   },
-
-  "vorgabegroesse": {
-    "licht": "2x2",
-    "jalousie": "2x2",
-    "raumregler": "2x2",
-    "farbe": "2x2",
-    "alarm": "2x1",
-    "dimmer": "2x1",
-    "schieber": "2x1",
-    "auswahl": "2x1",
-    "zaehler": "2x1",
-    "treppenlicht": "2x1",
-    "tor": "2x1",
-    "generisch": "2x1"
+  "Dimmer": {
+   "kachel": "dimmer",
+   "haupt": "position",
+   "zustaende": [
+    "position",
+    "min",
+    "max",
+    "step"
+   ],
+   "befehle": [
+    "on",
+    "off",
+    "$wert"
+   ],
+   "text": "Dimmer"
+  },
+  "LightControllerV2": {
+   "kachel": "licht",
+   "haupt": "activeMoods",
+   "zustaende": [
+    "activeMoods",
+    "moodList",
+    "favoriteMoods",
+    "additionalMoods",
+    "circuitNames"
+   ],
+   "befehle": [
+    "changeTo/$wert",
+    "addMood/$wert",
+    "removeMood/$wert",
+    "plus",
+    "minus",
+    "on",
+    "off"
+   ],
+   "text": "Lichtsteuerung V2"
+  },
+  "LightController": {
+   "kachel": "licht",
+   "haupt": "activescene",
+   "zustaende": [
+    "activescene",
+    "sceneList"
+   ],
+   "befehle": [
+    "$wert",
+    "plus",
+    "minus",
+    "on",
+    "off"
+   ],
+   "text": "Lichtsteuerung (V1)",
+   "hinweis": "Aeltere Lichtsteuerung: Szenen sind Nummern, keine Stimmungen."
+  },
+  "Jalousie": {
+   "kachel": "jalousie",
+   "haupt": "position",
+   "zustaende": [
+    "up",
+    "down",
+    "position",
+    "shadePosition",
+    "autoActive",
+    "autoAllowed",
+    "safetyActive",
+    "locked",
+    "infoText"
+   ],
+   "befehle": [
+    "FullUp",
+    "FullDown",
+    "stop",
+    "shade",
+    "auto",
+    "NoAuto",
+    "manualPosition/$wert",
+    "manualLamelle/$wert"
+   ],
+   "text": "Jalousie"
+  },
+  "Gate": {
+   "kachel": "tor",
+   "haupt": "position",
+   "zustaende": [
+    "position",
+    "active",
+    "preventOpen",
+    "preventClose"
+   ],
+   "befehle": [
+    "open",
+    "close",
+    "stop"
+   ],
+   "text": "Tor"
+  },
+  "IRoomControllerV2": {
+   "kachel": "raumregler",
+   "haupt": "tempActual",
+   "zustaende": [
+    "tempActual",
+    "tempTarget",
+    "activeMode",
+    "operatingMode",
+    "comfortTemperature",
+    "openWindow",
+    "prepareState"
+   ],
+   "befehle": [
+    "setComfortTemperature/$wert",
+    "setOperatingMode/$wert",
+    "stopOverride"
+   ],
+   "text": "Raumregler V2"
+  },
+  "IRoomController": {
+   "kachel": "raumregler",
+   "haupt": "tempActual",
+   "zustaende": [
+    "tempActual",
+    "tempTarget",
+    "mode",
+    "actualOutput",
+    "openWindow",
+    "override",
+    "comfortTemperature"
+   ],
+   "befehle": [
+    "setComfortTemperature/$wert",
+    "setOperatingMode/$wert",
+    "starttimer/$wert",
+    "stoptimer"
+   ],
+   "text": "Raumregler (V1)",
+   "hinweis": "Aelterer Raumregler. Die Betriebsartnummern weichen von V2 ab."
+  },
+  "ColorPickerV2": {
+   "kachel": "farbe",
+   "haupt": "color",
+   "zustaende": [
+    "color",
+    "favorites",
+    "sequence",
+    "sequenceColorIdx"
+   ],
+   "befehle": [
+    "$wert"
+   ],
+   "text": "Farbwahl"
+  },
+  "Alarm": {
+   "kachel": "alarm",
+   "haupt": "armed",
+   "zustaende": [
+    "armed",
+    "level",
+    "nextLevel",
+    "nextLevelDelay",
+    "nextLevelDelayTotal",
+    "sensors",
+    "disabledMove"
+   ],
+   "befehle": [
+    "on",
+    "off",
+    "quit",
+    "delayedon"
+   ],
+   "text": "Alarmanlage",
+   "warnung": 1
+  },
+  "InfoOnlyAnalog": {
+   "kachel": "wert",
+   "haupt": "value",
+   "zustaende": [
+    "value"
+   ],
+   "befehle": [],
+   "text": "Analoger Wert"
+  },
+  "InfoOnlyDigital": {
+   "kachel": "zustand",
+   "haupt": "active",
+   "zustaende": [
+    "active"
+   ],
+   "befehle": [],
+   "text": "Digitaler Zustand"
+  },
+  "InfoOnlyText": {
+   "kachel": "text",
+   "haupt": "text",
+   "zustaende": [
+    "text"
+   ],
+   "befehle": [],
+   "text": "Text"
+  },
+  "TextState": {
+   "kachel": "text",
+   "haupt": "textAndIcon",
+   "zustaende": [
+    "textAndIcon"
+   ],
+   "befehle": [],
+   "text": "Statustext"
+  },
+  "Slider": {
+   "kachel": "schieber",
+   "haupt": "value",
+   "zustaende": [
+    "value",
+    "error"
+   ],
+   "befehle": [
+    "$wert"
+   ],
+   "text": "Schieberegler"
+  },
+  "ValueSelector": {
+   "kachel": "schieber",
+   "haupt": "value",
+   "zustaende": [
+    "value"
+   ],
+   "befehle": [
+    "$wert"
+   ],
+   "text": "Wertwahl"
+  },
+  "Radio": {
+   "kachel": "auswahl",
+   "haupt": "activeOutput",
+   "zustaende": [
+    "activeOutput"
+   ],
+   "befehle": [
+    "$wert",
+    "reset"
+   ],
+   "text": "Auswahl"
+  },
+  "Meter": {
+   "kachel": "zaehler",
+   "haupt": "actual",
+   "zustaende": [
+    "actual",
+    "total"
+   ],
+   "befehle": [],
+   "text": "Zaehler"
+  },
+  "Hourcounter": {
+   "kachel": "zaehler",
+   "haupt": "total",
+   "zustaende": [
+    "total",
+    "remaining",
+    "overdue",
+    "lastActivation"
+   ],
+   "befehle": [],
+   "text": "Betriebsstunden"
+  },
+  "PresenceDetector": {
+   "kachel": "zustand",
+   "haupt": "active",
+   "zustaende": [
+    "active"
+   ],
+   "befehle": [],
+   "text": "Praesenzmelder"
+  },
+  "SmokeAlarm": {
+   "kachel": "alarm",
+   "haupt": "level",
+   "zustaende": [
+    "level",
+    "alarmCause",
+    "acousticAlarm",
+    "testAlarm"
+   ],
+   "befehle": [
+    "quit"
+   ],
+   "text": "Brandmelder",
+   "warnung": 1
+  },
+  "Webpage": {
+   "kachel": "generisch",
+   "haupt": "",
+   "zustaende": [],
+   "befehle": [],
+   "text": "Webseite"
   }
+ },
+ "generisch": {
+  "kachel": "generisch",
+  "haupt": "",
+  "zustaende": [],
+  "befehle": [],
+  "text": "Ohne eigenes Bedienelement",
+  "_hinweis": [
+   "Fuer jeden Typ, der oben nicht steht. Der Dienst abonniert dann ALLE",
+   "Zustaende, die die Struktur fuer diesen Baustein nennt, und die Kachel",
+   "zeigt sie als Liste. Geschaltet wird nicht - welcher Befehl fuer einen",
+   "unbekannten Typ richtig waere, weiss hier niemand, und ein geratener",
+   "Befehl an eine Alarmanlage ist schlimmer als ein fehlender Knopf."
+  ]
+ },
+ "groessen": {
+  "1x1": {
+   "spalten": 1,
+   "zeilen": 1,
+   "text": "klein"
+  },
+  "2x1": {
+   "spalten": 2,
+   "zeilen": 1,
+   "text": "breit"
+  },
+  "1x2": {
+   "spalten": 1,
+   "zeilen": 2,
+   "text": "hoch"
+  },
+  "2x2": {
+   "spalten": 2,
+   "zeilen": 2,
+   "text": "gross"
+  },
+  "4x1": {
+   "spalten": 4,
+   "zeilen": 1,
+   "text": "sehr breit"
+  },
+  "4x2": {
+   "spalten": 4,
+   "zeilen": 2,
+   "text": "Bandbreite"
+  }
+ },
+ "vorgabegroesse": {
+  "licht": "2x2",
+  "jalousie": "2x2",
+  "raumregler": "2x2",
+  "farbe": "2x2",
+  "alarm": "2x1",
+  "dimmer": "2x1",
+  "schieber": "2x1",
+  "auswahl": "2x1",
+  "zaehler": "2x1",
+  "treppenlicht": "2x1",
+  "tor": "2x1",
+  "generisch": "2x1"
+ }
 }

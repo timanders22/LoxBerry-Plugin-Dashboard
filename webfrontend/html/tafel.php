@@ -78,6 +78,20 @@ header h1{font-size:1.35rem;margin:0;font-weight:650;letter-spacing:-.01em}
   color:var(--leise);background:var(--kachel);border:1px solid var(--rand);font-size:.86rem}
 .seiten a.hier{color:var(--text);border-color:var(--an);background:var(--anweich)}
 .zeile{display:flex;align-items:center;gap:10px;padding:0 18px 10px;font-size:.8rem;color:var(--leise)}
+/* Abdunkeln bei Verbindungsverlust.
+   Auf einem Wandtablet sieht man einen neun Pixel grossen Punkt aus drei
+   Metern nicht. Also wird das ganze Raster gedaempft und ein Band eingeblendet
+   - erkennbar im Vorbeigehen, ohne dass die Seite unbrauchbar wird.
+   pointer-events bleibt AN: wer trotzdem druecken will, darf das. Ein Befehl
+   in einer Stoerung wird ohnehin sauber abgewiesen, und eine Kachel, die auf
+   Beruehrung gar nicht mehr reagiert, haelt man fuer kaputt. */
+#raster{transition:opacity .35s ease, filter .35s ease}
+body.gestoert #raster{opacity:.45;filter:grayscale(.7)}
+#stoerband{position:fixed;left:0;right:0;bottom:0;z-index:50;display:none;
+  padding:10px 14px;background:var(--fehl);color:#fff;font-size:1.05em;
+  text-align:center;box-shadow:0 -2px 10px rgba(0,0,0,.35)}
+body.gestoert #stoerband{display:block}
+@media (prefers-reduced-motion: reduce){#raster{transition:none}}
 .punkt{width:9px;height:9px;border-radius:50%;background:var(--aus);flex:0 0 auto}
 .punkt.gut{background:var(--an)}
 .punkt.alt{background:var(--warn)}
@@ -212,7 +226,13 @@ function senden(uuid, befehl){
       return senden(uuid, befehl);
     });
   }
-  var u = BASIS+"&aktion=befehl&uuid="+encodeURIComponent(uuid)
+  /* &seite= ist Pflicht. Die PIN haengt an der SEITE, nicht am Baustein:
+     liegt ein Tuerschloss auf einer ungeschuetzten und zusaetzlich auf einer
+     geschuetzten Seite, muss der Endpunkt wissen, von welcher der Druck kam.
+     Ohne diesen Parameter nahm er bis 0.9.0 die erstbeste - und damit liess
+     sich die PIN der geschuetzten Seite umgehen. */
+  var u = BASIS+"&aktion=befehl&seite="+encodeURIComponent(SEITE)
+        + "&uuid="+encodeURIComponent(uuid)
         + "&befehl="+encodeURIComponent(befehl)+(PIN?"&pin="+encodeURIComponent(PIN):"");
   return fetch(u,{cache:"no-store"}).then(function(a){ return a.json().catch(function(){
       return {ok:0,meldung:"Der LoxBerry hat keine lesbare Antwort geschickt."}; }); })
@@ -421,12 +441,26 @@ function zeichnen(){
   });
 }
 
+/* Kurzes Ruetteln beim Antippen.
+   Auf einem Tablet ohne Tastenklick fehlt die Rueckmeldung, dass ein Druck
+   angekommen ist - und wer nichts spuert, drueckt ein zweites Mal. 40 ms sind
+   ein Antippen, kein Alarm.
+   navigator.vibrate gibt es nur auf Android und nur nach einer Nutzeraktion;
+   fehlt es, passiert einfach nichts. Wer es nicht will, schaltet es in den
+   Einstellungen ab. */
+function ruetteln(){
+  <?php if (!empty($cfg['haptik'])) { ?>
+  try { if (navigator.vibrate) { navigator.vibrate(40); } } catch(e){}
+  <?php } ?>
+}
+
 document.addEventListener("click", function(ev){
   var b = ev.target.closest ? ev.target.closest("button[data-b]") : null;
   if(!b) return;
   var kachel = b.closest(".k"); if(!kachel) return;
   var k = DATEN.kacheln[parseInt(kachel.dataset.i,10)];
   if(!k) return;
+  ruetteln();
   senden(k.uuid, b.dataset.b);
 });
 
@@ -443,6 +477,14 @@ document.addEventListener("change", function(ev){
   else if (k.kachel==="jalousie") { senden(k.uuid, "manualPosition/"+s.value); }
   else { senden(k.uuid, s.value); }
 });
+
+/* ---------- Stoerungsband ---------- */
+(function(){
+  var band = document.createElement("div");
+  band.id = "stoerband";
+  band.setAttribute("role", "status");
+  document.body.appendChild(band);
+})();
 
 /* ---------- Werte holen ---------- */
 var fehlversuche = 0;
@@ -463,26 +505,41 @@ function werte_holen(){
   });
 }
 
+function stoerung(an, text){
+  document.body.classList.toggle("gestoert", !!an);
+  var band = document.getElementById("stoerband");
+  if(band) band.textContent = text || "";
+}
+
 function stand_zeigen(d){
   var p = document.getElementById("punkt");
   var t = document.getElementById("stand");
   if(!d){
     p.className = "punkt tot";
     t.textContent = "Der LoxBerry antwortet nicht ("+fehlversuche+" Versuche).";
+    /* Erst nach dem ZWEITEN Fehlversuch abdunkeln. Ein einzelner Aussetzer
+       - ein WLAN-Paket, das verloren geht - ist Alltag; das Tablet soll
+       deswegen nicht bei jedem Takt aufblinken. */
+    stoerung(fehlversuche >= 2,
+             "Keine Verbindung zum LoxBerry – die Werte sind nicht aktuell.");
     return;
   }
   if(!d.ok){
     p.className = "punkt tot";
     t.textContent = "Der Dienst hat keine Verbindung zum Miniserver.";
+    stoerung(true, "Keine Verbindung zum Miniserver – die Werte sind nicht aktuell.");
     return;
   }
   if(d.alter > 60){
     p.className = "punkt alt";
     t.textContent = "Die Werte sind "+d.alter+" Sekunden alt.";
+    /* Alte Werte sind noch keine Stoerung - sie werden nur benannt. */
+    stoerung(false);
     return;
   }
   p.className = "punkt gut";
   t.textContent = "Verbunden"+(d.weg==="http"?" – ueber HTTP-Abfrage, nicht ueber WebSocket":"")+".";
+  stoerung(false);
 }
 
 /* ---------- Wandtablet-Kleinigkeiten ---------- */

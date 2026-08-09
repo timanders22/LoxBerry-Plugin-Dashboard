@@ -45,6 +45,7 @@ import hmac
 import json
 import logging
 import re
+import ssl
 import struct
 import time
 import urllib.parse
@@ -89,6 +90,12 @@ def uuid_lesen(roh: bytes) -> str:
     weicht von der ueblichen UUID-Schreibweise ab und ist genau so gewollt -
     die Strukturdatei benutzt dieselbe Form.
     """
+    # Laenge zuerst pruefen. struct.unpack_from wirft sonst struct.error,
+    # und der flaechse bis in die Leseschleife des WebSockets - ein einziges
+    # verstuemmeltes Paket wuerfe damit die ganze Verbindung ab. Ein
+    # unbrauchbarer Wert ist besser als ein abgebrochener Dienst.
+    if roh is None or len(roh) < 16:
+        return ""
     d1, d2, d3 = struct.unpack_from("<IHH", roh, 0)
     rest = roh[8:16]
     return "%08x-%04x-%04x-%s" % (d1, d2, d3, rest.hex())
@@ -196,6 +203,7 @@ class Miniserver:
         self._aes_iv = b""
         self._salt = ""
         self._pubkey = ""
+        self._fingerabdruck_gemeldet = False
         self._warten: dict[str, asyncio.Future] = {}
         self._kopf: tuple | None = None
         self.verbunden = False
@@ -210,6 +218,62 @@ class Miniserver:
         r = uuidmod.uuid4().hex
         return "%s-%s-%s-%s" % (r[0:8], r[8:12], r[12:16], r[16:32])
 
+    # ---------------- TLS ----------------
+
+    def _ssl_kontext(self) -> "ssl.SSLContext | None":
+        """SSL-Kontext fuer den Miniserver - oder None ohne TLS.
+
+        Ein Miniserver traegt ein SELBSTSIGNIERTES Zertifikat. Es gibt keine
+        Zertifizierungsstelle, die es beglaubigt, und es lautet auf keinen
+        Namen, den ein Zertifikat tragen koennte - man spricht ihn ueber seine
+        IP-Adresse im eigenen Netz an.
+
+        Bis 0.9.0 wurde gar kein Kontext uebergeben. Python prueft dann nach
+        den Regeln des offenen Internets, und die Verbindung brach mit
+        CERTIFICATE_VERIFY_FAILED ab, bevor ein einziges Byte floss. Mit
+        eingeschaltetem TLS lief das Plugin also ueberhaupt nicht.
+
+        WAS DIESE EINSTELLUNG BEDEUTET, und das gehoert ausgesprochen:
+        die Verbindung ist damit VERSCHLUESSELT, aber der Gegenueber ist
+        NICHT BEGLAUBIGT. Wer sich zwischen LoxBerry und Miniserver haengen
+        kann, koennte sich als Miniserver ausgeben. Im heimischen Netz, in
+        dem beide Geraete stehen, ist das die uebliche und vertretbare
+        Abwaegung - im Internet waere sie es nicht. Deshalb sollte der
+        Miniserver auch nicht am Internet haengen.
+
+        Damit die Abwaegung nachpruefbar bleibt, wird der Fingerabdruck des
+        Zertifikats einmal ins Protokoll geschrieben. Aendert er sich, ohne
+        dass jemand am Miniserver etwas getan hat, ist das ein Grund
+        nachzusehen.
+        """
+        if not self.tls:
+            return None
+        ctx = ssl.create_default_context()
+        # Nicht ssl._create_unverified_context(): das ist eine private
+        # Funktion, und wer sie liest, sieht ihr nicht an, was sie abschaltet.
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    def _fingerabdruck_melden(self) -> None:
+        """Den Fingerabdruck des Zertifikats einmal ins Protokoll schreiben."""
+        if not self.tls or self._fingerabdruck_gemeldet:
+            return
+        self._fingerabdruck_gemeldet = True
+        try:
+            roh = ssl.get_server_certificate((self.host, self.port),
+                                             timeout=5)
+            der = ssl.PEM_cert_to_DER_cert(roh)
+            abdruck = hashlib.sha256(der).hexdigest()
+            _LOG.info("TLS: Zertifikat des Miniservers, SHA-256 %s",
+                      ":".join(abdruck[i:i + 2] for i in range(0, len(abdruck), 2)).upper())
+            _LOG.info("TLS: das Zertifikat ist selbstsigniert und wird deshalb nicht "
+                      "beglaubigt - die Verbindung ist verschluesselt, der Gegenueber "
+                      "aber nicht geprueft. Aendert sich der Fingerabdruck oben ohne "
+                      "Ihr Zutun, bitte nachsehen.")
+        except Exception as f:  # noqa: BLE001
+            _LOG.debug("TLS-Fingerabdruck nicht ermittelbar: %s", f)
+
     @property
     def _http_basis(self) -> str:
         return "%s://%s:%d" % ("https" if self.tls else "http", self.host, self.port)
@@ -222,7 +286,8 @@ class Miniserver:
         """
         url = "%s/%s" % (self._http_basis, pfad.lstrip("/"))
         req = urllib.request.Request(url, headers={"User-Agent": "LoxBerry-Dashboard"})
-        with urllib.request.urlopen(req, timeout=zeit) as a:
+        with urllib.request.urlopen(req, timeout=zeit,
+                                    context=self._ssl_kontext()) as a:
             return a.read().decode("utf-8", "replace")
 
     # ---------------- Anmeldung ----------------
@@ -339,11 +404,12 @@ class Miniserver:
         self._pubkey = oeffentlicher_schluessel_aufbereiten(
             str(_wert_aus_antwort(self._http("jdev/sys/getPublicKey"))))
 
+        self._fingerabdruck_melden()
         url = "%s://%s:%d/ws/rfc6455" % ("wss" if self.tls else "ws", self.host, self.port)
         # 'remotecontrol' als Unterprotokoll [K, Seite 8, Punkt 3b].
         self.ws = await websockets.connect(
             url, subprotocols=["remotecontrol"], open_timeout=15,
-            ping_interval=None, max_size=None)
+            ping_interval=None, max_size=None, ssl=self._ssl_kontext())
 
         self._leser = asyncio.ensure_future(self._lesen())
         await self._schluesseltausch()

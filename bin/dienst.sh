@@ -7,7 +7,11 @@
 # gestartet, kommt dort ueberall Leerstring zurueck - das Skript werkelt dann
 # gegen /-Pfade und meldet trotzdem Erfolg.
 
-SELF=$(cd "$(dirname "$0")" && pwd)          # <home>/bin/plugins/<ordner>
+# readlink -f loest Symlinks auf, BEVOR das Verzeichnis bestimmt wird.
+# LoxBerry legt Daemons als Symlink unter system/daemons/plugins/ ab; von
+# dort aufgerufen waere PNAME buchstaeblich "plugins", und PID-Datei,
+# Sollmerker und Protokoll landeten neben statt in ihrem Ordner.
+SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)   # <home>/bin/plugins/<ordner>
 PNAME=$(basename "$SELF")
 LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
 PDATA="$LBHOMEDIR/data/plugins/$PNAME"
@@ -17,7 +21,28 @@ PID="$PDATA/dienst.pid"
 SOLL="$PDATA/soll_laufen"
 LOGDATEI="$PLOG/dashboard.log"
 SKRIPT="$SELF/dashboard_dienst.py"
+# Welcher Python? Die venv wird bevorzugt, der System-Python ist die
+# Rueckfallebene - postinstall.sh legt die Umgebung inzwischen MIT
+# --system-site-packages an und kommt notfalls auch ganz ohne sie aus.
 PY="$SELF/venv/bin/python3"
+if [ ! -x "$PY" ]; then
+    PY=$(command -v python3 2>/dev/null)
+fi
+
+# Als loxberry laufen, nicht als root.
+#
+# Der minuetliche Waechter kommt aus dem Cron. Laeuft der als root - und je
+# nach Ablage des Cronjobs tut er das -, dann gehoerten PID-Datei,
+# Sollmerker und Protokoll danach root. Die Oberflaeche laeuft als loxberry
+# und koennte den Dienst anschliessend weder anhalten noch neu starten: sie
+# darf die Dateien nicht mehr schreiben.
+#
+# Deshalb setzt sich das Skript selbst auf loxberry herunter, EINMAL, bevor
+# es irgendetwas anlegt. exec, damit kein zusaetzlicher Prozess stehen
+# bleibt.
+if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+    exec su loxberry -c "$(printf '%q ' "$0" "$@")"
+fi
 
 mkdir -p "$PDATA" "$PLOG" 2>/dev/null
 
