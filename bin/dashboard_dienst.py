@@ -45,6 +45,26 @@ from entwurf import entwurf_bauen, bausteine_sammeln          # noqa: E402
 from lox_client import Miniserver, LoxFehler, selbstpruefung   # noqa: E402
 
 
+def lb_wurzel_ermitteln():
+    """Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
+
+    Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
+    config/plugins UND webfrontend enthaelt. Trifft die uebliche
+    Installation genauso wie eine an einem anderen Ort.
+    """
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(8):
+        if os.path.isdir(os.path.join(d, "config", "plugins")) \
+                and os.path.isdir(os.path.join(d, "webfrontend")):
+            return d
+        eltern = os.path.dirname(d)
+        if eltern == d:
+            break
+        d = eltern
+    return ""
+
+
+
 # ---------------------------------------------------------------------------
 # Pfade - aus dem eigenen Ablageort, nicht ueber LoxBerry::System
 # ---------------------------------------------------------------------------
@@ -53,7 +73,7 @@ def _home() -> str:
     h = os.environ.get("LBHOMEDIR", "")
     if h and os.path.isdir(h):
         return h
-    for k in ("/opt/loxberry", "/home/loxberry/loxberry"):
+    for k in (lb_wurzel_ermitteln(), "/home/loxberry/loxberry"):
         if os.path.isdir(k):
             return k
     return str(HIER.parent.parent)
