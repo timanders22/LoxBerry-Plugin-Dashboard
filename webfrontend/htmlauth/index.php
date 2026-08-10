@@ -316,7 +316,7 @@ foreach ($db_seiten as $db_s) { $db_kachelzahl += count(isset($db_s['kacheln']) 
 
 $db_rahmen = class_exists('LBWeb', false) && method_exists('LBWeb', 'lbheader');
 if ($db_rahmen) {
-    LBWeb::lbheader(db_t('ALLG.TITEL'), 'https://www.loxone.com/enen/kb/api/', '');
+    LBWeb::lbheader(db_t('ALLG.TITEL'), 'https://www.loxone.com/enen/kb/api/', 'help.html');
 }
 ?>
 <style>

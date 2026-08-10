@@ -1,85 +1,41 @@
-<h2>Dashboard-Designer</h2>
+<h2><TMPL_VAR HILFE.K01></h2>
 
-<p><b>Ein eigenes Dashboard f&uuml;r Wandtablets, ohne Programmierarbeit.</b>
-Das Plugin liest die Struktur des Miniservers aus &mdash; R&auml;ume,
-Kategorien, jeden Baustein &mdash; und baut daraus Kachelseiten, die jeder
-Browser &ouml;ffnen kann. Kein Grafana, kein AppDaemon, kein Home Assistant.</p>
+<p><TMPL_VAR HILFE.K02></p>
 
-<h3>Warum ein Dienst dazwischen h&auml;ngt</h3>
-<p>Der Miniserver l&auml;sst <b>31 Clients gleichzeitig</b> Zustands&auml;nderungen
-empfangen. Jedes Tablet mit eigener Verbindung w&uuml;rde einen dieser
-Pl&auml;tze verbrauchen &mdash; und dazu die Anmeldung samt Kennwort im Browser
-brauchen. Deshalb h&auml;lt <i>ein</i> Dienst auf dem LoxBerry <i>eine</i>
-Verbindung und bedient damit beliebig viele Tablets.</p>
+<h3><TMPL_VAR HILFE.K03></h3>
+<p><TMPL_VAR HILFE.K04></p>
 
-<h3>So gehen Sie vor</h3>
+<h3><TMPL_VAR HILFE.K05></h3>
 <ol>
-<li><b>Einstellungen:</b> Miniserver ausw&auml;hlen (die Zugangsdaten stehen in
-LoxBerry schon), Dienst starten.</li>
-<li><b>Dashboards:</b> <i>Struktur jetzt vom Miniserver holen</i>, dann
-<i>Entwurf erzeugen</i>. Danach steht sofort etwas da &mdash; je Raum eine
-Seite, Favoriten zuerst.</li>
-<li><b>Designer:</b> Kacheln ziehen, umbenennen, Gr&ouml;&szlig;e w&auml;hlen,
-ausblenden. <b>Speichern nicht vergessen.</b></li>
-<li><b>Dashboards:</b> Die Adresse der Seite auf dem Tablet &ouml;ffnen und auf
-den Startbildschirm legen.</li>
-<li><b>Einbindung in Loxone:</b> Ein virtueller Eingang, der meldet, wenn das
-Dashboard stehen bleibt.</li>
+<li><TMPL_VAR HILFE.K06></li>
+<li><TMPL_VAR HILFE.K07></li>
+<li><TMPL_VAR HILFE.K08></li>
+<li><TMPL_VAR HILFE.K09></li>
+<li><TMPL_VAR HILFE.K10></li>
 </ol>
 
-<h3>Der Erstentwurf nimmt Ihnen nichts weg</h3>
-<p><i>Entwurf erzeugen</i> darf man jederzeit wieder dr&uuml;cken: bestehende
-Seiten und jede Handarbeit bleiben unangetastet, es kommen nur Bausteine hinzu,
-die noch nirgends stehen. Nur <i>Von vorn anfangen</i> verwirft alles &mdash;
-und fragt vorher nach.</p>
+<h3><TMPL_VAR HILFE.K11></h3>
+<p><TMPL_VAR HILFE.K12></p>
 
-<h3>Welche Bausteine bedient werden</h3>
-<p>Zehn Typen haben ein eigenes Bedienelement: Schalter, Taster, Dimmer,
-Lichtsteuerung V2, Jalousie, Tor, Raumregler V2, Treppenlicht, Auswahl und
-Alarmanlage. Dazu kommen Anzeigekacheln f&uuml;r Werte, Zust&auml;nde, Texte
-und Z&auml;hler.</p>
-<p>Jeder andere Bausteintyp bekommt eine schlichte Kachel, die seine
-Zust&auml;nde auflistet &mdash; <b>aber keinen Schaltknopf</b>. Welcher Befehl
-f&uuml;r einen unbekannten Typ richtig w&auml;re, wei&szlig; hier niemand, und
-ein geratener Befehl an eine Alarmanlage ist schlimmer als ein fehlender Knopf.</p>
+<h3><TMPL_VAR HILFE.K13></h3>
+<p><TMPL_VAR HILFE.K14></p>
+<p><TMPL_VAR HILFE.K15></p>
 
-<h3>Sicherheit</h3>
+<h3><TMPL_VAR HILFE.K16></h3>
 <ul>
-<li>Die Anzeigeseite liegt im unangemeldeten Bereich &mdash; damit ein
-Wandtablet sie dauerhaft offen halten kann &mdash; und ist durch ein langes
-Zufallstoken in der Adresse gesch&uuml;tzt.</li>
-<li>Je Seite l&auml;sst sich eine PIN setzen, etwa f&uuml;r eine Seite mit
-T&uuml;rschloss oder Alarm.</li>
-<li>Geschaltet werden kann nur, was auf einer Seite steht, und nur mit den
-Befehlen, die das Plugin f&uuml;r diesen Bausteintyp kennt. Beides wird
-zweimal gepr&uuml;ft: am Endpunkt und noch einmal im Dienst.</li>
-<li>Zugangsdaten stehen in einer eigenen Datei mit den Rechten 0600, nie in der
-angezeigten Konfiguration und nie in der Adresse.</li>
-<li>Wer noch vorsichtiger sein will, legt in Loxone Config einen eigenen
-Benutzer an, der nur die Visualisierung darf, und tr&auml;gt den unter
-<i>Abweichender Zugang</i> ein.</li>
+<li><TMPL_VAR HILFE.K17></li>
+<li><TMPL_VAR HILFE.K18></li>
+<li><TMPL_VAR HILFE.K19></li>
+<li><TMPL_VAR HILFE.K20></li>
+<li><TMPL_VAR HILFE.K21></li>
 </ul>
 
-<h3>Wenn nichts erscheint</h3>
-<p>Der Reiter <i>Test</i> geht die Kette der Reihe nach durch: L&auml;uft der
-Dienst? Antwortet der Miniserver? Ist eine Struktur da? Sind die Werte frisch?
-Jedes Kreuz nennt die Abhilfe mit.</p>
-<p>Steht dort <i>&uuml;ber HTTP-Abfrage</i>, kam der WebSocket nicht zustande.
-Das Dashboard funktioniert dann noch, aber langsamer und mit sp&uuml;rbarer
-Last auf dem Miniserver. Die Logdatei nennt den Grund &mdash; meist ein
-falsches Kennwort oder ein Benutzer ohne Recht f&uuml;r die Visualisierung.</p>
+<h3><TMPL_VAR HILFE.K22></h3>
+<p><TMPL_VAR HILFE.K23></p>
+<p><TMPL_VAR HILFE.K24></p>
 
-<h3>Was ungepr&uuml;ft ist</h3>
-<p>Dieses Plugin wurde ohne Miniserver gebaut. Gepr&uuml;ft wurde gegen eine
-Attrappe, die streng nach den Loxone-Dokumenten <i>Communicating with the
-Miniserver</i> und <i>Structure File</i> (beide Fassung 16.0 vom 03.06.2025)
-gebaut ist. Ob die Token-Anmeldung an Ihrer Firmware durchgeht und ob die
-Kachel-Befehle am Ger&auml;t die erwartete Wirkung haben, muss sich erst
-zeigen.</p>
+<h3><TMPL_VAR HILFE.K25></h3>
+<p><TMPL_VAR HILFE.K26></p>
 
-<h3>Grundlage</h3>
-<p>Alle Protokollangaben stammen aus den beiden genannten Loxone-Dokumenten.
-Die Abschnitte zu Schalter, Taster, Radio, Schieberegler, Wertwahl und
-Treppenlicht fehlten im Textauszug der Fassung 16.0 und wurden den Fassungen
-12.2 und 8.3 entnommen; die betroffenen Zust&auml;nde und Befehle haben sich
-zwischen diesen Fassungen nicht ge&auml;ndert.</p>
+<h3><TMPL_VAR HILFE.K27></h3>
+<p><TMPL_VAR HILFE.K28></p>
