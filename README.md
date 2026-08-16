@@ -4,10 +4,17 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.6 — ungeprüft am echten Miniserver.** Gebaut ohne Hardware;
+> **Fassung 0.9.7 — ungeprüft am echten Miniserver.** Gebaut ohne Hardware;
 > gemessen gegen eine Attrappe, die streng nach den Loxone-Dokumenten gebaut
-> ist. Deshalb 0.9.6 und nicht 1.0.0. Was ungeprüft bleibt, steht unten unter
+> ist. Deshalb 0.9.7 und nicht 1.0.0. Was ungeprüft bleibt, steht unten unter
 > *Was ungeprüft bleibt* — vollständig und ohne Beschönigung.
+>
+> **Wer 0.9.6 installiert hat, sollte aktualisieren.** Die als 0.9.6
+> veröffentlichte Fassung war ein Zwischenstand: sie enthält die Korrekturen
+> am Verbindungsabbau, an der Rückfrage vor dem Löschen, am Protokoll und an
+> der Paketbeschaffung — aber **nicht** die Farbwahl, die gesicherten
+> Bausteine, die Wetter- und Zeitschaltuhr-Kachel und den Abgleich auf die
+> Dokumentfassung 17.0. Alles vier ist in 0.9.7.
 
 ## Warum ein Dienst dazwischen hängt
 
@@ -57,7 +64,9 @@ Alles aus der offiziellen Dokumentation, nichts geraten:
 | Zustände einschalten | `jdev/sps/enablebinstatusupdate` | K, S. 18 |
 | Schalten | `jdev/sps/io/{uuid}/{befehl}` | K, S. 13 |
 
-K = *Communicating with the Miniserver*, Fassung 16.0 vom 03.06.2025.
+K = *Communicating with the Miniserver*, Fassung 17.0 vom 31.03.2026.
+S = *Structure File*, Fassung 17.0 vom 31.03.2026.
+Beide frei abrufbar unter loxone.com/enen/kb/api/.
 
 **Zustände kommen als binäre Ereignistabellen**, nicht als Text `uuid:wert` —
 das steht in vielen Gemeinschaftsbeschreibungen falsch. Vor jeder Nachricht
@@ -82,10 +91,26 @@ Bausteine mit eigenem Bedienelement: `Switch`, `Pushbutton`, `Dimmer`,
 `LightControllerV2`, `LightController` (V1, eigene Szenenkachel), `Jalousie`
 (mit Schieberegler), `Gate`, `IRoomControllerV2`, `IRoomController`,
 `TimedSwitch`, `Radio`, `Slider`, `ValueSelector`, `Alarm`, `SmokeAlarm`
-(eigene Kachel) und `ColorPickerV2` (Farbwahl über HSV).
+(eigene Kachel), `ColorPickerV2` und `ColorPicker` (V1).
+
+Die Farbkachel bedient Farbton, Sättigung, Helligkeit und den Weißton. Welchen
+Weißbefehl sie sendet, entscheidet die Befehlsliste des Bausteins:
+`temp(Helligkeit,Kelvin)` beim ColorPickerV2, `lumitech(Helligkeit,Kelvin)`
+beim älteren ColorPicker — beides belegt in *Structure File*, Abschnitte
+*ColorPickerV2* und *ColorPicker*. Die Grenzen des Weißtons kommen aus den
+Details `TWMin`/`TWMax` des Bausteins, nicht aus einer festen Annahme; steht
+dort `pickerType: TunableWhite`, entfallen Farbton und Sättigung. Der
+ColorPickerV2 kennt laut Dokument **kein** `off` — die Kachel schaltet ihn
+über die Helligkeit 0 aus.
 
 Anzeigekacheln für `InfoOnlyAnalog`, `InfoOnlyDigital`, `InfoOnlyText`,
-`TextState`, `Meter`, `Hourcounter`, `PresenceDetector`, `Webpage`.
+`TextState`, `Meter`, `Hourcounter`, `PresenceDetector`, `Webpage`, dazu
+`WeatherServer` (aktuelle Lage und 24 Stunden Vorhersage) und `Daytimer`
+(Tagesbalken mit den geschalteten Zeiträumen).
+
+Der Wetterdienst steht in der Strukturdatei **nicht unter `controls`**,
+sondern als eigener Abschnitt `weatherServer`; das Plugin baut daraus einen
+Eintrag, sonst wäre er unauffindbar.
 
 Dazu die **Szene**: mehrere Befehle auf einen Druck, im Designer aus
 Baustein und Befehl zusammengestellt.
@@ -95,13 +120,31 @@ keinen Schaltknopf**. Welcher Befehl für einen unbekannten Typ richtig wäre,
 weiß hier niemand, und ein geratener Befehl an eine Alarmanlage ist schlimmer
 als ein fehlender Knopf.
 
-**Gesicherte Bausteine** (`isSecured` in Loxone Config) tragen ein Schloss und
-lassen sich hier **nicht** schalten. Loxone verlangt dafür das
-Visualisierungs-Passwort; wie dessen Hash gebildet wird, ließ sich hier gegen
-kein Dokument und keine Anlage messen. Ein geratener Sicherheitsweg ist
-schlimmer als gar keiner — deshalb weist der Endpunkt solche Befehle ab und
-sagt, warum. Dasselbe gilt für Bausteine, die in Loxone auf „nur lesen"
-stehen; sie tragen ein Auge und haben keine Knöpfe.
+**Gesicherte Bausteine** (`isSecured` in Loxone Config) tragen ein Schloss.
+Sie lassen sich schalten, wenn **beides** eingerichtet ist: der Haken
+*Gesicherte Bausteine schalten dürfen* und ein hinterlegtes
+Visualisierungs-Passwort. Beides fehlt ab Werk; fehlt eines, bleibt die Kachel
+gesperrt und sagt, was fehlt.
+
+Der Weg dahin steht in *Communicating with the Miniserver*, Abschnitt
+*Secured Commands*: `jdev/sys/getvisusalt/{user}` liefert `key`, `salt` und
+`hashAlg`, daraus wird `hashAlg("{visuPw}:{salt}")` in Großbuchstaben gebildet,
+darüber `HMAC(…, key)`, und gesendet wird
+`jdev/sps/ios/{hash}/{uuid}/{command}`.
+
+Das Passwort liegt in `zugang.json` mit Rechten 0600 und **verlässt den
+LoxBerry nicht** — der Dienst bildet den Hash, gesendet wird nur der. Der
+Reiter *Test* prüft es über `jdev/sps/checkuservisupwd`, also **ohne etwas
+auszulösen**; diesen Dienst gibt es laut Loxone erst ab Firmware 16.0, und
+auf älterer sagt die Meldung das, statt „Passwort falsch" zu behaupten.
+
+**Abwägung, die dazugehört:** wer das Passwort hinterlegt, nimmt genau die
+Rückfrage weg, für die er es in Loxone Config gesetzt hat. Wer den Schutz am
+Tablet behalten will, setzt eine **PIN auf die Seite**, auf der die Kachel
+liegt.
+
+Für Bausteine, die in Loxone auf „nur lesen" stehen, gilt das nicht: sie
+tragen ein Auge und haben keine Knöpfe.
 
 ## Die Anzeigeseite
 
@@ -151,21 +194,40 @@ Namentlich ungeprüft und deshalb hier genannt:
 - **`jdev/sps/io/{uuid}/state`** als HTTP-Notnagel steht in keinem der beiden
   Loxone-Dokumente. Der Knopf *HTTP-Notnagel messen* probiert es an einem
   Baustein Ihrer Anlage aus.
-- **Die Reihenfolge in `temp(Helligkeit,Kelvin)`** der Farbkachel ist die
-  dokumentierte, aber an keiner Anlage nachgemessen. Der HSV-Weg
-  (`hsv(Farbton,Sättigung,Helligkeit)`) ist der belegte.
-- **Wetter- und Tageszeittabellen** (Kennung 4 und 7) werden empfangen und
-  bewusst **nicht** ausgewertet: das Format ließ sich hier gegen keine Anlage
-  messen, und ein halb verstandener Datensatz ist schlechter als keiner. Der
-  Reiter *Test* sagt, wie viele ankamen — schweigen wäre ein blinder Fleck.
-- **Das Visualisierungs-Passwort** für gesicherte Bausteine, siehe oben.
+- **Die Wetter- und Zeitschaltuhr-Kachel** ist aus den Binärstrukturen des
+  Dokuments gebaut (Kennung 7 und 4) und gegen eine Attrappe gemessen, die
+  ihre Pakete ebenfalls aus dem Dokument packt — aber nie gegen einen echten
+  Wetterdienst. Insbesondere die Zuordnung der Zahl in `weatherType` zum
+  Klartext kommt aus `weatherTypeTexts` Ihrer Anlage; fehlt dort ein Eintrag,
+  steht die Zahl da statt einer erfundenen Beschreibung.
+- **Der Weg für gesicherte Bausteine** ist aus dem Dokument gebaut und gegen
+  eine Attrappe gemessen, die den erwarteten Hash ebenfalls aus dem Dokument
+  rechnet — nicht aus diesem Quelltext. Am Gerät geprüft ist er nicht.
 
 ## Grundlage
 
-*Communicating with the Miniserver* 16.0 und *Structure File* 16.0
-(beide 03.06.2025, loxone.com). Die Abschnitte zu `Switch`, `Pushbutton`,
-`Radio`, `Slider`, `ValueSelector` und `TimedSwitch` fehlten im Textauszug der
-Fassung 16.0 und stammen aus den Fassungen 12.2 und 8.3.
+*Communicating with the Miniserver* **17.0** und *Structure File* **17.0**
+(beide 31.03.2026, `1700_Communicating-with-the-Miniserver.pdf` und
+`1700_Structure-File.pdf`, frei abrufbar unter loxone.com/enen/kb/api/).
+
+Bis 0.9.5 war gegen Fassung 16.0 gebaut. Der Abgleich auf 17.0 hat drei
+Stellen geändert:
+
+- **Alarm** — `nextLevelDelay` und `sensors` sind seit Config 13.0
+  abgekündigt; an ihre Stelle treten `nextLevelAt` und `armedAt`, beides
+  Unix-Zeitstempel. Die Kachel zeigt daraus die laufende Verzögerung.
+- **Radio** — die Namen der Ausgänge stehen in den Details unter `outputs`,
+  die Beschriftung für „nichts gewählt" unter `allOff`. Vorher standen dort
+  fest die Knöpfe 1, 2 und 3: bei einem Baustein mit acht Ausgängen waren
+  fünf nicht erreichbar. `next` und `prev` gibt es seit 13.3.1.10.
+- **Meter** — `totalDay` und `totalWeek` gibt es seit 13.01.
+
+Ausdrücklich **unverändert richtig**: der Raumregler V2 (alle sieben
+Zustände und beide Befehle stehen so im Dokument), die Anmeldung, die
+Ereignistabellen und die Kopfstruktur. Die Neuerungen der Fassung 17.0
+selbst (Remote Connect, neue Adresse zur Auflösung der externen Adresse,
+Fancoils am Raumregler, Präsenz-Befehle) berühren dieses Plugin nicht: es
+spricht den Miniserver im eigenen Netz an und schaltet keine Fancoils.
 
 Die Änderungen je Fassung stehen in der Commit-Nachricht und auf der
 GitHub-Release-Seite zum jeweiligen Tag — nicht hier. Eine dritte Kopie

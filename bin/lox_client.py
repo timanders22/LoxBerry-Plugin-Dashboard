@@ -5,9 +5,13 @@
 Diese Datei baut KEIN Protokoll nach, sondern bedient das dokumentierte.
 Alle Angaben stammen aus zwei Loxone-Dokumenten:
 
-  [K] "Communicating with the Miniserver", Fassung 16.0 vom 03.06.2025
-  [S] "Structure File", Fassung 16.0 vom 03.06.2025 (Abschnitte, die im Auszug
-      fehlten, aus Fassung 12.2 und 8.3)
+  [K] "Communicating with the Miniserver", Fassung 17.0 vom 31.03.2026
+  [S] "Structure File", Fassung 17.0 vom 31.03.2026
+
+Bis 0.9.5 war gegen Fassung 16.0 gebaut. Der Abgleich auf 17.0 hat drei
+Stellen geaendert (Alarm: nextLevelDelay und sensors sind seit Config 13.0
+abgekuendigt; Radio: next/prev und die Ausgangsnamen aus den Details;
+Meter: totalDay/totalWeek). Der Raumregler war unveraendert richtig.
 
 Die Stellen sind im Quelltext mit [K] beziehungsweise [S] belegt. Wo etwas
 nicht belegt werden konnte, steht das ausdruecklich dabei.
@@ -544,8 +548,78 @@ class Miniserver:
         """Ohne diesen Befehl kommt kein einziger Wert [K, Seite 18]."""
         await self._befehl("jdev/sps/enablebinstatusupdate", zeit=30)
 
-    async def befehl_senden(self, uuid: str, befehl: str) -> Any:
+    # ---------------- Gesicherte Bausteine ----------------
+
+    async def visu_hash(self, visu_pw: str) -> str:
+        """Der Hash fuer einen gesicherten Befehl [K, Seite 14-15].
+
+        Wortlaut des Dokuments, Abschnitt "Secured Commands":
+
+          2. {key}, {salt} und {hashAlg} von "jdev/sys/getvisusalt/{user}"
+          3. {visuPwHash} = hashAlg("{visuPw}:{salt}")
+          4. {hash} = HMAC-hashAlg( GROSSBUCHSTABEN({visuPwHash}), {key} )
+          5. "jdev/sps/ios/{hash}/{uuid}/{command}"
+
+        Der Schluessel gilt nur kurz, deshalb wird der Hash unmittelbar vor
+        jedem Befehl neu gebildet und nirgends aufbewahrt. Das
+        Visualisierungs-Passwort selbst verlaesst den LoxBerry nie - es geht
+        in den Hash ein und sonst nirgendwohin.
+        """
+        if not visu_pw:
+            raise LoxFehler("Es ist kein Visualisierungs-Passwort hinterlegt.")
+        roh = await self._befehl("jdev/sys/getvisusalt/%s"
+                                 % urllib.parse.quote(self.benutzer))
+        if not isinstance(roh, dict):
+            raise LoxFehler("Die Antwort auf getvisusalt hatte nicht die erwartete Form.")
+        key = str(roh.get("key", ""))
+        salt = str(roh.get("salt", ""))
+        alg = str(roh.get("hashAlg", "SHA1"))
+        if not key or not salt:
+            raise LoxFehler("Der Miniserver hat auf getvisusalt keinen Schluessel "
+                            "geliefert. Meist ist fuer diesen Benutzer gar kein "
+                            "Visualisierungs-Passwort gesetzt.")
+        # passwort_hash() liefert bereits Grossbuchstaben - genau das verlangt
+        # Punkt 4 ("using the uppercase {visuPwHash}").
+        pwhash = passwort_hash(visu_pw, salt, alg)
+        return hmac_hash(pwhash, key, alg)
+
+    async def visu_pruefen(self, visu_pw: str) -> bool:
+        """Das Visualisierungs-Passwort pruefen, OHNE etwas auszuloesen.
+
+        [K, Seite 15]: 'To check the entered visualization password without
+        triggering a function the webservice "jdev/sps/checkuservisupwd/{hash}"
+        can be used.'
+
+        Genau das ist der Grund, warum es hier einen Pruefknopf gibt und kein
+        blindes Ausprobieren an einem echten Baustein: ein falsches Passwort
+        soll nichts schalten und nichts oeffnen.
+        """
+        h = await self.visu_hash(visu_pw)
+        try:
+            await self._befehl("jdev/sps/checkuservisupwd/%s" % h)
+            return True
+        except LoxFehler as f:
+            # Code 500 heisst laut Dokument "password was incorrect".
+            if "500" in str(f) or "401" in str(f):
+                return False
+            # Den Dienst gibt es laut [K, Revision History] erst ab Fassung
+            # 16.0 ("Webservice to check user visualization password"). Auf
+            # aelterer Firmware kommt hier etwas anderes zurueck - und das
+            # heisst NICHT, dass das Passwort falsch ist.
+            if "400" in str(f) or "404" in str(f):
+                raise LoxFehler(
+                    "Dieser Miniserver kennt die Pruefung des "
+                    "Visualisierungs-Passworts nicht. Sie gibt es laut Loxone "
+                    "erst ab Fassung 16.0. Ob das Passwort stimmt, zeigt sich "
+                    "dann erst beim Schalten eines gesicherten Bausteins.") from f
+            raise
+
+    async def befehl_senden(self, uuid: str, befehl: str, visu_pw: str = "") -> Any:
         """jdev/sps/io/{uuid}/{befehl} [K, Seite 13].
+
+        Bei einem gesicherten Baustein statt dessen
+        jdev/sps/ios/{hash}/{uuid}/{befehl} [K, Seite 15] - dieselbe Wirkung,
+        mit dem Visualisierungs-Passwort davor.
 
         Der Aufrufer hat bereits gegen die Positivliste geprueft. Hier wird
         trotzdem noch einmal auf die Form geachtet - eine zweite Pruefung an
@@ -555,6 +629,17 @@ class Miniserver:
             raise LoxFehler("Das ist keine gueltige UUID.")
         if not re.match(r"^[A-Za-z0-9_./+%:-]{1,120}$", befehl):
             raise LoxFehler("Das ist kein gueltiger Befehl.")
+        if visu_pw:
+            h = await self.visu_hash(visu_pw)
+            try:
+                return await self._befehl("jdev/sps/ios/%s/%s/%s" % (h, uuid, befehl))
+            except LoxFehler as f:
+                if "500" in str(f):
+                    raise LoxFehler(
+                        "Der Miniserver hat den gesicherten Befehl mit Code 500 "
+                        "abgewiesen. Laut Dokument heisst das: das "
+                        "Visualisierungs-Passwort stimmt nicht.") from f
+                raise
         return await self._befehl("jdev/sps/io/%s/%s" % (uuid, befehl))
 
     async def keepalive(self) -> None:
@@ -626,15 +711,10 @@ class Miniserver:
                     self._werte_lesen(nachricht)
                 elif kennung == KOPF_TEXTE and isinstance(nachricht, bytes):
                     self._texte_lesen(nachricht)
-                elif kennung in (KOPF_TAGESZEIT, KOPF_WETTER):
-                    # Tageszeit- und Wettertabellen werden bewusst nicht
-                    # ausgewertet: ein halb verstandener Datensatz ist
-                    # schlechter als keiner, und es gibt hier keinen echten
-                    # Miniserver, gegen den sich das Format nachmessen liesse.
-                    # Gezaehlt werden sie trotzdem - dann sagt der Reiter
-                    # Test, dass sie ankommen, statt zu schweigen.
-                    self.uebergangen["wetter" if kennung == KOPF_WETTER
-                                     else "tageszeit"] += 1
+                elif kennung == KOPF_WETTER and isinstance(nachricht, bytes):
+                    self._wetter_lesen(nachricht)
+                elif kennung == KOPF_TAGESZEIT and isinstance(nachricht, bytes):
+                    self._tageszeit_lesen(nachricht)
                 elif kennung == KOPF_BINDATEI:
                     # Eine angeforderte Datei (Symbol, Bild). Das Plugin
                     # fordert nichts dergleichen an; wuerde sie an
@@ -737,6 +817,85 @@ class Miniserver:
             self._merken(uuid, roh[start:ende].decode("utf-8", "replace"))
             i = start + laenge + ((-laenge) % 4)
 
+    # Wie viele Vorhersageeintraege aufbewahrt werden.
+    #
+    # Der Miniserver liefert die Vorhersage fuer 96 Stunden [S, weatherServer].
+    # Alle 96 Eintraege mit je elf Feldern landeten sonst im Abbild, das die
+    # Anzeigeseite bei jedem Takt holt. Vier Tage Vorhersage braucht keine
+    # Kachel; zwei Tage sind reichlich.
+    WETTER_MAX = 48
+
+    def _wetter_lesen(self, roh: bytes) -> None:
+        """Wetter-Ereignistabelle [K, Seite 20-21].
+
+        Kopf   : 16 Byte UUID, 4 Byte lastUpdate (unsigned), 4 Byte nrEntries
+        Eintrag: 5 x 4 Byte Ganzzahl, dann 6 x 8 Byte double  = 68 Byte
+
+        Reihenfolge und Typen stehen im Dokument als PACKED struct - deshalb
+        ohne Auffuellung. lastUpdate zaehlt Sekunden seit 2009 (UTC), wie
+        ueberall bei Loxone.
+
+        Mehrere Tabellen koennen hintereinander in einer Nachricht stehen -
+        genauso wie bei den Wert- und Texttabellen. Deshalb die Schleife.
+        """
+        i, n = 0, len(roh)
+        while i + 24 <= n:
+            uuid = uuid_lesen(roh[i:i + 16])
+            letzte, anzahl = struct.unpack_from("<Ii", roh, i + 16)
+            i += 24
+            if anzahl < 0 or i + anzahl * 68 > n:
+                # Unbrauchbare Angabe: abbrechen statt zurechtbiegen.
+                _LOG.info("Wettertabelle mit unplausibler Eintragszahl (%d) verworfen.",
+                          anzahl)
+                return
+            eintraege = []
+            for k in range(anzahl):
+                if k < self.WETTER_MAX:
+                    (zeit, art, windrichtung, strahlung, feuchte) = \
+                        struct.unpack_from("<iiiii", roh, i)
+                    (temp, gefuehlt, taupunkt, niederschlag, wind, druck) = \
+                        struct.unpack_from("<dddddd", roh, i + 20)
+                    eintraege.append({
+                        "zeit": zeit, "art": art, "windrichtung": windrichtung,
+                        "strahlung": strahlung, "feuchte": feuchte,
+                        "temperatur": round(temp, 2), "gefuehlt": round(gefuehlt, 2),
+                        "taupunkt": round(taupunkt, 2),
+                        "niederschlag": round(niederschlag, 2),
+                        "wind": round(wind, 2), "druck": round(druck, 1),
+                    })
+                i += 68
+            self._merken(uuid, {"stand": letzte, "anzahl": anzahl,
+                                "eintraege": eintraege})
+
+    def _tageszeit_lesen(self, roh: bytes) -> None:
+        """Tageszeit-Ereignistabelle [K, Seite 20].
+
+        Kopf   : 16 Byte UUID, 8 Byte dDefValue (double), 4 Byte nrEntries
+        Eintrag: nMode, nFrom, nTo, bNeedActivate (je 4 Byte), dValue (8 Byte)
+
+        nFrom und nTo sind Minuten seit Mitternacht. Bei einem digitalen
+        Zeitschalter bedeutet ein vorhandener Eintrag "ein", ein fehlender
+        "aus"; dValue ist dann ohne Bedeutung.
+        """
+        i, n = 0, len(roh)
+        while i + 28 <= n:
+            uuid = uuid_lesen(roh[i:i + 16])
+            (vorgabe,) = struct.unpack_from("<d", roh, i + 16)
+            (anzahl,) = struct.unpack_from("<i", roh, i + 24)
+            i += 28
+            if anzahl < 0 or i + anzahl * 24 > n:
+                _LOG.info("Tageszeittabelle mit unplausibler Eintragszahl (%d) verworfen.",
+                          anzahl)
+                return
+            eintraege = []
+            for _ in range(anzahl):
+                (modus, von, bis, aktivieren) = struct.unpack_from("<iiii", roh, i)
+                (wert,) = struct.unpack_from("<d", roh, i + 16)
+                eintraege.append({"modus": modus, "von": von, "bis": bis,
+                                  "aktivieren": aktivieren, "wert": round(wert, 3)})
+                i += 24
+            self._merken(uuid, {"vorgabe": round(vorgabe, 3), "eintraege": eintraege})
+
     # ---------------- Rueckfall auf HTTP ----------------
 
     def http_marke(self) -> str:
@@ -827,6 +986,45 @@ def selbstpruefung() -> list[tuple[bool, str]]:
     e.append((m.zustaende.get("0af17bf3-0125-029b-ffff112233445566") == "Kueche",
               "Text-Tabelle mit Fuellbytes gelesen"))
 
+    # Wetter-Ereignistabelle [K, Seite 20-21]. Das Pruefstueck wird aus der
+    # FELDREIHENFOLGE DES DOKUMENTS gepackt, nicht mit dem Leser gebaut -
+    # sonst bestaetigte sich der Quelltext selbst.
+    m5 = Miniserver.__new__(Miniserver)
+    m5.zustaende = {}
+    m5.auf_aenderung = None
+    kopf = roh + struct.pack("<Ii", 555000000, 2)
+    e1 = struct.pack("<iiiii", 1700000000, 7, 180, 300, 65) + \
+         struct.pack("<dddddd", 21.5, 20.1, 12.3, 0.4, 3.2, 1013.5)
+    e2 = struct.pack("<iiiii", 1700003600, 3, 190, 120, 70) + \
+         struct.pack("<dddddd", 19.0, 18.0, 12.0, 1.1, 4.0, 1012.0)
+    Miniserver._wetter_lesen(m5, kopf + e1 + e2)
+    w = m5.zustaende.get("0af17bf3-0125-029b-ffff112233445566") or {}
+    e.append((len(e1) == 68 and w.get("anzahl") == 2
+              and len(w.get("eintraege") or []) == 2
+              and w["eintraege"][0]["temperatur"] == 21.5
+              and w["eintraege"][0]["feuchte"] == 65
+              and w["eintraege"][1]["druck"] == 1012.0,
+              "Wetter-Tabelle: 68 Byte je Eintrag, 2 Eintraege gelesen"))
+
+    # Tageszeit-Ereignistabelle [K, Seite 20], ebenso gepackt.
+    m5.zustaende = {}
+    kopf = roh + struct.pack("<d", 8.0) + struct.pack("<i", 2)
+    t1 = struct.pack("<iiii", 0, 360, 480, 0) + struct.pack("<d", 21.0)
+    t2 = struct.pack("<iiii", 1, 1080, 1320, 1) + struct.pack("<d", 19.5)
+    Miniserver._tageszeit_lesen(m5, kopf + t1 + t2)
+    t = m5.zustaende.get("0af17bf3-0125-029b-ffff112233445566") or {}
+    e.append((len(t1) == 24 and t.get("vorgabe") == 8.0
+              and len(t.get("eintraege") or []) == 2
+              and t["eintraege"][0]["von"] == 360 and t["eintraege"][0]["bis"] == 480
+              and t["eintraege"][1]["modus"] == 1,
+              "Tageszeit-Tabelle: 24 Byte je Eintrag, Minuten seit Mitternacht"))
+
+    # Eine unplausible Eintragszahl darf nicht ins Leere greifen.
+    m5.zustaende = {}
+    Miniserver._wetter_lesen(m5, roh + struct.pack("<Ii", 1, 9999))
+    e.append((m5.zustaende == {},
+              "Wetter-Tabelle mit unplausibler Eintragszahl wird verworfen"))
+
     # Kennung: die von Loxone genannte Form [K, Seite 30].
     k = Miniserver._kennung_bauen(None)  # type: ignore[arg-type]
     e.append((re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{16}$", k) is not None,
@@ -853,10 +1051,17 @@ def selbstpruefung() -> list[tuple[bool, str]]:
     m2.auf_aenderung = None
     m2.verbunden = True
     m2.letzter_fehler = ""
+    # OHNE dieses Feld lief die Pruefung in einen AttributeError, der vom
+    # 'except Exception' in _lesen() gefangen wurde - und der setzt
+    # 'verbunden' ebenfalls auf False. Die Pruefung war damit gruen, ohne den
+    # Weg zu messen, den sie messen sollte. Aufgefallen an der Warnzeile im
+    # Protokoll; eine Pruefung, die aus dem falschen Grund gruen ist, ist
+    # schlimmer als keine.
+    m2._selbst_geschlossen = False
     m2.uebergangen = {"tageszeit": 0, "wetter": 0, "datei": 0}
     asyncio.run(Miniserver._lesen(m2))
-    e.append((m2.verbunden is False,
-              "Sauberer Verbindungsschluss setzt 'verbunden' auf False"))
+    e.append((m2.verbunden is False and m2.letzter_fehler != "",
+              "Sauberer Verbindungsschluss: 'verbunden' False, Grund vermerkt"))
 
     # 2. Eine verspaetete Antwort darf nicht beim naechsten Befehl landen.
     async def _versatz():

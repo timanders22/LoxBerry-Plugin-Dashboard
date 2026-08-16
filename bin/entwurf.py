@@ -108,6 +108,39 @@ def bausteine_sammeln(struktur: dict, tabelle: dict) -> list[dict]:
                           .get("format") or ""),
             "details": c.get("details") if isinstance(c.get("details"), dict) else {},
         })
+
+    # Der Wetterdienst steht NICHT unter 'controls'.
+    #
+    # [S, Abschnitt weatherServer]: "If a Cloud Weather is configured, this
+    # section is added to the Structure-File" - ein eigener Abschnitt neben
+    # rooms und cats, mit genau zwei Zustaenden, 'actual' und 'forecast'.
+    # Wer nur ueber 'controls' laeuft, findet ihn nie. Damit die Kachel ihn
+    # wie jeden anderen Baustein behandeln kann, wird hier ein Eintrag
+    # daraus gebaut.
+    ws = struktur.get("weatherServer")
+    if isinstance(ws, dict) and isinstance(ws.get("states"), dict):
+        zust = {k: str(v) for k, v in ws["states"].items() if v}
+        aktuell = zust.get("actual") or (list(zust.values())[0] if zust else "")
+        if aktuell:
+            art = kachel_art("WeatherServer", tabelle)
+            ergebnis.append({
+                "uuid": aktuell,
+                "name": str(ws.get("name") or "Wetter"),
+                "loxtyp": "WeatherServer",
+                "kachel": art.get("kachel") or "generisch",
+                "bekannt": art.get("bekannt", 0),
+                "haupt": art.get("haupt") or "actual",
+                "befehle": list(art.get("befehle") or []),
+                "zustaende": zust,
+                "raum": "", "raumname": "",
+                "kategorie": "", "katname": "",
+                "bewertung": 0, "favorit": 0, "gesichert": 0,
+                # Der Wetterdienst laesst sich nicht schalten - das ist keine
+                # Einschraenkung dieses Plugins, sondern seine Natur.
+                "nurlesen": 1,
+                "format": "",
+                "details": {"format": ws.get("format") or {}},
+            })
     return ergebnis
 
 

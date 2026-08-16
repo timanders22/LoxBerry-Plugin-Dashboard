@@ -344,6 +344,16 @@ if ($db_aktion === 'szene') {
             db_json_raus(array('ok' => 0, 'grund' => 'BEFEHL_NICHT_VORGESEHEN',
                                'meldung' => $db_grund), 400);
         }
+        // Ein gesicherter Baustein bleibt auch in einer Szene gesichert.
+        $db_sb = db_baustein($db_sch['uuid']);
+        if ($db_sb !== null && !empty($db_sb['gesichert'])
+                && (empty($db_cfg['gesichert_schalten']) || !db_visu_da())) {
+            db_json_raus(array('ok' => 0, 'grund' => 'GESICHERT',
+                               'meldung' => 'Ein Schritt dieser Szene fuehrt auf einen '
+                                          . 'gesicherten Baustein. Dafuer muessen der Haken '
+                                          . 'und das Visualisierungs-Passwort im Reiter '
+                                          . 'Einstellungen gesetzt sein.'), 403);
+        }
     }
     /* Erst JETZT die Frage, ob der Dienst laeuft.
      *
@@ -419,23 +429,31 @@ if (!$db_ok) {
 
 /* Gesicherte Bausteine.
  *
- * Loxone verlangt fuer einen Baustein mit gesetztem isSecured die
- * Bestaetigung mit dem Visualisierungs-Passwort. Dieses Plugin baut das
- * NICHT nach: die genaue Bildung des Hashes laesst sich hier gegen kein
- * Dokument und keine Anlage messen, und ein geratener Sicherheitsweg ist
- * schlimmer als gar keiner.
+ * Loxone verlangt fuer einen Baustein mit gesetztem isSecured das
+ * Visualisierungs-Passwort ("Secured Commands", [K, Seite 14-15]). Der Dienst
+ * kann das seit 0.9.7 - aber nur, wenn beides zutrifft: der Haken im Reiter
+ * Einstellungen ist gesetzt UND ein Visualisierungs-Passwort ist hinterlegt.
+ * Beides fehlt ab Werk.
  *
- * Deshalb wird abgewiesen und gesagt, warum - statt zu senden und den
- * Anwender in eine nichtssagende Antwort des Miniservers laufen zu lassen.
- * Die Kachel kennzeichnet solche Bausteine ausserdem als gesichert.
+ * Fail closed: fehlt eines von beiden, wird abgewiesen und gesagt, was fehlt -
+ * statt zu senden und den Anwender in eine nichtssagende Antwort des
+ * Miniservers laufen zu lassen. Die Kachel kennzeichnet solche Bausteine
+ * ausserdem mit einem Schloss.
  */
 $db_b = db_baustein($db_uuid);
 if ($db_b !== null && !empty($db_b['gesichert'])) {
-    db_json_raus(array('ok' => 0, 'grund' => 'GESICHERT',
-                       'meldung' => 'Dieser Baustein ist in Loxone Config als gesichert '
-                                  . 'gekennzeichnet und verlangt das '
-                                  . 'Visualisierungs-Passwort. Das kann dieses Plugin '
-                                  . 'nicht - bitte in der Loxone-App schalten.'), 403);
+    if (empty($db_cfg['gesichert_schalten'])) {
+        db_json_raus(array('ok' => 0, 'grund' => 'GESICHERT',
+                           'meldung' => 'Dieser Baustein ist in Loxone Config gesichert. '
+                                      . 'Das Schalten gesicherter Bausteine ist im Reiter '
+                                      . 'Einstellungen abgeschaltet.'), 403);
+    }
+    if (!db_visu_da()) {
+        db_json_raus(array('ok' => 0, 'grund' => 'GESICHERT_OHNE_PASSWORT',
+                           'meldung' => 'Dieser Baustein ist gesichert, aber es ist kein '
+                                      . 'Visualisierungs-Passwort hinterlegt. Reiter '
+                                      . 'Einstellungen, Abschnitt Miniserver.'), 403);
+    }
 }
 
 /* Erst JETZT die Frage, ob der Dienst laeuft.

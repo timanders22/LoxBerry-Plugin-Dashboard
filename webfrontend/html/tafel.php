@@ -499,12 +499,36 @@ BAUER.treppenlicht = function(k, w){
     '<button data-b="on">Dauer</button><button data-b="off">Aus</button></div>'};
 };
 
+/* Auswahl (Radio buttons). Die Namen der Ausgaenge stehen in den Details des
+   Bausteins unter 'outputs', die Beschriftung fuer "nichts gewaehlt" unter
+   'allOff' - [S] Radio, Details. Bis 0.9.5 standen hier fest die Knoepfe
+   1, 2 und 3: bei einem Baustein mit acht Ausgaengen waren fuenf davon nicht
+   erreichbar, und bei einem mit den IDs 1,2,5,8 zeigten zwei ins Leere.
+   'next' und 'prev' gibt es seit 13.3.1.10. */
 BAUER.auswahl = function(k, w){
   var a = parseInt(w.activeOutput||0,10);
+  var ausg = k.ausgaenge || {};
+  var ids = Object.keys(ausg);
+  var kn = '<div class="knoepfe">';
+  if (ids.length) {
+    ids.slice(0, 6).forEach(function(id){
+      kn += '<button data-b="'+e(id)+'" class="'+(String(a)===String(id)?"stark":"")+'">'+
+            e(ausg[id])+'</button>';
+    });
+    if (ids.length > 6) {
+      kn += '<button data-b="prev" class="leise">&larr;</button>'+
+            '<button data-b="next" class="leise">&rarr;</button>';
+    }
+  } else {
+    /* Ohne Namen wird NICHT geraten, wie viele Ausgaenge es gibt - dann
+       bleiben nur die beiden Blaetterknoepfe und das Abwaehlen. */
+    kn += '<button data-b="prev" class="leise">&larr;</button>'+
+          '<button data-b="next" class="leise">&rarr;</button>';
+  }
+  kn += '<button data-b="reset" class="leise">'+e(k.allesaus || "Aus")+'</button></div>';
+  var text = a>0 ? (ausg[String(a)] || ("Nr. "+a)) : (k.allesaus || "Aus");
   return {klasse: a>0?"an":"", inhalt:
-    '<div class="w">'+(a>0?("Nr. "+a):"Aus")+'</div>'+
-    '<div class="knoepfe"><button data-b="1">1</button><button data-b="2">2</button>'+
-    '<button data-b="3">3</button><button data-b="reset" class="leise">Aus</button></div>'};
+    '<div class="w" style="font-size:1.15rem">'+e(text)+'</div>'+kn};
 };
 
 BAUER.wert = function(k, w){
@@ -514,7 +538,12 @@ BAUER.wert = function(k, w){
 
 BAUER.zustand = function(k, w){
   var ein = an(w.active);
-  return {klasse: ein?"an":"", inhalt:'<div class="w">'+(ein?"Ja":"Nein")+'</div>'};
+  /* Ein gesperrter Praesenzmelder meldet nichts mehr - das gehoert auf die
+     Kachel, sonst haelt man ihn fuer defekt ([S] PresenceDetector, States
+     locked und infoText). */
+  var gesperrt = an(w.locked);
+  return {klasse: ein?"an":"", inhalt:'<div class="w">'+(ein?"Ja":"Nein")+'</div>'+
+    (gesperrt ? '<div class="u">gesperrt'+(w.infoText?' · '+e(w.infoText):'')+'</div>' : '')};
 };
 
 BAUER.text = function(k, w){
@@ -522,20 +551,35 @@ BAUER.text = function(k, w){
   return {klasse:"", inhalt:'<div class="w" style="font-size:1.05rem;line-height:1.3">'+e(t||"–")+'</div>'};
 };
 
+/* Zaehler. totalDay und totalWeek gibt es seit Config 13.01 ([S] Meter,
+   States); aeltere Bausteine liefern sie nicht - dann steht die Zeile nicht
+   da, statt eine Null vorzutaeuschen. */
 BAUER.zaehler = function(k, w){
+  var unten = [];
+  if (w.total != null && w.actual != null) { unten.push("Summe "+zahl(w.total)); }
+  if (w.totalDay != null) { unten.push("heute "+zahl(w.totalDay)); }
+  if (w.totalWeek != null) { unten.push("Woche "+zahl(w.totalWeek)); }
   return {klasse:"", inhalt:'<div class="w">'+zahl(w.actual!=null?w.actual:w.total)+
     '<small>'+e(k.einheit_kurz||"")+'</small></div>'+ kurve(k.verlauf) +
-    (w.total!=null&&w.actual!=null?'<div class="u">Summe '+zahl(w.total)+'</div>':'')};
+    (unten.length ? '<div class="u">'+e(unten.join(" · "))+'</div>' : '')};
 };
 
 BAUER.alarm = function(k, w){
   var scharf = an(w.armed);
   var stufe = parseFloat(w.level)||0;
+  /* armedAt und nextLevelAt sind Unix-Zeitstempel und ersetzen seit Config
+     13.0 die abgekuendigten armedDelay/nextLevelDelay ([S] Alarm, States).
+     Ist der Zeitpunkt in der Zukunft, laeuft gerade eine Verzoegerung. */
+  var jetzt = Math.floor(Date.now()/1000);
+  var rest = 0;
+  if (!scharf && w.armedAt > jetzt) { rest = w.armedAt - jetzt; }
+  else if (stufe === 0 && w.nextLevelAt > jetzt) { rest = w.nextLevelAt - jetzt; }
   /* Bis 0.9.5 stand hier stufe>0?"":"" - beide Zweige leer, die Kachel bekam
      ihre Hervorhebung also nie. */
   return {klasse: stufe>0?"alarm":(scharf?"an":""), inhalt:
     '<div class="w" style="font-size:1.2rem;'+(stufe>0?"color:var(--fehl)":"")+'">'+
       (stufe>0?"ALARM":(scharf?"scharf":"unscharf"))+'</div>'+
+    (rest>0 ? '<div class="u">noch '+Math.round(rest)+'&nbsp;s</div>' : '')+
     '<div class="knoepfe">'+
       (stufe>0?'<button data-b="quit" class="warn">Quittieren</button>':
         (scharf?'<button data-b="off" class="warn">Unscharf</button>':
@@ -568,32 +612,63 @@ BAUER.brandmelder = function(k, w){
 };
 
 /* Farbwahl. Bis 0.9.5 stand hier "Farbwahl: bitte in der Loxone-App" - der
-   Baustein war also gelistet, aber nicht bedienbar. Zwei Dinge fehlten:
-   die Bedienelemente und, unbemerkt, der passende Eintrag in der
-   Befehlsliste ($wert laesst nur Zahlen durch, hsv(...) waere abgewiesen
-   worden). Beides ist jetzt da. */
+   Baustein war also gelistet, aber nicht bedienbar. Zwei Dinge fehlten: die
+   Bedienelemente und, unbemerkt, der passende Eintrag in der Befehlsliste
+   ($wert laesst nur Zahlen durch, hsv(...) waere abgewiesen worden).
+
+   Alles hier ist aus [S] belegt, nichts geraten:
+     ColorPickerV2  color = "hsv(h,s,v)" oder "temp(Helligkeit,Kelvin)"
+                    Befehle hsv(...), temp(...), setBrightness/{value}
+                    Details TWMin/TWMax (Vorgabe 2700/6500), pickerType
+     ColorPicker    color = "hsv(...)" oder "lumitech(Helligkeit,Kelvin)"
+                    Befehle hsv(...), lumitech(...), on, off
+
+   'on'/'off' stehen nur beim aelteren ColorPicker. Beim V2 gibt es sie laut
+   Dokument nicht - dort wird ueber die Helligkeit 0 ausgeschaltet. */
 BAUER.farbe = function(k, w){
   var roh = String(w.color||"");
-  var h=0, s=0, v=0, kelvin=0, art="";
+  var bef = k.befehle || [];
+  var weissbefehl = bef.indexOf("$lumitech") >= 0 ? "lumitech" : "temp";
+  var kannFarbe = String(k.pickertyp||"").toLowerCase() !== "tunablewhite";
+  var twmin = k.twmin || 2700, twmax = k.twmax || 6500;
+
+  var h=0, s=0, v=0, kelvin=twmin, art="";
   var m = roh.match(/^hsv\((\d+),(\d+),(\d+)\)$/i);
   if (m) { art="hsv"; h=+m[1]; s=+m[2]; v=+m[3]; }
   else {
-    var t = roh.match(/^temp\((\d+),(\d+)\)$/i);
-    if (t) { art="temp"; v=+t[1]; kelvin=+t[2]; }
+    var t = roh.match(/^(?:temp|lumitech)\((\d+),(\d+)\)$/i);
+    if (t) { art="weiss"; v=+t[1]; kelvin=+t[2]; }
   }
-  var vorschau = art==="hsv" ? "hsl("+h+","+s+"%,"+Math.max(10,Math.min(90,v/2+10))+"%)"
-               : (art==="temp" ? "#ffe9c8" : "var(--kachel2)");
-  var kopf = art==="temp" ? (kelvin+" K") : (art==="hsv" ? (v+"%") : (roh||"–"));
+  /* Vorschau. Beim Weisston wird die Kelvinzahl grob in einen Farbton
+     uebersetzt - warm ist gelblich, kalt blaeulich. Das ist eine Anzeige,
+     keine Messung, deshalb bewusst grob. */
+  var anteil = Math.max(0, Math.min(1, (kelvin - twmin) / Math.max(1, twmax - twmin)));
+  var vorschau = art==="hsv"
+      ? "hsl("+h+","+s+"%,"+Math.max(10,Math.min(90,v/2+10))+"%)"
+      : (art==="weiss"
+         ? "hsl("+Math.round(40 - anteil*20)+",100%,"+Math.max(20,Math.min(92,v/2+45))+"%)"
+         : "var(--kachel2)");
+  var kopf = art==="weiss" ? (kelvin+" K · "+v+"%")
+           : (art==="hsv" ? (v+"%") : (roh||"–"));
+
+  var regler = '';
+  if (kannFarbe) {
+    regler += '<span>Farbe</span><input type="range" min="0" max="360" step="1" value="'+h+'" data-farbe="h">'+
+              '<span>Saett.</span><input type="range" min="0" max="100" step="1" value="'+s+'" data-farbe="s">';
+  }
+  regler += '<span>Hell</span><input type="range" min="0" max="100" step="1" value="'+v+'" data-farbe="v">'+
+            '<span>Weiss</span><input type="range" min="'+twmin+'" max="'+twmax+'" step="50" value="'+kelvin+'" data-weiss="1">';
+
+  var kn = '<div class="knoepfe">';
+  if (bef.indexOf("off") >= 0) { kn += '<button data-b="off">Aus</button>'; }
+  else { kn += '<button data-dunkel="1">Aus</button>'; }
+  if (bef.indexOf("on") >= 0) { kn += '<button data-b="on">Ein</button>'; }
+  kn += '</div>';
+
   return {klasse: v>0?"an":"", inhalt:
     '<div class="w" style="font-size:1.2rem">'+e(kopf)+'</div>'+
     '<div class="farbfeld" style="background:'+vorschau+'"></div>'+
-    '<div class="farbregler">'+
-      '<span>Farbe</span><input type="range" min="0" max="360" step="1" value="'+h+'" data-farbe="h">'+
-      '<span>Saett.</span><input type="range" min="0" max="100" step="1" value="'+s+'" data-farbe="s">'+
-      '<span>Hell</span><input type="range" min="0" max="100" step="1" value="'+v+'" data-farbe="v">'+
-    '</div>'+
-    '<div class="knoepfe"><button data-b="off">Aus</button>'+
-    '<button data-weiss="1" class="leise">Warmweiss</button></div>'};
+    '<div class="farbregler" data-weissbefehl="'+e(weissbefehl)+'">'+regler+'</div>'+ kn};
 };
 
 /* Szene: mehrere Befehle auf einen Druck. Sie haengt an keinem Baustein,
@@ -605,6 +680,91 @@ BAUER.szene = function(k, w){
     ((k.beschreibung&&k.beschreibung.length)
       ? '<div class="u">'+e(k.beschreibung.slice(0,2).join(" · "))+'</div>' : '')+
     '<div class="knoepfe"><button data-szene="1" class="stark">Ausloesen</button></div>'};
+};
+
+/* Wetter. Die Werte kommen als eigene Ereignistabelle (Kennung 7), nicht als
+   Zahlenwert - deshalb steht unter w.actual kein Wert, sondern ein Objekt
+   mit 'stand' und 'eintraege'. Feldnamen und Reihenfolge stammen aus
+   [K] "Event-Table of Weather-States". Der Klartext zur Wetterlage kommt aus
+   [S] weatherTypeTexts; fehlt er, steht die Zahl da - erfunden wird nichts. */
+BAUER.wetter = function(k, w){
+  var jetzt = (w.actual && w.actual.eintraege && w.actual.eintraege[0]) || null;
+  var vor = (w.forecast && w.forecast.eintraege) || [];
+  if (!jetzt && vor.length) { jetzt = vor[0]; }
+  if (!jetzt) {
+    return {klasse:"", inhalt:'<div class="u" style="margin-top:auto">'+
+      'Noch keine Wetterdaten empfangen.</div>'};
+  }
+  function lage(nr){
+    var t = k.wettertexte || {};
+    if (t[nr] != null) { return String(t[nr]); }
+    if (t[String(nr)] != null) { return String(t[String(nr)]); }
+    return "Lage " + nr;
+  }
+  function windrose(grad){
+    var r = ["N","NO","O","SO","S","SW","W","NW"];
+    return r[Math.round(((parseFloat(grad)||0) % 360) / 45) % 8];
+  }
+  /* Die Vorhersage als Reihe kleiner Saeulen: Temperatur als Hoehe,
+     Niederschlag als Farbe. Keine Achsen, keine Zahlen - dafuer steht der
+     aktuelle Wert gross darueber. */
+  var reihe = "";
+  if (vor.length > 1) {
+    var temps = vor.map(function(x){ return x.temperatur; });
+    var lo = Math.min.apply(null, temps), hi = Math.max.apply(null, temps);
+    var spanne = (hi - lo) || 1;
+    reihe = '<div style="display:flex;gap:1px;align-items:flex-end;height:26px;margin-top:6px">'+
+      vor.slice(0, 24).map(function(x){
+        var hoehe = 20 * (x.temperatur - lo) / spanne + 4;
+        var nass = (x.niederschlag || 0) > 0.05;
+        return '<div title="'+e(zahl(x.temperatur)+" °C")+'" style="flex:1;height:'+
+               hoehe.toFixed(0)+'px;background:'+(nass?"var(--warn)":"var(--an)")+
+               ';opacity:.75;border-radius:1px"></div>';
+      }).join("") + '</div>';
+  }
+  return {klasse:"", inhalt:
+    '<div class="w">'+zahl(jetzt.temperatur)+'<small>&deg;C</small></div>'+
+    '<div class="u">'+e(lage(jetzt.art))+
+      ' &middot; gefuehlt '+zahl(jetzt.gefuehlt)+'&nbsp;&deg;C'+
+      ' &middot; '+zahl(jetzt.feuchte,0)+'&nbsp;% rF</div>'+
+    '<div class="u">Wind '+zahl(jetzt.wind)+'&nbsp;km/h aus '+e(windrose(jetzt.windrichtung))+
+      ' &middot; '+zahl(jetzt.niederschlag)+'&nbsp;mm'+
+      ' &middot; '+zahl(jetzt.druck,0)+'&nbsp;hPa</div>'+ reihe};
+};
+
+/* Zeitschaltuhr. Die Eintraege kommen als Tageszeit-Ereignistabelle
+   (Kennung 4) unter 'entriesAndDefaultValue'; nFrom und nTo sind Minuten
+   seit Mitternacht [K] "Event-Table of Daytimer-States". */
+BAUER.tageszeit = function(k, w){
+  var d = w.entriesAndDefaultValue || {};
+  var eintraege = d.eintraege || [];
+  function uhr(min){
+    var m = Math.max(0, parseInt(min, 10) || 0);
+    return ("0"+Math.floor(m/60)).slice(-2)+":"+("0"+(m%60)).slice(-2);
+  }
+  var jetzt = new Date().getHours()*60 + new Date().getMinutes();
+  var aktiv = eintraege.some(function(x){ return jetzt >= x.von && jetzt < x.bis; });
+  /* Ein Tagesbalken: 24 Stunden von links nach rechts, die Eintraege als
+     Abschnitte. Das ist auf einen Blick lesbar, eine Liste von Uhrzeiten
+     nicht. */
+  var balken = eintraege.slice(0, 12).map(function(x){
+    var l = 100 * x.von / 1440, b = 100 * Math.max(0, x.bis - x.von) / 1440;
+    return '<i style="position:absolute;left:'+l.toFixed(2)+'%;width:'+b.toFixed(2)+
+           '%;top:0;bottom:0;background:var(--an);opacity:.65"></i>';
+  }).join("");
+  var wert = w.value;
+  return {klasse: aktiv?"an":"", inhalt:
+    '<div class="w" style="font-size:1.2rem">'+
+      (wert==null ? (aktiv?"aktiv":"aus") : zahl(wert))+'</div>'+
+    '<div style="position:relative;height:12px;border-radius:4px;background:var(--kachel2);'+
+      'overflow:hidden;margin-top:6px">'+balken+
+      '<i style="position:absolute;left:'+(100*jetzt/1440).toFixed(2)+
+      '%;top:0;bottom:0;width:2px;background:var(--text);opacity:.8"></i></div>'+
+    '<div class="u">'+(eintraege.length
+        ? e(eintraege.slice(0,2).map(function(x){ return uhr(x.von)+"–"+uhr(x.bis); }).join(", ")
+            + (eintraege.length>2 ? " …" : ""))
+        : "keine Eintraege")+'</div>'+
+    (w.override ? '<div class="u">Handbetrieb noch '+zahl(w.override,0)+'&nbsp;s</div>' : '')};
 };
 
 BAUER.generisch = function(k, w){
@@ -655,8 +815,11 @@ function zeichnen(){
     else if (k.nurlesen) { marke = '<span class="marke" title="In Loxone auf nur lesen '+
       'gesetzt">&#128065;</span>'; }
     d.innerHTML = '<div class="t">'+e(k.titel)+'</div>'+ marke + r.inhalt;
-    if (k.gesichert || k.nurlesen) {
-      d.querySelectorAll("button[data-b],button[data-szene],button[data-weiss],input[type=range]")
+    /* Das Schloss bleibt stehen, auch wenn geschaltet werden darf - man soll
+       sehen, dass der Baustein gesichert ist. Gesperrt wird nur, was wirklich
+       nicht geht. */
+    if (k.gesperrt) {
+      d.querySelectorAll("button[data-b],button[data-szene],button[data-dunkel],input[type=range]")
        .forEach(function(el){ el.disabled = true; });
     }
     raster.appendChild(d);
@@ -689,14 +852,13 @@ document.addEventListener("click", function(ev){
   var kk = kachel_von(b);
   if(!kk || !kk.k) return;
   if (b.dataset.szene) { ruetteln(); szene_ausloesen(kk.i); return; }
-  if (b.dataset.weiss) {
-    /* Warmweiss: 2700 K bei der zuletzt angezeigten Helligkeit. Die
-       Reihenfolge der beiden Zahlen (Helligkeit, Kelvin) ist die
-       dokumentierte, aber an keiner Anlage nachgemessen - steht so auch in
-       der README. */
+  if (b.dataset.dunkel) {
+    /* Der ColorPickerV2 kennt laut Dokument kein 'off' - ausgeschaltet wird
+       ueber die Helligkeit 0, Farbton und Saettigung bleiben stehen. */
     ruetteln();
-    var hell = kk.el.querySelector('[data-farbe="v"]');
-    senden(kk.k.uuid, "temp("+(hell?hell.value:80)+",2700)");
+    var fh = kk.el.querySelector('[data-farbe="h"]');
+    var fs = kk.el.querySelector('[data-farbe="s"]');
+    senden(kk.k.uuid, "hsv("+(fh?fh.value:0)+","+(fs?fs.value:0)+",0)");
     return;
   }
   if (b.dataset.b === undefined) return;
@@ -710,13 +872,31 @@ document.addEventListener("change", function(ev){
   var kk = kachel_von(s);
   if(!kk || !kk.k) return;
 
-  /* Farbregler: die drei Schieber gehoeren zusammen, gesendet wird EIN
-     Befehl aus allen dreien. */
+  /* Farbregler. Farbton, Saettigung und Helligkeit gehoeren zusammen und
+     ergeben EINEN hsv-Befehl. Der Weissregler ist ein eigener Befehl -
+     temp(...) beim ColorPickerV2, lumitech(...) beim aelteren ColorPicker;
+     welcher, sagt die Befehlsliste des Bausteins, nicht eine Vermutung. */
+  if (s.dataset.weiss) {
+    var vv = kk.el.querySelector('[data-farbe="v"]');
+    var kasten = kk.el.querySelector('.farbregler');
+    var wort = (kasten && kasten.dataset.weissbefehl) || "temp";
+    senden(kk.k.uuid, wort+"("+(vv?vv.value:100)+","+s.value+")");
+    return;
+  }
   if (s.dataset.farbe) {
     var h = kk.el.querySelector('[data-farbe="h"]');
     var sa = kk.el.querySelector('[data-farbe="s"]');
     var v = kk.el.querySelector('[data-farbe="v"]');
-    senden(kk.k.uuid, "hsv("+(h?h.value:0)+","+(sa?sa.value:0)+","+(v?v.value:0)+")");
+    /* Nur-Weisston-Bausteine (pickerType TunableWhite) haben keinen
+       Farbregler - dort bedeutet der Helligkeitsregler den Weissbefehl. */
+    if (!h) {
+      var kasten2 = kk.el.querySelector('.farbregler');
+      var wort2 = (kasten2 && kasten2.dataset.weissbefehl) || "temp";
+      var kw = kk.el.querySelector('[data-weiss="1"]');
+      senden(kk.k.uuid, wort2+"("+(v?v.value:0)+","+(kw?kw.value:2700)+")");
+      return;
+    }
+    senden(kk.k.uuid, "hsv("+h.value+","+(sa?sa.value:0)+","+(v?v.value:0)+")");
     return;
   }
   if (!s.dataset.w) return;

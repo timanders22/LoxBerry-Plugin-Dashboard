@@ -146,6 +146,13 @@ function db_vorgaben()
         'verlauf_punkte'   => 60,   // ein Punkt je Minute
         'sse'              => 0,    // Werte werden geschoben statt abgefragt
         'tafelsteuerung'   => 0,    // Loxone darf die Anzeigeseite umschalten
+        /* Gesicherte Bausteine schalten. Ab Werk AUS, und das ist keine
+         * Bequemlichkeit: wer in Loxone Config ein Visualisierungs-Passwort
+         * setzt, will bei jedem Schaltvorgang gefragt werden. Steht das
+         * Passwort hier hinterlegt, faellt genau diese Rueckfrage weg -
+         * dafuer gibt es die PIN je Seite. Der Reiter Einstellungen sagt
+         * das ausdruecklich. */
+        'gesichert_schalten' => 0,
     );
 }
 
@@ -223,6 +230,36 @@ function db_zugang_speichern($adresse, $port, $benutzer, $passwort)
         if ($passwort !== '') { $alt['passwort'] = $passwort; }
     }
     return db_json_schreiben($p['geheim'], $alt, 0600);
+}
+
+/** Das Visualisierungs-Passwort - eigene Datei, Rechte 0600.
+ *
+ * Es steht NIE in dashboard.json: die zeigt die Oberflaeche an. Angezeigt
+ * wird auch hier nur, OB eines hinterlegt ist - nie sein Wert, auch nicht
+ * verkuerzt. Es verlaesst den LoxBerry nicht: allein der Dienst bildet daraus
+ * den Hash und schickt den an den Miniserver.
+ *
+ * '--' als Eingabe loescht es. Ein leeres Feld behaelt das bisherige - sonst
+ * loescht jedes Speichern der Einstellungen es unbemerkt weg.
+ */
+function db_visu_speichern($pw)
+{
+    $p = db_paths();
+    $alt = db_zugang();
+    if ($pw === '--') {
+        unset($alt['visu_pw']);
+    } elseif ($pw !== '') {
+        $alt['visu_pw'] = $pw;
+    } else {
+        return true;
+    }
+    return db_json_schreiben($p['geheim'], $alt, 0600);
+}
+
+function db_visu_da()
+{
+    $z = db_zugang();
+    return !empty($z['visu_pw']) ? 1 : 0;
 }
 
 /** Die Miniserver-Daten so, wie der Dienst sie sieht - ohne das Kennwort. */
@@ -447,7 +484,7 @@ function db_befehl_erlaubt($uuid, $befehl)
          * der in zwei Sprachen ausgewertet wird, laeuft frueher oder spaeter
          * auseinander. In der Tabelle steht nur der Name.
          *
-         * '$hsv' und '$temp' kamen mit 0.9.6 dazu. Bis dahin trug der
+         * '$hsv' und '$temp' kamen mit 0.9.7 dazu. Bis dahin trug der
          * ColorPickerV2 nur '$wert', und '$wert' laesst ausschliesslich
          * Zahlen durch - hsv(240,100,80) waere also selbst dann abgewiesen
          * worden, wenn die Kachel es angeboten haette. Der Zeichenvorrat im
@@ -460,8 +497,13 @@ function db_befehl_erlaubt($uuid, $befehl)
             }
             continue;
         }
-        if ($e === '$temp') {
-            if (preg_match('/^temp\((\d{1,3}),(\d{4,5})\)$/', $befehl, $m)
+        // temp(Helligkeit,Kelvin) und lumitech(Helligkeit,Kelvin) - dieselbe
+        // Form, zwei Namen: der ColorPickerV2 nimmt temp, der aeltere
+        // ColorPicker lumitech. Beides ist belegt in [S], Abschnitte
+        // "ColorPickerV2" und "ColorPicker", Commands.
+        if ($e === '$temp' || $e === '$lumitech') {
+            $wort = ($e === '$temp') ? 'temp' : 'lumitech';
+            if (preg_match('/^' . $wort . '\((\d{1,3}),(\d{4,5})\)$/', $befehl, $m)
                     && (int) $m[1] <= 100
                     && (int) $m[2] >= 1000 && (int) $m[2] <= 12000) {
                 return array(true, '');
@@ -553,7 +595,7 @@ function db_dienst($befehl)
 /** Die messenden Knoepfe des Reiters Test. Rueckgabe: array(ok, Ausgabe). */
 function db_probe($was)
 {
-    $erlaubt = array('anmeldeprobe', 'httpprobe', 'selbsttest');
+    $erlaubt = array('anmeldeprobe', 'httpprobe', 'visuprobe', 'selbsttest');
     if (!in_array($was, $erlaubt, true)) {
         return array(0, 'Unbekannte Probe.');
     }
@@ -904,6 +946,14 @@ function db_seite_daten($schluessel)
             'befehle'  => isset($b['befehle']) ? $b['befehle'] : array(),
             'nurlesen' => (int) (isset($b['nurlesen']) ? $b['nurlesen'] : 0),
             'gesichert' => (int) (isset($b['gesichert']) ? $b['gesichert'] : 0),
+            /* 'gesperrt' sagt der Anzeigeseite, ob sie die Knoepfe abschalten
+             * soll. Das Schloss bleibt bei einem gesicherten Baustein IMMER
+             * stehen - man soll sehen, dass er gesichert ist, auch wenn er
+             * gerade bedienbar ist. */
+            'gesperrt' => (int) (
+                (isset($b['nurlesen']) && $b['nurlesen'])
+                || (isset($b['gesichert']) && $b['gesichert']
+                    && (empty($cfg['gesichert_schalten']) || !db_visu_da()))),
             // 'warnung' steht in der Kacheltabelle an Alarmanlage und
             // Brandmelder und wurde bis 0.9.5 von nichts gelesen. Die Kachel
             // faerbt damit ihre schaltenden Knoepfe.
@@ -918,8 +968,38 @@ function db_seite_daten($schluessel)
                 $eintrag[$g] = 0 + $eintrag['werte'][$g];
             }
         }
+        // Grenzen der Farbtemperatur. Sie stehen NICHT in den Zustaenden,
+        // sondern in den Details des Bausteins: [S] ColorPickerV2, Details
+        // TWMin/TWMax, Vorgabe 2700 und 6500. 'pickerType' sagt, ob der
+        // Baustein ueberhaupt Farbe kann (Rgb/Lumitech) oder nur Weisston
+        // (TunableWhite) - danach richtet sich, welche Regler die Kachel zeigt.
+        $det = isset($b['details']) && is_array($b['details']) ? $b['details'] : array();
+        if ($eintrag['kachel'] === 'farbe') {
+            $eintrag['twmin'] = (int) (isset($det['TWMin']) && is_numeric($det['TWMin'])
+                                       ? $det['TWMin'] : 2700);
+            $eintrag['twmax'] = (int) (isset($det['TWMax']) && is_numeric($det['TWMax'])
+                                       ? $det['TWMax'] : 6500);
+            $eintrag['pickertyp'] = (string) (isset($det['pickerType']) ? $det['pickerType'] : '');
+        }
         if (isset($verlauf[$uuid]) && is_array($verlauf[$uuid])) {
             $eintrag['verlauf'] = array_values($verlauf[$uuid]);
+        }
+        // Namen der Ausgaenge einer Auswahl. Sie stehen in den Details des
+        // Bausteins ([S] Radio, Details outputs und allOff). Ohne sie musste
+        // die Kachel die Anzahl der Ausgaenge raten - bis 0.9.5 waren es fest
+        // drei, obwohl der Baustein bis zu sechzehn haben kann.
+        if ($eintrag['kachel'] === 'auswahl') {
+            $eintrag['ausgaenge'] = isset($det['outputs']) && is_array($det['outputs'])
+                ? $det['outputs'] : array();
+            $eintrag['allesaus'] = (string) (isset($det['allOff']) ? $det['allOff'] : '');
+        }
+        // Klartexte zu den Wetterlagen - nur fuer die Wetterkachel, und nur
+        // einmal. Sie stehen in der Strukturdatei ([S] weatherTypeTexts) und
+        // ersparen der Kachel eine nackte Zahl.
+        if ($eintrag['kachel'] === 'wetter') {
+            $st = db_struktur();
+            $eintrag['wettertexte'] = isset($st['wettertexte']) && is_array($st['wettertexte'])
+                ? $st['wettertexte'] : array();
         }
         $kacheln[] = $eintrag;
     }

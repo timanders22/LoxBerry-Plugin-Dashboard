@@ -5,7 +5,7 @@
 Er haelt EINE Verbindung zum Miniserver und bedient damit beliebig viele
 Tablets. Das ist der ganze Grund, warum es diesen Dienst gibt: der Miniserver
 laesst nur 31 Clients gleichzeitig Zustaende empfangen
-["Communicating with the Miniserver" 16.0, Seite 9], und jedes Tablet, das
+["Communicating with the Miniserver" 17.0, Seite 8], und jedes Tablet, das
 selbst eine Verbindung aufmachte, wuerde einen dieser Plaetze verbrauchen.
 
 Aufgabenteilung im Plugin:
@@ -24,6 +24,7 @@ Aufrufe:
     dashboard_dienst.py --entwurf      Erstentwurf erzeugen und speichern
     dashboard_dienst.py --anmeldeprobe einmal anmelden und wieder abmelden
     dashboard_dienst.py --httpprobe    den HTTP-Notnagel an einem Baustein messen
+    dashboard_dienst.py --visuprobe    das Visualisierungs-Passwort pruefen
 """
 
 from __future__ import annotations
@@ -145,6 +146,7 @@ VORGABEN = {
     "verlauf_punkte": 60,    # ein Punkt je Minute -> eine Stunde
     "sse": 0,                # Werte werden geschoben statt abgefragt
     "tafelsteuerung": 0,     # Loxone darf die Anzeigeseite umschalten
+    "gesichert_schalten": 0, # gesicherte Bausteine mit Visu-Passwort schalten
 }
 
 _LOG = logging.getLogger("dashboard")
@@ -302,6 +304,23 @@ def token_holen() -> tuple[str, str, str]:
             str(d.get("ms_hashalg") or ""))
 
 
+def visu_passwort() -> str:
+    """Das Visualisierungs-Passwort aus der Geheimnisdatei (Rechte 0600).
+
+    Es steht NICHT in dashboard.json - die zeigt die Oberflaeche an. Es
+    verlaesst den LoxBerry auch nicht: der Dienst bildet daraus den Hash und
+    schickt nur den. Weder Endpunkt noch Anzeigeseite sehen es je.
+    """
+    return str(json_lesen(DATEI_GEHEIM).get("visu_pw") or "")
+
+
+def baustein_finden(uuid: str, struktur: dict) -> dict:
+    for b in (struktur.get("bausteine") or []):
+        if b.get("uuid") == uuid:
+            return b
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # Abbild fuer die Anzeigeseite
 # ---------------------------------------------------------------------------
@@ -404,6 +423,12 @@ def struktur_ablegen(ms: Miniserver, tabelle: dict) -> None:
                    for k, v in (ms.struktur.get("rooms") or {}).items()},
         "kategorien": {k: {"name": v.get("name"), "typ": v.get("type")}
                        for k, v in (ms.struktur.get("cats") or {}).items()},
+        # Die Klartexte zu den Wetterlagen. [S, weatherTypeTexts]: "Each
+        # forecast and the actual weather situation has a type that is
+        # visualized differently. This section gives the user friendly texts
+        # for each of this weather situations." Ohne sie stuende auf der
+        # Kachel eine nackte Zahl.
+        "wettertexte": ms.struktur.get("weatherTypeTexts") or {},
         "bausteine": b,
     })
 
@@ -440,8 +465,12 @@ def befehl_erlaubt(uuid: str, befehl: str, struktur: dict) -> tuple[bool, str]:
                         and int(m.group(3)) <= 100:
                     return True, ""
                 continue
-            if e == "$temp":
-                m = re.match(r"^temp\((\d{1,3}),(\d{4,5})\)$", befehl)
+            # temp(Helligkeit,Kelvin) und lumitech(Helligkeit,Kelvin) - dieselbe
+            # Form, zwei Namen: ColorPickerV2 nimmt temp, der aeltere
+            # ColorPicker lumitech. Beides belegt in [S].
+            if e in ("$temp", "$lumitech"):
+                wort = "temp" if e == "$temp" else "lumitech"
+                m = re.match(r"^%s\((\d{1,3}),(\d{4,5})\)$" % wort, befehl)
                 if m and int(m.group(1)) <= 100 \
                         and 1000 <= int(m.group(2)) <= 12000:
                     return True, ""
@@ -505,6 +534,7 @@ async def warteschlange(ms: Miniserver, struktur: dict) -> None:
         if not isinstance(schritte, list) or not schritte:
             schritte = [{"uuid": auftrag.get("uuid"), "befehl": auftrag.get("befehl")}]
 
+        cfg = config()
         erledigt, meldungen, gesamt_ok = 0, [], 1
         for schritt in schritte:
             uuid = str((schritt or {}).get("uuid") or "")
@@ -515,8 +545,30 @@ async def warteschlange(ms: Miniserver, struktur: dict) -> None:
                 meldungen.append(grund)
                 gesamt_ok = 0
                 continue
+            # Gesicherte Bausteine: nur mit ausdruecklich eingeschalteter
+            # Erlaubnis UND hinterlegtem Visualisierungs-Passwort. Beides
+            # fehlt ab Werk. Das ist die zweite Pruefung - der Endpunkt hat
+            # dasselbe schon geprueft, aber hier geht es wirklich hinaus.
+            visu = ""
+            if baustein_finden(uuid, struktur).get("gesichert"):
+                if not int(cfg.get("gesichert_schalten") or 0):
+                    grund = ("Dieser Baustein ist gesichert. Das Schalten "
+                             "gesicherter Bausteine ist im Reiter Einstellungen "
+                             "abgeschaltet.")
+                    _LOG.warning("Befehl abgewiesen: %s %s - %s", uuid, befehl, grund)
+                    meldungen.append(grund)
+                    gesamt_ok = 0
+                    continue
+                visu = visu_passwort()
+                if not visu:
+                    grund = ("Dieser Baustein ist gesichert, aber es ist kein "
+                             "Visualisierungs-Passwort hinterlegt.")
+                    _LOG.warning("Befehl abgewiesen: %s %s - %s", uuid, befehl, grund)
+                    meldungen.append(grund)
+                    gesamt_ok = 0
+                    continue
             try:
-                antwort = await ms.befehl_senden(uuid, befehl)
+                antwort = await ms.befehl_senden(uuid, befehl, visu_pw=visu)
                 _LOG.info("Befehl ausgefuehrt: %s %s", uuid, befehl)
                 erledigt += 1
                 meldungen.append(str(antwort))
@@ -844,6 +896,44 @@ async def anmeldeprobe() -> int:
             print("Verbindung wieder geschlossen.")
 
 
+async def visuprobe() -> int:
+    """Das Visualisierungs-Passwort pruefen, ohne etwas zu schalten.
+
+    Loxone bietet dafuer einen eigenen Dienst an
+    ("jdev/sps/checkuservisupwd/{hash}", [K, Seite 15]) - deshalb muss hier
+    nichts an einem echten Baustein ausprobiert werden. Kein Geraet bewegt
+    sich, keine Alarmanlage wird scharf.
+    """
+    cfg = config()
+    d = Dienst()
+    ms = None
+    pw = visu_passwort()
+    if not pw:
+        print("[FEHL] Es ist kein Visualisierungs-Passwort hinterlegt.")
+        print("       Reiter Einstellungen, Abschnitt Miniserver.")
+        return 1
+    try:
+        ms, altes = d._bauen(cfg)
+        await ms.verbinden(altes_token=altes)
+        token_merken(str(ms.token.get("token") or altes), ms.kennung, ms.hashalg)
+        ok = await ms.visu_pruefen(pw)
+        if ok:
+            print("[OK]   Das Visualisierungs-Passwort stimmt.")
+            print("       Gesicherte Bausteine lassen sich damit schalten, sobald")
+            print("       der Haken im Reiter Einstellungen gesetzt ist.")
+            return 0
+        print("[FEHL] Der Miniserver weist das Visualisierungs-Passwort ab.")
+        print("       Geprueft wurde ueber jdev/sps/checkuservisupwd - es wurde")
+        print("       dabei nichts geschaltet.")
+        return 1
+    except Exception as f:
+        print("[FEHL] %s" % f)
+        return 1
+    finally:
+        if ms is not None:
+            await ms.schliessen()
+
+
 async def httpprobe() -> int:
     """Den HTTP-Notnagel EINMAL an einem Baustein ausprobieren.
 
@@ -1003,7 +1093,8 @@ def selbsttest() -> int:
 
 
 def main() -> int:
-    einmalig = ("--selbsttest", "--einmal", "--entwurf", "--anmeldeprobe", "--httpprobe")
+    einmalig = ("--selbsttest", "--einmal", "--entwurf", "--anmeldeprobe",
+                "--httpprobe", "--visuprobe")
     log_einrichten(nach_stdout=any(a in sys.argv for a in einmalig))
     if "--selbsttest" in sys.argv:
         return selbsttest()
@@ -1015,6 +1106,8 @@ def main() -> int:
         return asyncio.run(anmeldeprobe())
     if "--httpprobe" in sys.argv:
         return asyncio.run(httpprobe())
+    if "--visuprobe" in sys.argv:
+        return asyncio.run(visuprobe())
 
     os.makedirs(DATADIR, exist_ok=True)
     with open(DATEI_PID, "w", encoding="utf-8") as fh:

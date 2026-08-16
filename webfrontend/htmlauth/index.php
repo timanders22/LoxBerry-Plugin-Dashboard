@@ -160,7 +160,8 @@ if ($db_post && isset($_POST['speichern'])) {
     // dieses Reiters stehen deshalb in demselben Formular - sonst setzte das
     // Absenden eines anderen sie stillschweigend auf 0.
     foreach (array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach',
-                   'haptik', 'verlauf', 'sse', 'tafelsteuerung') as $db_h) {
+                   'haptik', 'verlauf', 'sse', 'tafelsteuerung',
+                   'gesichert_schalten') as $db_h) {
         $db_cfg[$db_h] = isset($_POST[$db_h]) ? 1 : 0;
     }
 
@@ -184,6 +185,12 @@ if ($db_post && isset($_POST['speichern'])) {
             }
         }
     }
+
+    // Das Visualisierungs-Passwort steht fuer sich: es gilt fuer den Benutzer,
+    // mit dem sich der Dienst anmeldet, unabhaengig davon, ob das der
+    // LoxBerry-Zugang oder ein abweichender ist. Auch hier gilt: ein leeres
+    // Feld behaelt das bisherige, sonst loescht jedes Speichern es weg.
+    db_visu_speichern((string) (isset($_POST['visu_pw']) ? $_POST['visu_pw'] : ''));
 
     if (!$db_fehler) {
         if (db_config_speichern($db_cfg)) { $db_meldungen[] = db_t('EINST.GESPEICHERT'); }
@@ -590,6 +597,19 @@ if ($db_rahmen) {
   <p class="sm-hilfe"><?= db_t('EINST.H_ZPASSWORT') ?></p>
 </div>
 
+<h3><?= db_e(db_t('EINST.H_GESICHERT')) ?></h3>
+<p class="sm-hilfe"><?= db_t('EINST.GESICHERT_ERKLAERUNG') ?></p>
+<div class="sm-warnung"><?= db_t('EINST.GESICHERT_WARNUNG') ?></div>
+<div class="sm-feld">
+  <label for="visu_pw"><?= db_e(db_t('EINST.L_VISU_PW')) ?></label>
+  <input data-role="none" type="password" name="visu_pw" id="visu_pw" value=""
+         placeholder="<?= db_e(db_visu_da() ? db_t('EINST.PW_DA') : db_t('EINST.PW_LEER')) ?>">
+  <p class="sm-hilfe"><?= db_t('EINST.H_VISU_PW') ?></p>
+</div>
+<label><input data-role="none" type="checkbox" name="gesichert_schalten" value="1"<?= !empty($db_cfg['gesichert_schalten']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_GESICHERT')) ?></label>
+<p class="sm-hilfe"><?= db_t('EINST.H_GESICHERT_SCHALTEN') ?></p>
+
 <h2><?= db_e(db_t('EINST.H_TAKT')) ?></h2>
 <div class="sm-feld">
   <label for="takt"><?= db_e(db_t('EINST.L_TAKT')) ?></label>
@@ -923,6 +943,7 @@ foreach ($db_bausteinliste as $db_z) { ?>
   <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-lesen" name="probe" value="anmeldeprobe"><?= db_e(db_t('TEST.K_ANMELDUNG')) ?></button>
   <button data-role="none" class="sm-btn sm-b-lesen" name="probe" value="httpprobe"><?= db_e(db_t('TEST.K_HTTPPROBE')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-lesen" name="probe" value="visuprobe"><?= db_e(db_t('TEST.K_VISUPROBE')) ?></button>
   </div>
 </form>
 <div class="sm-warnung"><?= db_t('TEST.MESSEN_WARNUNG') ?></div>

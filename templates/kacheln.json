@@ -4,7 +4,7 @@
   "EINE Datei fuer Dienst, Designer und Anzeigeseite - so kann nichts auseinanderlaufen.",
   "",
   "Alle Zustandsnamen und Befehle stammen aus den Loxone-Dokumenten",
-  "'Structure File' und 'Communicating with the Miniserver' (Stand 16.0, 03.06.2025)",
+  "'Structure File' und 'Communicating with the Miniserver' (Stand 17.0, 31.03.2026)",
   "sowie der Fassung 12.2 fuer die Abschnitte, die im 16.0-Auszug fehlten.",
   "Nichts davon ist geraten. Wo ein Feld nur in bestimmten Fassungen vorkommt,",
   "steht es in 'wahlweise' und darf fehlen.",
@@ -200,29 +200,44 @@
    "haupt": "color",
    "zustaende": [
     "color",
-    "favorites",
     "sequence",
     "sequenceColorIdx"
    ],
    "befehle": [
     "$hsv",
     "$temp",
+    "setBrightness/$wert"
+   ],
+   "text": "Farbwahl",
+   "hinweis": "temp(Helligkeit,Kelvin) - die Reihenfolge ist belegt: [S] ColorPickerV2, States color: \"temp(100,4483) for color temperatures (brightness, kelvin)\". Die Grenzen der Farbtemperatur stehen in den Details TWMin/TWMax (Vorgabe 2700/6500)."
+  },
+  "ColorPicker": {
+   "kachel": "farbe",
+   "haupt": "color",
+   "zustaende": [
+    "color",
+    "favorites"
+   ],
+   "befehle": [
+    "$hsv",
+    "$lumitech",
     "on",
     "off"
    ],
-   "text": "Farbwahl",
-   "hinweis": "Farbbefehle: hsv(Farbton,Saettigung,Helligkeit) mit 0-360/0-100/0-100. Die Weisstemperatur temp(Helligkeit,Kelvin) ist an keiner Anlage nachgemessen - siehe README."
+   "text": "Farbwahl (V1)",
+   "hinweis": "Aeltere Farbwahl. Sie sendet lumitech(Helligkeit,Kelvin) statt temp(...) - [S] ColorPicker, Commands."
   },
   "Alarm": {
    "kachel": "alarm",
    "haupt": "armed",
    "zustaende": [
     "armed",
+    "armedAt",
     "level",
     "nextLevel",
-    "nextLevelDelay",
+    "nextLevelAt",
     "nextLevelDelayTotal",
-    "sensors",
+    "startTime",
     "disabledMove"
    ],
    "befehle": [
@@ -232,7 +247,8 @@
     "delayedon"
    ],
    "text": "Alarmanlage",
-   "warnung": 1
+   "warnung": 1,
+   "hinweis": "nextLevelDelay und sensors sind seit Config 13.0 abgekuendigt; statt dessen nextLevelAt und armedAt (Unix-Zeitstempel) - [S] Alarm, States."
   },
   "InfoOnlyAnalog": {
    "kachel": "wert",
@@ -301,19 +317,25 @@
    ],
    "befehle": [
     "$wert",
-    "reset"
+    "reset",
+    "next",
+    "prev"
    ],
-   "text": "Auswahl"
+   "text": "Auswahl",
+   "hinweis": "Die Namen der Ausgaenge stehen in den Details unter outputs, die Beschriftung fuer \"nichts gewaehlt\" in allOff - [S] Radio, Details. next/prev seit 13.3.1.10."
   },
   "Meter": {
    "kachel": "zaehler",
    "haupt": "actual",
    "zustaende": [
     "actual",
-    "total"
+    "total",
+    "totalDay",
+    "totalWeek"
    ],
    "befehle": [],
-   "text": "Zaehler"
+   "text": "Zaehler",
+   "hinweis": "totalDay und totalWeek gibt es seit 13.01 - [S] Meter, States. Sie fehlen bei aelteren Bausteinen; die Kachel zeigt dann nur, was ankommt."
   },
   "Hourcounter": {
    "kachel": "zaehler",
@@ -331,7 +353,10 @@
    "kachel": "zustand",
    "haupt": "active",
    "zustaende": [
-    "active"
+    "active",
+    "activeSince",
+    "locked",
+    "infoText"
    ],
    "befehle": [],
    "text": "Praesenzmelder"
@@ -357,6 +382,36 @@
    "zustaende": [],
    "befehle": [],
    "text": "Webseite"
+  },
+  "WeatherServer": {
+   "kachel": "wetter",
+   "haupt": "actual",
+   "zustaende": [
+    "actual",
+    "forecast"
+   ],
+   "befehle": [],
+   "text": "Wetter",
+   "hinweis": "Kommt als Wetter-Ereignistabelle (Kennung 7), nicht als Zahlenwert - [K] Event-Table of Weather-States. Laesst sich nicht schalten."
+  },
+  "Daytimer": {
+   "kachel": "tageszeit",
+   "haupt": "value",
+   "zustaende": [
+    "value",
+    "mode",
+    "override",
+    "modeList",
+    "entriesAndDefaultValue",
+    "needsActivation"
+   ],
+   "befehle": [
+    "pulse",
+    "stopOverride",
+    "default/$wert"
+   ],
+   "text": "Zeitschaltuhr",
+   "hinweis": "Die Eintraege kommen als Tageszeit-Ereignistabelle (Kennung 4) unter entriesAndDefaultValue - [K] Event-Table of Daytimer-States. Zeiten sind Minuten seit Mitternacht."
   }
  },
  "generisch": {
@@ -420,7 +475,9 @@
   "generisch": "2x1",
   "brandmelder": "2x1",
   "lichtszene": "2x2",
-  "szene": "2x1"
+  "szene": "2x1",
+  "wetter": "4x2",
+  "tageszeit": "2x2"
  },
  "kacheltexte": {
   "schalter": "Schalter",
@@ -442,7 +499,9 @@
   "auswahl": "Auswahl",
   "zaehler": "Zaehler",
   "szene": "Szene (mehrere Befehle)",
-  "generisch": "Ohne eigenes Bedienelement"
+  "generisch": "Ohne eigenes Bedienelement",
+  "wetter": "Wetter",
+  "tageszeit": "Zeitschaltuhr"
  },
  "szene": {
   "kachel": "szene",

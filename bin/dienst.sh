@@ -179,6 +179,9 @@ case "$1" in
     httpprobe)
         $ZEITGRENZE "$PY" "$SKRIPT" --httpprobe
         ;;
+    visuprobe)
+        $ZEITGRENZE "$PY" "$SKRIPT" --visuprobe
+        ;;
     waechter)
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten.
@@ -188,7 +191,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Aufruf: $0 {start|stop|restart|status|selbsttest|einmal|entwurf|anmeldeprobe|httpprobe|waechter}"
+        echo "Aufruf: $0 {start|stop|restart|status|selbsttest|einmal|entwurf|anmeldeprobe|httpprobe|visuprobe|waechter}"
         exit 2
         ;;
 esac
