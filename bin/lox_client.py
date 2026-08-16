@@ -335,7 +335,21 @@ class Miniserver:
 
     # ---------------- Anmeldung ----------------
 
-    async def _befehl(self, cmd: str, zeit: int = 15) -> Any:
+    @staticmethod
+    def _schrittname(cmd: str) -> str:
+        """Der Befehl in einer Form, die man einem Anwender zeigen kann.
+
+        Hoechstens die ersten drei Abschnitte, danach ein Auslassungszeichen.
+        Das ist kein Schoenheitsgrund: hinter dem Verb stehen Hashes, Token
+        und der Benutzername - 'authwithtoken/9f3c…/admin' gehoert in keine
+        Bildschirmmeldung und in kein Protokoll.
+        """
+        teile = [t for t in cmd.split("/") if t]
+        if len(teile) <= 3:
+            return "/".join(teile)
+        return "/".join(teile[:3]) + "/..."
+
+    async def _befehl(self, cmd: str, zeit: int = 15, name: str = "") -> Any:
         """Einen Befehl ueber den WebSocket senden und auf die Antwort warten.
 
         Der Miniserver antwortet auf Textbefehle mit einem Nachrichtenkopf
@@ -356,11 +370,22 @@ class Miniserver:
         """
         if self.ws is None:
             raise LoxFehler("Es besteht keine Verbindung zum Miniserver.")
+        schritt = name or self._schrittname(cmd)
         f: asyncio.Future = asyncio.get_running_loop().create_future()
         self._warten.append(f)
         await self.ws.send(cmd)
         try:
             return await asyncio.wait_for(f, timeout=zeit)
+        except LoxFehler as fehler:
+            # Der blosse Code sagt niemandem, WO es klemmt. Ein 401 auf
+            # 'jdev/sys/keyexchange' hat eine voellig andere Ursache als einer
+            # auf 'data/LoxAPP3.json' - der erste ist ein Verschluesselungs-
+            # fehler, der zweite ein fehlendes Recht. Am 17.08.2026 hat genau
+            # diese fehlende Angabe eine ganze Runde gekostet: die Meldung
+            # lautete nur "Code 401", und die Suche begann beim Kennwort.
+            if " (bei " in str(fehler):
+                raise                       # schon benannt, nicht doppelt
+            raise LoxFehler("%s (bei '%s')" % (fehler, schritt)) from fehler
         except asyncio.TimeoutError:
             try:
                 self._warten.remove(f)
@@ -395,7 +420,10 @@ class Miniserver:
         b64 = base64.b64encode(cipher).decode("ascii")
         voll = "jdev/sys/enc/" + urllib.parse.quote(b64, safe="")
         try:
-            return await self._befehl(voll, zeit)
+            # Der Name kommt aus dem KLARTEXT. Im Chiffrat steht nichts, was
+            # einem Menschen weiterhilft - und der Salt davor gehoert auch
+            # nicht in eine Meldung.
+            return await self._befehl(voll, zeit, name=self._schrittname(cmd))
         finally:
             self._voriger_salt = self._salt
             self._salt = self._neuer_salt()
@@ -562,9 +590,29 @@ class Miniserver:
         self.weg = "websocket"
         self.letzter_fehler = ""
 
+    @staticmethod
+    def _rechte_hinweis(fehler: "LoxFehler", was: str) -> "LoxFehler":
+        """Ein 401 NACH geglueckter Anmeldung ist keine Kennwortfrage.
+
+        Das Token steht dann schon; der Miniserver verweigert die einzelne
+        Abfrage. Haeufigste Ursache ist das fehlende Recht zur Visualisierung
+        fuer diesen Benutzer. Der Hinweis bleibt als solcher kenntlich - was
+        wirklich fehlt, steht in Loxone Config, nicht hier.
+        """
+        if "401" not in str(fehler):
+            return fehler
+        return LoxFehler(
+            "%s Die Anmeldung war zu diesem Zeitpunkt schon durch - es geht "
+            "also nicht um Benutzer oder Kennwort. Am haeufigsten fehlt dem "
+            "Benutzer in Loxone Config das Recht zur Visualisierung (%s)."
+            % (fehler, was))
+
     async def struktur_holen(self) -> dict:
         """data/LoxAPP3.json kommt als Textnachricht [K, Seite 21]."""
-        roh = await self._befehl("data/LoxAPP3.json", zeit=60)
+        try:
+            roh = await self._befehl("data/LoxAPP3.json", zeit=60)
+        except LoxFehler as f:
+            raise self._rechte_hinweis(f, "ohne das gibt es die Strukturdatei nicht") from f
         if isinstance(roh, dict) and "controls" in roh:
             self.struktur = roh
             return roh
@@ -572,7 +620,10 @@ class Miniserver:
 
     async def zustaende_anfordern(self) -> None:
         """Ohne diesen Befehl kommt kein einziger Wert [K, Seite 18]."""
-        await self._befehl("jdev/sps/enablebinstatusupdate", zeit=30)
+        try:
+            await self._befehl("jdev/sps/enablebinstatusupdate", zeit=30)
+        except LoxFehler as f:
+            raise self._rechte_hinweis(f, "ohne das kommen keine Zustaende") from f
 
     # ---------------- Gesicherte Bausteine ----------------
 
@@ -1101,6 +1152,48 @@ def selbstpruefung() -> list[tuple[bool, str]]:
                   "Sitzungsschluessel roh, nicht URI-kodiert"))
     except Exception as f:  # noqa: BLE001
         e.append((False, "Sitzungsschluessel: Pruefung nicht durchgelaufen (%s)" % f))
+
+    # Jede Fehlermeldung nennt den Schritt - und verraet dabei nichts.
+    #
+    # Am 17.08.2026 stand auf dem Bildschirm nur "Der Miniserver hat mit Code
+    # 401 geantwortet." Das passt auf sechs verschiedene Schritte mit sechs
+    # verschiedenen Ursachen; die Suche begann beim Kennwort und lag falsch.
+    e.append((Miniserver._schrittname("data/LoxAPP3.json") == "data/LoxAPP3.json"
+              and Miniserver._schrittname("jdev/sps/enablebinstatusupdate")
+              == "jdev/sps/enablebinstatusupdate"
+              and Miniserver._schrittname("authwithtoken/9f3caffe/admin")
+              == "authwithtoken/9f3caffe/admin"
+              and Miniserver._schrittname("jdev/sps/ios/9f3caffe/0af1/on")
+              == "jdev/sps/ios/...",
+              "Schrittname kurz gehalten, Hash und Benutzer nicht darueber hinaus"))
+
+    async def _benennt():
+        m7 = Miniserver.__new__(Miniserver)
+        m7._warten = collections.deque()
+        m7._verwerfen = 0
+
+        class _Ws:
+            """Antwortet auf jeden Befehl mit dem Fehler, den der echte
+            Miniserver bei fehlendem Recht schickt - auf die Zukunft, die
+            _befehl gerade selbst eingereiht hat."""
+
+            async def send(self, cmd):
+                m7._warten[-1].set_exception(
+                    LoxFehler("Der Miniserver hat mit Code 401 geantwortet."))
+
+        m7.ws = _Ws()
+        try:
+            await Miniserver._befehl(m7, "data/LoxAPP3.json", zeit=5)
+        except LoxFehler as fehler:
+            return str(fehler)
+        return ""
+
+    try:
+        text = asyncio.run(_benennt())
+        e.append(("401" in text and "data/LoxAPP3.json" in text,
+                  "Fehlermeldung nennt den Schritt: %s" % text))
+    except Exception as f:  # noqa: BLE001
+        e.append((False, "Schrittangabe: Pruefung nicht durchgelaufen (%s)" % f))
 
     # Kennung: die von Loxone genannte Form [K, Seite 30].
     k = Miniserver._kennung_bauen(None)  # type: ignore[arg-type]
