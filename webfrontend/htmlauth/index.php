@@ -36,8 +36,38 @@ if ($db_p['home'] !== '' && is_file($db_p['home'] . '/libs/phplib/loxberry_syste
     require_once $db_p['home'] . '/libs/phplib/loxberry_web.php';
 }
 
-/* Positivliste: jeder Reiter MUSS hier stehen, sonst springt die Seite nach
- * jedem Absenden zurueck auf Einstellungen. */
+/* Die Reiterliste steht GENAU EINMAL.
+ *
+ * Aus diesem Feld entstehen der Pruefausdruck, die Leiste und das
+ * serverseitige sm-active. Bis 0.9.5 stand die Positivliste als Ausdruck von
+ * Hand daneben - sie war zwar vollstaendig, aber der naechste Reiter waere
+ * vergessen worden, und dann ist er anklickbar und die Seite springt nach
+ * jedem Absenden zurueck auf Einstellungen.
+ *
+ * Die id der Bereiche laesst sich nicht mit erzeugen; sie steht im Rumpf.
+ * Dafuer bleibt die Kongruenzprobe in der Pflichtpruefung. */
+$db_reiter = array(
+    'settings' => 'REITER.EINSTELLUNGEN',
+    'boards'   => 'REITER.DASHBOARDS',
+    'designer' => 'REITER.DESIGNER',
+    'loxone'   => 'REITER.LOXONE',
+    'test'     => 'REITER.TEST',
+    'log'      => 'REITER.LOG',
+);
+/* Die Positivliste steht AUSGESCHRIEBEN da, aus demselben Grund wie die
+ * Leiste weiter unten: hausstandard_pruefen.py sucht genau die Form des
+ * Ausdrucks in der naechsten Zeile. Wird er mit implode() zusammengesetzt,
+ * findet das Werkzeug "Liste 0" und die Pruefung ist blind.
+ *
+ * In diesem Kommentar steht der Ausdruck deshalb NICHT noch einmal als
+ * Beispiel: das Werkzeug nimmt die erste Fundstelle, und ein Beispiel mit
+ * drei erfundenen Namen haette es auf die falsche Faehrte geschickt
+ * (dieselbe Klasse wie ein Kommentar, der eine ini-Sektion erwaehnt).
+ *
+ * Damit die drei Aufzaehlungen - Feld, Ausdruck, Leiste - trotzdem nicht
+ * auseinanderlaufen koennen, vergleicht der Reiter Test sie miteinander und
+ * meldet jede Abweichung. Eine Regel, die ein Werkzeug prueft, ist
+ * hinterlegt; eine Regel in Prosa ist eine Hoffnung. */
 $db_muster = '/^tab-(settings|boards|designer|loxone|test|log)$/';
 $db_tab = 'tab-settings';
 if (isset($_POST['activetab']) && preg_match($db_muster, (string) $_POST['activetab'])) {
@@ -58,9 +88,12 @@ $db_sauber = function ($feld) {
         (string) (isset($_POST[$feld]) ? $_POST[$feld] : '')));
 };
 
-/* ---------------- Loxone-Vorlage herunterladen ---------------- */
-if ($db_post && isset($_POST['vorlage'])) {
-    list($db_name, $db_xml) = db_vorlage();
+/* ---------------- Loxone-Vorlagen herunterladen ----------------
+ *
+ * Die Anfuehrungszeichen um den Dateinamen sind Pflicht - ohne sie bricht
+ * jeder Name, der ein Leerzeichen enthaelt. */
+if ($db_post && (isset($_POST['vorlage']) || isset($_POST['vorlage_out']))) {
+    list($db_name, $db_xml) = isset($_POST['vorlage_out']) ? db_vorlage_out() : db_vorlage();
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $db_name . '"');
     echo $db_xml;
@@ -78,8 +111,14 @@ if ($db_post && isset($_POST['speichern'])) {
         $db_cfg['miniserver'] = $db_ms;
     }
 
+    // Die Grenzen der Wartezeit kommen aus der Bibliothek. Bis 0.9.5 stand
+    // hier 1..60 und db_befehl_absetzen() kappte bei 20 - jeder Wert
+    // darueber war wirkungslos, ohne dass es irgendwo stand.
     foreach (array('takt' => array(1, 30), 'http_takt' => array(5, 120),
-                   'wartezeit' => array(1, 60)) as $db_f => $db_g) {
+                   'wartezeit' => array(DB_WARTEZEIT_MIN, DB_WARTEZEIT_MAX),
+                   'rotation' => array(0, 3600),
+                   'nacht_helligkeit' => array(0, 100),
+                   'verlauf_punkte' => array(10, 240)) as $db_f => $db_g) {
         $db_w = $db_sauber($db_f);
         if (!preg_match('/^[0-9]+$/', $db_w)) {
             $db_fehler[] = sprintf(db_t('EINST.FEHLER_ZAHL'), db_t('EINST.L_' . strtoupper($db_f)));
@@ -91,6 +130,25 @@ if ($db_post && isset($_POST['speichern'])) {
         }
     }
 
+    /* Nachtabsenkung: entweder BEIDE Zeiten oder keine. Eine halb
+     * ausgefuellte Angabe wird gemeldet und die Zeile uebergangen - alles
+     * Uebrige wird trotzdem gespeichert. Blockieren darf nur, was das
+     * Speichern technisch unmoeglich macht. */
+    $db_nv = $db_sauber('nacht_von');
+    $db_nb = $db_sauber('nacht_bis');
+    $db_zeitmuster = '/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/';
+    if ($db_nv === '' && $db_nb === '') {
+        $db_cfg['nacht_von'] = '';
+        $db_cfg['nacht_bis'] = '';
+    } elseif (!preg_match($db_zeitmuster, $db_nv) || !preg_match($db_zeitmuster, $db_nb)) {
+        $db_fehler[] = db_t('EINST.FEHLER_NACHTZEIT');
+    } elseif ($db_nv === $db_nb) {
+        $db_fehler[] = db_t('EINST.FEHLER_NACHTGLEICH');
+    } else {
+        $db_cfg['nacht_von'] = $db_nv;
+        $db_cfg['nacht_bis'] = $db_nb;
+    }
+
     $db_farbe = $db_sauber('farbe');
     if (!in_array($db_farbe, array('dunkel', 'hell'), true)) {
         $db_fehler[] = db_t('EINST.FEHLER_FARBE');
@@ -98,12 +156,13 @@ if ($db_post && isset($_POST['speichern'])) {
         $db_cfg['farbe'] = $db_farbe;
     }
 
-    $db_cfg['tls'] = isset($_POST['tls']) ? 1 : 0;
-    $db_cfg['http_rueckfall'] = isset($_POST['http_rueckfall']) ? 1 : 0;
-    $db_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
-    $db_cfg['vollbild'] = isset($_POST['vollbild']) ? 1 : 0;
-    $db_cfg['wach'] = isset($_POST['wach']) ? 1 : 0;
-    $db_cfg['haptik'] = isset($_POST['haptik']) ? 1 : 0;
+    // Haken: isset() stellt sie beim Absenden DIESES Formulars. Alle Haken
+    // dieses Reiters stehen deshalb in demselben Formular - sonst setzte das
+    // Absenden eines anderen sie stillschweigend auf 0.
+    foreach (array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach',
+                   'haptik', 'verlauf', 'sse', 'tafelsteuerung') as $db_h) {
+        $db_cfg[$db_h] = isset($_POST[$db_h]) ? 1 : 0;
+    }
 
     /* Eigene Zugangsdaten. Sie landen in zugang.json mit Rechten 0600 und
      * NIE in der Konfiguration, die diese Seite anzeigt. */
@@ -237,7 +296,7 @@ if ($db_post && isset($_POST['designer_speichern'])) {
             foreach ((isset($db_s['kacheln']) && is_array($db_s['kacheln'])
                       ? $db_s['kacheln'] : array()) as $db_k2) {
                 $db_u = (string) (isset($db_k2['uuid']) ? $db_k2['uuid'] : '');
-                if (!isset($db_bekannt[$db_u])) {
+                if ($db_u !== '' && !isset($db_bekannt[$db_u])) {
                     // Der Baustein steht nicht mehr in der Struktur. Die
                     // Kachel bleibt trotzdem erhalten - sie wird auf dem
                     // Dashboard als 'fehlt' angezeigt, statt spurlos zu
@@ -246,15 +305,39 @@ if ($db_post && isset($_POST['designer_speichern'])) {
                 }
                 $db_g = (string) (isset($db_k2['groesse']) ? $db_k2['groesse'] : '1x1');
                 if (!preg_match('/^[1-6]x[1-3]$/', $db_g)) { $db_g = '1x1'; }
-                $db_kacheln[] = array(
+                $db_art = preg_replace('/[^a-z]/', '',
+                              (string) (isset($db_k2['kachel']) ? $db_k2['kachel'] : ''));
+                $db_neuek = array(
                     'uuid'     => $db_u,
                     'titel'    => trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
                                        (string) (isset($db_k2['titel']) ? $db_k2['titel'] : ''))),
-                    'kachel'   => preg_replace('/[^a-z]/', '',
-                                       (string) (isset($db_k2['kachel']) ? $db_k2['kachel'] : '')),
+                    'kachel'   => $db_art,
                     'groesse'  => $db_g,
                     'sichtbar' => !empty($db_k2['sichtbar']) ? 1 : 0,
                 );
+                /* Szene: die Schritte werden EINZELN gegen dieselbe
+                 * Positivliste geprueft wie ein einzelner Befehl. Ein
+                 * unbrauchbarer Schritt wird uebergangen und gemeldet - die
+                 * uebrigen Kacheln werden trotzdem gespeichert. */
+                if ($db_art === 'szene') {
+                    $db_schritte = array();
+                    foreach ((isset($db_k2['schritte']) && is_array($db_k2['schritte'])
+                              ? $db_k2['schritte'] : array()) as $db_sch) {
+                        if (!is_array($db_sch)) { continue; }
+                        $db_su = (string) (isset($db_sch['uuid']) ? $db_sch['uuid'] : '');
+                        $db_sb = (string) (isset($db_sch['befehl']) ? $db_sch['befehl'] : '');
+                        list($db_sok, $db_sgrund) = db_befehl_erlaubt($db_su, $db_sb);
+                        if (!$db_sok) {
+                            $db_fehler[] = sprintf(db_t('DESIGN.FEHLER_SCHRITT'),
+                                                   db_e($db_neuek['titel']), $db_sgrund);
+                            continue;
+                        }
+                        $db_schritte[] = array('uuid' => $db_su, 'befehl' => $db_sb);
+                    }
+                    $db_neuek['schritte'] = $db_schritte;
+                    $db_neuek['uuid'] = '';
+                }
+                $db_kacheln[] = $db_neuek;
             }
             $db_alt = db_seite($db_k);
             $db_neu[] = array(
@@ -297,6 +380,12 @@ if ($db_post && isset($_POST['test'])) {
 }
 if ($db_post && isset($_POST['selbsttest'])) {
     $db_ausgabe = db_selbsttest_ausgabe();
+    $db_tab = 'tab-test';
+}
+if ($db_post && isset($_POST['probe'])) {
+    list($db_ok, $db_ausgabe) = db_probe((string) $_POST['probe']);
+    if ($db_ok) { $db_meldungen[] = db_t('TEST.PROBE_OK'); }
+    else { $db_fehler[] = db_t('TEST.PROBE_FEHL'); }
     $db_tab = 'tab-test';
 }
 
@@ -353,14 +442,30 @@ if ($db_rahmen) {
 .sm-tabelle { border-collapse: collapse; width: 100%; font-size: 0.88em; margin: 10px 0; }
 .sm-tabelle th, .sm-tabelle td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
 .sm-tabelle th { background: #f5f5f5; font-weight: 600; }
-.sm-b { border: 0; border-radius: 6px; padding: 9px 18px; font-size: 0.93em; cursor: pointer;
-    color: #fff; margin: 4px 6px 4px 0; }
-.sm-b-lesen  { background: #4f7d17; }
-.sm-b-technik { background: #6b7280; }
-.sm-b-aktion { background: #d97706; }
-.sm-legende { font-size: 0.83em; color: #666; margin: 6px 0 14px; line-height: 1.8; }
-.sm-legende span { display: inline-block; width: 12px; height: 12px; border-radius: 3px;
-    vertical-align: -2px; margin-right: 5px; }
+/* Knoepfe, Knopfreihe und Legende woertlich nach VORLAGE_hausstandard.css.html.
+   Bis 0.9.5 hiessen die Klassen hier sm-b statt sm-btn, es gab keine
+   sm-knopfreihe, und die Legende malte ihre Punkte mit style="background:..."
+   statt mit sm-punkt. Folge: hausstandard_pruefen.py fand keine Knopfreihe
+   und meldete die Legendenspalte als "nicht pruefbar" - eine Pruefstelle, die
+   nichts bedeutet, ist schlimmer als keine. Ausserdem fehlten !important und
+   jede :hover-Regel; jQuery Mobile haette die Knoepfe sonst uebermalt. */
+.sm-knopfreihe { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; align-items: stretch; }
+.sm-wrap .sm-knopfreihe .sm-btn, .sm-wrap a.sm-btn, .sm-wrap button.sm-btn {
+    border: 0; border-radius: 6px; padding: 9px 18px; font-size: 0.93em; cursor: pointer;
+    color: #fff !important; margin: 0; display: inline-block; text-decoration: none;
+    text-shadow: none !important; box-shadow: none !important; }
+.sm-wrap .sm-btn.sm-b-lesen   { background: #6dac20 !important; }
+.sm-wrap .sm-btn.sm-b-technik { background: #546e7a !important; }
+.sm-wrap .sm-btn.sm-b-aktion  { background: #e0620d !important; }
+.sm-wrap .sm-btn.sm-b-lesen:hover,   .sm-wrap .sm-btn.sm-b-lesen:focus   { background: #5c9219 !important; color: #fff !important; }
+.sm-wrap .sm-btn.sm-b-technik:hover, .sm-wrap .sm-btn.sm-b-technik:focus { background: #435962 !important; color: #fff !important; }
+.sm-wrap .sm-btn.sm-b-aktion:hover,  .sm-wrap .sm-btn.sm-b-aktion:focus  { background: #b84f0a !important; color: #fff !important; }
+.sm-legende { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 2px; font-size: 0.86em; color: #555; }
+.sm-legende span { display: inline-flex; align-items: center; gap: 6px; }
+.sm-punkt { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+.sm-punkt.sm-b-lesen   { background: #6dac20; }
+.sm-punkt.sm-b-technik { background: #546e7a; }
+.sm-punkt.sm-b-aktion  { background: #e0620d; }
 .sm-step { border-left: 3px solid #6dac20; padding: 2px 0 2px 14px; margin: 18px 0; }
 .sm-step h3 { margin-top: 0; }
 </style>
@@ -400,6 +505,15 @@ if ($db_rahmen) {
              ? ' &mdash; ' . db_e(db_t('ALLG.UEBER_HTTP')) : '') ?></td></tr>
 </table>
 
+<!-- Die Leiste steht AUSGESCHRIEBEN da, obwohl $db_reiter sie erzeugen
+     koennte. Grund: hausstandard_pruefen.py sucht 'data-ziel="tab-…"' im
+     Quelltext. Eine Schleife macht das Werkzeug blind - es meldete die Reiter
+     dann als "0 gefunden". Eine Korrektur, die eine Pruefung blind macht, ist
+     keine (dieselbe Falle wie die printf-Reiterleiste vom 16.08.2026).
+
+     Auseinanderlaufen kann sie trotzdem nicht: der Reiter Test vergleicht
+     diese Leiste, die Bereiche und $db_reiter miteinander und meldet jede
+     Abweichung. -->
 <div class="sm-tabs">
   <a href="index.php?form=settings" class="sm-tab<?= $db_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings"><?= db_e(db_t('REITER.EINSTELLUNGEN')) ?></a>
   <a href="index.php?form=boards" class="sm-tab<?= $db_tab === 'tab-boards' ? ' sm-active' : '' ?>" data-ziel="tab-boards"><?= db_e(db_t('REITER.DASHBOARDS')) ?></a>
@@ -416,15 +530,20 @@ if ($db_rahmen) {
 <h2><?= db_e(db_t('EINST.H_DIENST')) ?></h2>
 <p class="sm-hilfe"><?= db_t('EINST.DIENST_ERKLAERUNG') ?></p>
 <div class="sm-legende">
-  <span style="background:#4f7d17"></span><?= db_t('LEGENDE.LESEN') ?><br>
-  <span style="background:#6b7280"></span><?= db_t('LEGENDE.TECHNIK') ?><br>
-  <span style="background:#d97706"></span><?= db_t('LEGENDE.AKTION') ?>
+  <span><i class="sm-punkt sm-b-lesen"></i> <?= db_t('LEGENDE.LESEN') ?></span>
+  <span><i class="sm-punkt sm-b-aktion"></i> <?= db_t('LEGENDE.AKTION') ?></span>
 </div>
 <form action="index.php" method="post">
   <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-  <button data-role="none" class="sm-b sm-b-aktion" name="dienst" value="start"><?= db_e(db_t('EINST.K_START')) ?></button>
-  <button data-role="none" class="sm-b sm-b-aktion" name="dienst" value="restart"><?= db_e(db_t('EINST.K_NEUSTART')) ?></button>
-  <button data-role="none" class="sm-b sm-b-aktion" name="dienst" value="stop"><?= db_e(db_t('EINST.K_STOP')) ?></button>
+  <div class="sm-knopfreihe">
+  <!-- Die Trennlinie zwischen Gruen und Orange ist nicht "hat eine Wirkung",
+       sondern "kann den Betrieb stoeren". Ein Dienststart ist umkehrbar und
+       harmlos, also gruen; Anhalten und Neustarten greifen in den laufenden
+       Betrieb ein, also orange. Bis 0.9.5 war der Start orange. -->
+  <button data-role="none" class="sm-btn sm-b-lesen" name="dienst" value="start"><?= db_e(db_t('EINST.K_START')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" name="dienst" value="restart"><?= db_e(db_t('EINST.K_NEUSTART')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" name="dienst" value="stop"><?= db_e(db_t('EINST.K_STOP')) ?></button>
+  </div>
 </form>
 
 <form action="index.php" method="post">
@@ -487,7 +606,11 @@ if ($db_rahmen) {
 <div class="sm-feld">
   <label for="wartezeit"><?= db_e(db_t('EINST.L_WARTEZEIT')) ?></label>
   <input data-role="none" type="text" name="wartezeit" id="wartezeit" value="<?= db_e($db_cfg['wartezeit']) ?>">
+  <p class="sm-hilfe"><?= sprintf(db_e(db_t('EINST.H_WARTEZEIT')), DB_WARTEZEIT_MIN, DB_WARTEZEIT_MAX) ?></p>
 </div>
+<label><input data-role="none" type="checkbox" name="sse" value="1"<?= !empty($db_cfg['sse']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_SSE')) ?></label>
+<p class="sm-hilfe"><?= db_t('EINST.H_SSE') ?></p>
 
 <h2><?= db_e(db_t('EINST.H_ANZEIGE')) ?></h2>
 <div class="sm-feld">
@@ -509,7 +632,41 @@ if ($db_rahmen) {
   <?= db_e(db_t('EINST.L_STEUERUNG')) ?></label>
 <p class="sm-hilfe"><?= db_t('EINST.H_STEUERUNG') ?></p>
 
-<button data-role="none" class="sm-b sm-b-aktion" name="speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
+<h2><?= db_e(db_t('EINST.H_WANDTABLET')) ?></h2>
+<p class="sm-hilfe"><?= db_t('EINST.WANDTABLET_ERKLAERUNG') ?></p>
+<div class="sm-feld">
+  <label for="rotation"><?= db_e(db_t('EINST.L_ROTATION')) ?></label>
+  <input data-role="none" type="text" name="rotation" id="rotation" value="<?= db_e($db_cfg['rotation']) ?>">
+  <p class="sm-hilfe"><?= db_t('EINST.H_ROTATION') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="nacht_von"><?= db_e(db_t('EINST.L_NACHT')) ?></label>
+  <input data-role="none" type="text" name="nacht_von" id="nacht_von" size="6"
+         value="<?= db_e($db_cfg['nacht_von']) ?>" placeholder="22:30">
+  <input data-role="none" type="text" name="nacht_bis" id="nacht_bis" size="6"
+         value="<?= db_e($db_cfg['nacht_bis']) ?>" placeholder="06:00">
+  <p class="sm-hilfe"><?= db_t('EINST.H_NACHT') ?></p>
+</div>
+<div class="sm-feld">
+  <label for="nacht_helligkeit"><?= db_e(db_t('EINST.L_NACHT_HELLIGKEIT')) ?></label>
+  <input data-role="none" type="text" name="nacht_helligkeit" id="nacht_helligkeit"
+         value="<?= db_e($db_cfg['nacht_helligkeit']) ?>">
+</div>
+<label><input data-role="none" type="checkbox" name="verlauf" value="1"<?= !empty($db_cfg['verlauf']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_VERLAUF')) ?></label>
+<p class="sm-hilfe"><?= db_t('EINST.H_VERLAUF') ?></p>
+<div class="sm-feld">
+  <label for="verlauf_punkte"><?= db_e(db_t('EINST.L_VERLAUF_PUNKTE')) ?></label>
+  <input data-role="none" type="text" name="verlauf_punkte" id="verlauf_punkte"
+         value="<?= db_e($db_cfg['verlauf_punkte']) ?>">
+</div>
+<label><input data-role="none" type="checkbox" name="tafelsteuerung" value="1"<?= !empty($db_cfg['tafelsteuerung']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_TAFELSTEUERUNG')) ?></label>
+<p class="sm-hilfe"><?= db_t('EINST.H_TAFELSTEUERUNG') ?></p>
+
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" name="speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
+</div>
 </form>
 </div>
 
@@ -517,12 +674,18 @@ if ($db_rahmen) {
 <div class="sm-seite<?= $db_tab === 'tab-boards' ? ' sm-active' : '' ?>" id="tab-boards">
 <h2><?= db_e(db_t('BOARD.H_ENTWURF')) ?></h2>
 <p class="sm-hilfe"><?= db_t('BOARD.ENTWURF_ERKLAERUNG') ?></p>
+<div class="sm-legende">
+  <span><i class="sm-punkt sm-b-lesen"></i> <?= db_t('LEGENDE.LESEN') ?></span>
+  <span><i class="sm-punkt sm-b-aktion"></i> <?= db_t('LEGENDE.AKTION') ?></span>
+</div>
 <form action="index.php" method="post">
   <input data-role="none" type="hidden" name="activetab" value="tab-boards">
-  <button data-role="none" class="sm-b sm-b-lesen" name="struktur_holen" value="1"><?= db_e(db_t('BOARD.K_STRUKTUR')) ?></button>
-  <button data-role="none" class="sm-b sm-b-aktion" name="entwurf" value="ergaenzen"><?= db_e(db_t('BOARD.K_ENTWURF')) ?></button>
-  <button data-role="none" class="sm-b sm-b-aktion" name="entwurf" value="vonvorn"
-          onclick="return confirm(<?= json_encode(strip_tags(html_entity_decode(db_t('BOARD.VONVORN_FRAGE'), ENT_QUOTES, 'UTF-8'))) ?>)"><?= db_e(db_t('BOARD.K_VONVORN')) ?></button>
+  <div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" name="struktur_holen" value="1"><?= db_e(db_t('BOARD.K_STRUKTUR')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" name="entwurf" value="ergaenzen"><?= db_e(db_t('BOARD.K_ENTWURF')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" name="entwurf" value="vonvorn"
+          onclick="return confirm(<?= db_e(json_encode(strip_tags(html_entity_decode(db_t('BOARD.VONVORN_FRAGE'), ENT_QUOTES, 'UTF-8')))) ?>)"><?= db_e(db_t('BOARD.K_VONVORN')) ?></button>
+  </div>
 </form>
 <div class="sm-warnung"><?= db_t('BOARD.VONVORN_WARNUNG') ?></div>
 
@@ -558,7 +721,9 @@ if ($db_rahmen) {
 </tr>
 <?php } ?>
 </table>
-<button data-role="none" class="sm-b sm-b-aktion" name="seiten_speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" name="seiten_speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
+</div>
 </form>
 <div class="sm-hinweis"><?= db_t('BOARD.ADRESSE_HINWEIS') ?></div>
 <?php } ?>
@@ -572,18 +737,29 @@ if ($db_rahmen) {
 <!-- ================= Designer ================= -->
 <div class="sm-seite<?= $db_tab === 'tab-designer' ? ' sm-active' : '' ?>" id="tab-designer">
 <h2><?= db_e(db_t('DESIGN.H_TITEL')) ?></h2>
+<div class="sm-legende">
+  <span><i class="sm-punkt sm-b-technik"></i> <?= db_t('LEGENDE.TECHNIK') ?></span>
+  <span><i class="sm-punkt sm-b-aktion"></i> <?= db_t('LEGENDE.AKTION') ?></span>
+</div>
 <?php if (!$db_bausteine) { ?>
 <div class="sm-warnung"><?= db_t('DESIGN.KEINE_STRUKTUR') ?></div>
 <?php } else { ?>
 <p class="sm-hilfe"><?= db_t('DESIGN.ERKLAERUNG') ?></p>
 <div class="sm-warnung"><?= db_t('DESIGN.WARNUNG') ?></div>
 
+<div class="sm-knopfreihe">
+  <button data-role="none" type="button" class="sm-btn sm-b-aktion" id="dz-neu">+ <?= db_e(db_t('DESIGN.NEUE_SEITE')) ?></button>
+  <button data-role="none" type="button" class="sm-btn sm-b-technik" id="dz-szene">+ <?= db_e(db_t('DESIGN.SZENE_NEU')) ?></button>
+</div>
+
 <div id="dz-bau"></div>
 
 <form action="index.php" method="post" id="dz-form">
   <input data-role="none" type="hidden" name="activetab" value="tab-designer">
   <input data-role="none" type="hidden" name="aufbau" id="dz-aufbau" value="">
-  <button data-role="none" class="sm-b sm-b-aktion" name="designer_speichern" value="1"><?= db_e(db_t('DESIGN.K_SPEICHERN')) ?></button>
+  <div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" name="designer_speichern" value="1"><?= db_e(db_t('DESIGN.K_SPEICHERN')) ?></button>
+  </div>
   <span class="sm-hilfe" id="dz-stand"></span>
 </form>
 <?php } ?>
@@ -593,6 +769,10 @@ if ($db_rahmen) {
 <div class="sm-seite<?= $db_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= db_e(db_t('LOX.H_TITEL')) ?></h2>
 <p class="sm-hilfe"><?= db_t('LOX.EINLEITUNG') ?></p>
+<div class="sm-legende">
+  <span><i class="sm-punkt sm-b-technik"></i> <?= db_t('LEGENDE.TECHNIK') ?></span>
+  <span><i class="sm-punkt sm-b-aktion"></i> <?= db_t('LEGENDE.AKTION') ?></span>
+</div>
 
 <div class="sm-step">
 <h3><?= db_e(db_t('LOX.S1_TITEL')) ?></h3>
@@ -609,16 +789,49 @@ if ($db_rahmen) {
   <td><?= db_t($db_info[1]) ?><?= $db_info[0] !== '' ? ' [' . db_e($db_info[0]) . ']' : '' ?></td></tr>
 <?php } ?>
 </table>
-<form action="index.php" method="post" style="display:inline">
+<h4 style="margin:14px 0 2px"><?= db_e(db_t('LOX.ALLES_TITEL')) ?></h4>
+<p class="sm-hilfe"><?= db_t('LOX.ALLES_TEXT') ?></p>
+<form action="index.php" method="post">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-  <button data-role="none" class="sm-b sm-b-lesen" name="vorlage" value="1"><?= db_e(db_t('LOX.K_VORLAGE')) ?></button>
+  <div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-technik" name="vorlage" value="1"><?= db_e(db_t('LOX.K_VORLAGE')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-technik" name="vorlage_out" value="1"><?= db_e(db_t('LOX.K_VORLAGE_OUT')) ?></button>
+  </div>
 </form>
+<div class="sm-warnung"><?= db_t('LOX.IMPORT_WARNUNG') ?></div>
 </div>
 
 <div class="sm-step">
 <h3><?= db_e(db_t('LOX.S2_TITEL')) ?></h3>
 <p class="sm-hilfe"><?= db_t('LOX.S2_TEXT') ?></p>
 <div class="sm-hinweis"><?= db_t('LOX.S2_HINWEIS') ?></div>
+</div>
+
+<!-- Steuerbefehle: der Miniserver schaltet die Anzeigeseite um. -->
+<div class="sm-step">
+<h3><?= db_e(db_t('LOX.SOUT_TITEL')) ?></h3>
+<p class="sm-hilfe"><?= db_t('LOX.SOUT_TEXT') ?></p>
+<?php if (empty($db_cfg['tafelsteuerung'])) { ?>
+<div class="sm-warnung"><?= db_t('LOX.SOUT_AUS') ?></div>
+<?php } ?>
+<table class="sm-tabelle">
+<tr><th><?= db_e(db_t('LOX.T_BEFEHL')) ?></th><th><?= db_e(db_t('LOX.T_BEDEUTUNG')) ?></th></tr>
+<?php foreach (db_tafel_befehle() as $db_tb) { ?>
+<tr><td class="sm-mono">…&amp;aktion=tafel&amp;seite=<?= db_e($db_tb['wert']) ?></td>
+    <td><?= sprintf(db_e(db_t('LOX.SOUT_SEITE')), db_e($db_tb['name'])) ?></td></tr>
+<?php } ?>
+<tr><td class="sm-mono">…&amp;aktion=tafel&amp;wach=1</td><td><?= db_t('LOX.SOUT_WACH') ?></td></tr>
+<tr><td class="sm-mono">…&amp;aktion=tafel&amp;hell=&lt;v.0&gt;</td><td><?= db_t('LOX.SOUT_HELL') ?></td></tr>
+</table>
+</div>
+
+<!-- Ausfallerkennung: der Schritt, den der Hausstandard ausdruecklich
+     verlangt. Ein virtueller Eingang behaelt seinen letzten Wert - in der
+     App sieht dann alles normal aus, waehrend nichts mehr ankommt. -->
+<div class="sm-step">
+<h3><?= db_e(db_t('LOX.SAUS_TITEL')) ?></h3>
+<p class="sm-hilfe"><?= db_t('LOX.SAUS_TEXT') ?></p>
+<div class="sm-hinweis"><?= db_t('LOX.SAUS_HINWEIS') ?></div>
 </div>
 
 <div class="sm-step">
@@ -659,10 +872,12 @@ foreach ($db_bausteinliste as $db_z) { ?>
 <table class="sm-tabelle">
 <tr><th><?= db_e(db_t('LOX.T_TOKEN')) ?></th><td class="sm-mono"><?= db_e($db_token) ?></td></tr>
 </table>
-<form action="index.php" method="post" style="display:inline">
+<form action="index.php" method="post">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-  <button data-role="none" class="sm-b sm-b-aktion" name="token_neu" value="1"
-    onclick="return confirm(<?= json_encode(strip_tags(html_entity_decode(db_t('LOX.TOKEN_FRAGE'), ENT_QUOTES, 'UTF-8'))) ?>)"><?= db_e(db_t('LOX.K_TOKEN_NEU')) ?></button>
+  <div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" name="token_neu" value="1"
+    onclick="return confirm(<?= db_e(json_encode(strip_tags(html_entity_decode(db_t('LOX.TOKEN_FRAGE'), ENT_QUOTES, 'UTF-8')))) ?>)"><?= db_e(db_t('LOX.K_TOKEN_NEU')) ?></button>
+  </div>
 </form>
 </div>
 
@@ -674,7 +889,10 @@ foreach ($db_bausteinliste as $db_z) { ?>
 <tr><td class="sm-mono">index.php?token=<?= db_e($db_token) ?>&amp;aktion=status</td><td><?= db_t('LOX.E1') ?></td></tr>
 <tr><td class="sm-mono">index.php?token=falsch&amp;aktion=status</td><td><?= db_t('LOX.E2') ?></td></tr>
 <tr><td class="sm-mono">index.php?token=<?= db_e($db_token) ?>&amp;aktion=neustart</td><td><?= db_t('LOX.E3') ?></td></tr>
+<tr><td class="sm-mono">index.php?selftest=1&amp;token=<?= db_e($db_token) ?></td><td><?= db_t('LOX.E4') ?></td></tr>
+<tr><td class="sm-mono">index.php?selftest=1&amp;token=falsch</td><td><?= db_t('LOX.E5') ?></td></tr>
 </table>
+<div class="sm-hinweis"><?= db_t('LOX.E_HINWEIS') ?></div>
 </div>
 </div>
 
@@ -686,15 +904,28 @@ foreach ($db_bausteinliste as $db_z) { ?>
 
 <h2><?= db_e(db_t('TEST.H_LESEN')) ?></h2>
 <div class="sm-legende">
-  <span style="background:#4f7d17"></span><?= db_t('LEGENDE.LESEN') ?><br>
-  <span style="background:#6b7280"></span><?= db_t('LEGENDE.TECHNIK') ?>
+  <span><i class="sm-punkt sm-b-lesen"></i> <?= db_t('LEGENDE.LESEN') ?></span>
+  <span><i class="sm-punkt sm-b-technik"></i> <?= db_t('LEGENDE.TECHNIK') ?></span>
 </div>
 <form action="index.php" method="post">
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
-  <button data-role="none" class="sm-b sm-b-lesen" name="test" value="status"><?= db_e(db_t('TEST.K_STATUS')) ?></button>
-  <button data-role="none" class="sm-b sm-b-technik" name="test" value="roh"><?= db_e(db_t('TEST.K_ROH')) ?></button>
-  <button data-role="none" class="sm-b sm-b-technik" name="selbsttest" value="1"><?= db_e(db_t('TEST.K_SELBSTTEST')) ?></button>
+  <div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" name="test" value="status"><?= db_e(db_t('TEST.K_STATUS')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-technik" name="test" value="roh"><?= db_e(db_t('TEST.K_ROH')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-technik" name="selbsttest" value="1"><?= db_e(db_t('TEST.K_SELBSTTEST')) ?></button>
+  </div>
 </form>
+
+<h2><?= db_e(db_t('TEST.H_MESSEN')) ?></h2>
+<p class="sm-hilfe"><?= db_t('TEST.MESSEN_ERKLAERUNG') ?></p>
+<form action="index.php" method="post">
+  <input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-lesen" name="probe" value="anmeldeprobe"><?= db_e(db_t('TEST.K_ANMELDUNG')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-lesen" name="probe" value="httpprobe"><?= db_e(db_t('TEST.K_HTTPPROBE')) ?></button>
+  </div>
+</form>
+<div class="sm-warnung"><?= db_t('TEST.MESSEN_WARNUNG') ?></div>
 
 <?php if ($db_ausgabe !== '' && $db_tab === 'tab-test') { ?>
 <div class="sm-log"><?= db_e($db_ausgabe) ?></div>
@@ -720,10 +951,14 @@ if (!$db_zeilen) { ?>
 <?php } else { ?>
 <div class="sm-log"><?= db_e(implode("\n", $db_zeilen)) ?></div>
 <?php } ?>
-<div class="sm-legende"><span style="background:#d97706"></span><?= db_t('LEGENDE.AKTION_LOG') ?></div>
+<div class="sm-legende">
+  <span><i class="sm-punkt sm-b-aktion"></i> <?= db_t('LEGENDE.AKTION_LOG') ?></span>
+</div>
 <form action="index.php" method="post">
   <input data-role="none" type="hidden" name="activetab" value="tab-log">
-  <button data-role="none" class="sm-b sm-b-aktion" name="log_leeren" value="1"><?= db_e(db_t('LOG.K_LEEREN')) ?></button>
+  <div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" name="log_leeren" value="1"><?= db_e(db_t('LOG.K_LEEREN')) ?></button>
+  </div>
 </form>
 </div>
 
@@ -759,7 +994,13 @@ if (!$db_zeilen) { ?>
 	var BAUSTEINE = <?= json_encode(array_map(function ($b) {
 		return array('uuid' => $b['uuid'], 'name' => $b['name'], 'kachel' => $b['kachel'],
 		             'loxtyp' => $b['loxtyp'], 'raum' => $b['raumname'], 'kat' => $b['katname'],
-		             'bekannt' => $b['bekannt']);
+		             'bekannt' => $b['bekannt'],
+		             // Die erlaubten Befehle wandern mit, damit der
+		             // Schritt-Editor der Szene nur anbietet, was die
+		             // Kacheltabelle fuer genau diesen Typ nennt.
+		             'befehle' => isset($b['befehle']) ? $b['befehle'] : array(),
+		             'nurlesen' => (int) (isset($b['nurlesen']) ? $b['nurlesen'] : 0),
+		             'gesichert' => (int) (isset($b['gesichert']) ? $b['gesichert'] : 0));
 	}, $db_bausteine), JSON_UNESCAPED_UNICODE) ?>;
 	var AUFBAU = <?= json_encode(array('seiten' => $db_seiten), JSON_UNESCAPED_UNICODE) ?>;
 	var TYPEN = <?= json_encode(db_kacheltypen(), JSON_UNESCAPED_UNICODE) ?>;
@@ -773,6 +1014,12 @@ if (!$db_zeilen) { ?>
 		'leer'    => strip_tags(db_t('DESIGN.SEITE_LEER')),
 		'geaendert' => strip_tags(db_t('DESIGN.GEAENDERT')),
 		'nicht_gespeichert' => strip_tags(html_entity_decode(db_t('DESIGN.NICHT_GESPEICHERT'), ENT_QUOTES, 'UTF-8')),
+		'szene_neu'    => strip_tags(db_t('DESIGN.SZENE_NEU')),
+		'szene_name'   => strip_tags(db_t('DESIGN.SZENE_NAME')),
+		'szene_schritt' => strip_tags(db_t('DESIGN.SZENE_SCHRITT')),
+		'szene_leer'   => strip_tags(db_t('DESIGN.SZENE_LEER')),
+		'szene_dazu'   => strip_tags(db_t('DESIGN.SZENE_DAZU')),
+		'szene_ohne_befehl' => strip_tags(db_t('DESIGN.SZENE_OHNE_BEFEHL')),
 	), JSON_UNESCAPED_UNICODE) ?>;
 
 	var bau = document.getElementById('dz-bau');
@@ -809,14 +1056,39 @@ if (!$db_zeilen) { ?>
 		return TEXT.nicht_gespeichert;
 	});
 
+	/* Schritt-Editor einer Szene.
+	   Angeboten wird NUR, was die Kacheltabelle fuer den gewaehlten
+	   Bausteintyp nennt - dieselbe Positivliste, gegen die der Endpunkt und
+	   der Dienst spaeter noch einmal pruefen. Bausteine, die auf nur lesen
+	   stehen oder gesichert sind, kommen gar nicht erst in die Auswahl. */
+	function szene_editor(k) {
+		var zeilen = (k.schritte || []).map(function (sch, x) {
+			var bb = baustein(sch.uuid);
+			return '<div style="display:flex;gap:4px;align-items:center;margin-top:3px">' +
+				'<span style="flex:1">' + e((bb ? bb.name : sch.uuid) + ' → ' + sch.befehl) + '</span>' +
+				'<button data-role="none" type="button" data-schrittweg="' + x + '" style="padding:0 6px">&times;</button></div>';
+		}).join('');
+		if (!zeilen) { zeilen = '<div class="sm-hilfe" style="margin-top:3px">' + e(TEXT.szene_leer) + '</div>'; }
+		var wahl = BAUSTEINE.filter(function (x) {
+			return (x.befehle || []).length && !x.nurlesen && !x.gesichert;
+		}).slice(0, 400).map(function (x) {
+			return '<option value="' + e(x.uuid) + '">' + e(x.name + (x.raum ? ' · ' + x.raum : '')) + '</option>';
+		}).join('');
+		return '<div style="border-top:1px dashed #ccc;margin-top:5px;padding-top:4px">' + zeilen +
+			'<div style="display:flex;gap:4px;margin-top:5px">' +
+			'<select data-role="none" data-szenebaustein="1" style="flex:1;font-size:.95em">' + wahl + '</select>' +
+			'<select data-role="none" data-szenebefehl="1" style="font-size:.95em"></select>' +
+			'<button data-role="none" type="button" data-schrittdazu="1" style="padding:1px 8px" title="' + e(TEXT.szene_dazu) + '">+</button>' +
+			'</div></div>';
+	}
+
 	function zeichnen() {
 		bau.innerHTML = '';
 		var kopf = document.createElement('div');
 		kopf.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0';
 		kopf.innerHTML =
 			'<input data-role="none" type="text" id="dz-suche" placeholder="' + e(TEXT.suchen) + '" style="flex:1;min-width:180px;padding:7px 10px;border:1px solid #ccc;border-radius:6px">' +
-			'<label style="font-size:.86em"><input data-role="none" type="checkbox" id="dz-nur"> ' + e(TEXT.unbenutzt) + '</label>' +
-			'<button data-role="none" type="button" class="sm-b sm-b-aktion" id="dz-neu">+ ' + e(TEXT.neue) + '</button>';
+			'<label style="font-size:.86em"><input data-role="none" type="checkbox" id="dz-nur"> ' + e(TEXT.unbenutzt) + '</label>';
 		bau.appendChild(kopf);
 
 		var flaeche = document.createElement('div');
@@ -841,7 +1113,7 @@ if (!$db_zeilen) { ?>
 			titel.style.cssText = 'display:flex;gap:8px;align-items:center;padding:8px 10px;background:#f2f7ea;border-bottom:1px solid #ddd;border-radius:8px 8px 0 0';
 			titel.innerHTML = '<b style="flex:1">' + e(s.name) + '</b>' +
 				'<span class="sm-hilfe">' + (s.kacheln || []).length + '</span>' +
-				'<button data-role="none" type="button" class="sm-b sm-b-technik" data-seiteweg="' + si + '" style="padding:4px 10px;margin:0">&times;</button>';
+				'<button data-role="none" type="button" class="sm-btn sm-b-technik" data-seiteweg="' + si + '" style="padding:4px 10px;margin:0">&times;</button>';
 			kasten.appendChild(titel);
 
 			var liste = document.createElement('div');
@@ -851,11 +1123,15 @@ if (!$db_zeilen) { ?>
 				liste.innerHTML = '<span class="sm-hilfe">' + e(TEXT.leer) + '</span>';
 			}
 			(s.kacheln || []).forEach(function (k, ki) {
-				var b = baustein(k.uuid);
+				var szene = k.kachel === 'szene';
+				var b = szene ? null : baustein(k.uuid);
+				/* Eine Szene haengt an keinem Baustein - sie darf deshalb
+				   nicht als "unbekannt" rot markiert werden. */
+				var gut = szene || !!b;
 				var kk = document.createElement('div');
 				kk.draggable = true;
 				kk.dataset.seite = si; kk.dataset.kachel = ki;
-				kk.style.cssText = 'border:1px solid ' + (b ? '#cfd8c0' : '#ef9a9a') + ';border-radius:7px;padding:6px 8px;background:' + (b ? '#fbfdf7' : '#fff5f5') + ';font-size:.83em;cursor:move;max-width:270px';
+				kk.style.cssText = 'border:1px solid ' + (gut ? '#cfd8c0' : '#ef9a9a') + ';border-radius:7px;padding:6px 8px;background:' + (gut ? '#fbfdf7' : '#fff5f5') + ';font-size:.83em;cursor:move;max-width:270px';
 				var opt = GROESSEN.map(function (g) {
 					return '<option value="' + e(g) + '"' + (k.groesse === g ? ' selected' : '') + '>' + e(g) + '</option>';
 				}).join('');
@@ -873,7 +1149,9 @@ if (!$db_zeilen) { ?>
 					'<select data-role="none" data-feld="groesse" style="font-size:.95em">' + opt + '</select>' +
 					'<label style="white-space:nowrap"><input data-role="none" type="checkbox" data-feld="sichtbar"' + (k.sichtbar ? ' checked' : '') + '></label>' +
 					'</div>' +
-					'<div class="sm-hilfe" style="margin-top:2px">' + e(b ? (b.loxtyp + (b.raum ? ' · ' + b.raum : '')) : '?') + '</div>';
+					'<div class="sm-hilfe" style="margin-top:2px">' +
+					  (szene ? e(TEXT.szene_schritt) : e(b ? (b.loxtyp + (b.raum ? ' · ' + b.raum : '')) : '?')) + '</div>' +
+					(szene ? szene_editor(k) : '');
 				liste.appendChild(kk);
 			});
 			kasten.appendChild(liste);
@@ -916,6 +1194,17 @@ if (!$db_zeilen) { ?>
 			AUFBAU.seiten.push({ schluessel: k2, name: name, spalten: 6, pin: '', kacheln: [] });
 			markieren(); zeichnen();
 		};
+		document.getElementById('dz-szene').onclick = function () {
+			if (!AUFBAU.seiten.length) { alert(TEXT.leer); return; }
+			var name = prompt(TEXT.szene_name, '');
+			if (!name) { return; }
+			/* Die Szene kommt auf die ERSTE Seite. Von dort laesst sie sich
+			   ziehen wie jede andere Kachel - ein eigener Auswahldialog waere
+			   ein zweiter Weg fuer dieselbe Sache. */
+			AUFBAU.seiten[0].kacheln.push({ uuid: '', titel: name, kachel: 'szene',
+				groesse: '2x1', sichtbar: 1, schritte: [] });
+			markieren(); zeichnen();
+		};
 		var such = document.getElementById('dz-suche');
 		var nur = document.getElementById('dz-nur');
 		such.oninput = vorrat_fuellen;
@@ -944,6 +1233,52 @@ if (!$db_zeilen) { ?>
 				if (ki >= a.length - 1) { return; }
 				a.splice(ki + 1, 0, a.splice(ki, 1)[0]); markieren(); zeichnen();
 			};
+			/* Szenen-Schritte. Die Befehlsliste haengt am gewaehlten
+			   Baustein und wird bei jedem Wechsel neu gefuellt - angeboten
+			   wird nur, was die Kacheltabelle fuer dessen Typ nennt. */
+			var wahlB = k.querySelector('[data-szenebaustein]');
+			var wahlC = k.querySelector('[data-szenebefehl]');
+			if (wahlB && wahlC) {
+				var fuellen = function () {
+					var bb = baustein(wahlB.value);
+					var liste = (bb && bb.befehle) ? bb.befehle : [];
+					wahlC.innerHTML = liste.map(function (c) {
+						return '<option value="' + e(c) + '">' + e(c) + '</option>';
+					}).join('');
+					if (!liste.length) {
+						wahlC.innerHTML = '<option value="">' + e(TEXT.szene_ohne_befehl) + '</option>';
+					}
+				};
+				wahlB.onchange = fuellen;
+				fuellen();
+				var dazu = k.querySelector('[data-schrittdazu]');
+				if (dazu) {
+					dazu.onclick = function () {
+						var u = wahlB.value, c = wahlC.value;
+						if (!u || !c) { return; }
+						/* Ein Platzhalter wie "$wert" oder "changeTo/$wert"
+						   laesst sich nicht als fertiger Befehl ablegen - der
+						   Wert fehlt. Er wird erfragt statt geraten. */
+						if (c.indexOf('$') >= 0) {
+							var w = prompt(c, '');
+							if (w === null || w === '') { return; }
+							if (!/^-?\d+(\.\d+)?$/.test(w)) { alert(TEXT.szene_ohne_befehl); return; }
+							c = (c === '$wert') ? w : c.replace('$wert', w);
+						}
+						var ziel = AUFBAU.seiten[si].kacheln[ki];
+						if (!ziel.schritte) { ziel.schritte = []; }
+						ziel.schritte.push({ uuid: u, befehl: c });
+						markieren(); zeichnen();
+					};
+				}
+			}
+			k.querySelectorAll('[data-schrittweg]').forEach(function (w) {
+				w.onclick = function () {
+					var ziel = AUFBAU.seiten[si].kacheln[ki];
+					(ziel.schritte || []).splice(parseInt(w.dataset.schrittweg, 10), 1);
+					markieren(); zeichnen();
+				};
+			});
 			k.querySelectorAll('[data-feld]').forEach(function (f) {
 				f.onchange = f.oninput = function () {
 					var ziel = AUFBAU.seiten[si].kacheln[ki];

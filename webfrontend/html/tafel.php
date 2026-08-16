@@ -11,8 +11,9 @@
  * funktionieren, wenn das Haus kein Internet hat - und genau darum geht es
  * bei diesem Plugin.
  *
- * Die Seite holt einmal ihre Struktur (aktion=seite) und danach im Takt nur
- * noch die Werte (aktion=werte). Geschaltet wird ueber aktion=befehl.
+ * Sie holt einmal ihre Struktur (aktion=seite) und danach nur noch Werte -
+ * entweder im Takt (aktion=werte) oder geschoben (aktion=strom). Geschaltet
+ * wird ueber aktion=befehl beziehungsweise aktion=szene.
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
@@ -42,6 +43,29 @@ $daten = $wunsch !== '' ? db_seite_daten($wunsch) : null;
 
 $dunkel = ((string) $cfg['farbe']) !== 'hell';
 $basis = '/plugins/' . db_paths()['plugin'] . '/index.php?token=' . rawurlencode($ist);
+
+/* Was die Anzeigeseite von der Konfiguration wissen muss - und nur das.
+ * Zugangsdaten, Token des Miniservers und Pfade gehen sie nichts an. */
+$konf = array(
+    'takt'      => max(1, min(30, (int) $cfg['takt'])),
+    'sse'       => !empty($cfg['sse']) ? 1 : 0,
+    'rotation'  => max(0, min(3600, (int) $cfg['rotation'])),
+    'nacht_von' => preg_match('/^\d{1,2}:\d{2}$/', (string) $cfg['nacht_von'])
+                   ? (string) $cfg['nacht_von'] : '',
+    'nacht_bis' => preg_match('/^\d{1,2}:\d{2}$/', (string) $cfg['nacht_bis'])
+                   ? (string) $cfg['nacht_bis'] : '',
+    'nacht_hell' => max(0, min(100, (int) $cfg['nacht_helligkeit'])),
+    'verlauf'   => !empty($cfg['verlauf']) ? 1 : 0,
+    'haptik'    => !empty($cfg['haptik']) ? 1 : 0,
+    'vollbild'  => !empty($cfg['vollbild']) ? 1 : 0,
+    'wach'      => !empty($cfg['wach']) ? 1 : 0,
+);
+$seitenliste = array();
+foreach ($seiten as $s) {
+    if (!is_array($s)) { continue; }
+    $seitenliste[] = array('schluessel' => (string) (isset($s['schluessel']) ? $s['schluessel'] : ''),
+                           'name' => (string) (isset($s['name']) ? $s['name'] : ''));
+}
 ?>
 <!DOCTYPE html>
 <html lang="de">
@@ -91,7 +115,12 @@ body.gestoert #raster{opacity:.45;filter:grayscale(.7)}
   padding:10px 14px;background:var(--fehl);color:#fff;font-size:1.05em;
   text-align:center;box-shadow:0 -2px 10px rgba(0,0,0,.35)}
 body.gestoert #stoerband{display:block}
-@media (prefers-reduced-motion: reduce){#raster{transition:none}}
+/* Nachtabsenkung. Ein eigener Schleier statt CSS-filter auf dem Koerper:
+   filter erzeugt einen neuen Bezugsrahmen, und die fest stehenden Elemente
+   (PIN-Fenster, Stoerband) sprangen dadurch an die falsche Stelle. */
+#nachtschleier{position:fixed;inset:0;z-index:40;background:#000;opacity:0;
+  pointer-events:none;transition:opacity .8s ease}
+@media (prefers-reduced-motion: reduce){#raster,#nachtschleier{transition:none}}
 .punkt{width:9px;height:9px;border-radius:50%;background:var(--aus);flex:0 0 auto}
 .punkt.gut{background:var(--an)}
 .punkt.alt{background:var(--warn)}
@@ -103,6 +132,7 @@ main{display:grid;gap:12px;padding:0 18px 24px;
   padding:13px 15px;display:flex;flex-direction:column;overflow:hidden;position:relative;
   transition:background .12s,border-color .12s}
 .k.an{border-color:var(--an);background:var(--anweich)}
+.k.alarm{border-color:var(--fehl)}
 .k .t{font-size:.83rem;color:var(--leise);line-height:1.25;margin-bottom:auto;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .k .w{font-size:1.7rem;font-weight:650;letter-spacing:-.02em;line-height:1.1}
@@ -110,6 +140,11 @@ main{display:grid;gap:12px;padding:0 18px 24px;
 .k .u{font-size:.78rem;color:var(--leise);margin-top:3px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .k.fehlt{border-style:dashed;opacity:.65}
+/* Schloss an gesicherten und Punkt an nur lesenden Bausteinen. Ein Knopf,
+   der stumm scheitert, ist schlimmer als gar keiner - hier steht sichtbar,
+   warum es keinen gibt. */
+.k .marke{position:absolute;top:8px;right:10px;font-size:.8rem;color:var(--leise)}
+.kurve{margin-top:6px;height:22px;width:100%;display:block;opacity:.85}
 .knoepfe{display:flex;gap:7px;margin-top:8px;flex-wrap:wrap}
 button{font:inherit;font-size:.83rem;padding:8px 13px;border-radius:10px;cursor:pointer;
   border:1px solid var(--rand);background:var(--kachel2);color:var(--text);min-height:38px}
@@ -117,6 +152,7 @@ button:active{transform:scale(.97)}
 button.stark{background:var(--an);border-color:var(--an);color:#fff}
 button.leise{color:var(--leise)}
 button.warn{border-color:var(--warn);color:var(--warn)}
+button:disabled{opacity:.45;cursor:not-allowed}
 input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px}
 .balken{height:7px;border-radius:4px;background:var(--kachel2);overflow:hidden;margin-top:8px}
 .balken i{display:block;height:100%;background:var(--an)}
@@ -124,13 +160,17 @@ input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px
 .rollo .schacht{flex:1;height:44px;border-radius:8px;background:var(--kachel2);
   border:1px solid var(--rand);overflow:hidden;position:relative}
 .rollo .schacht i{position:absolute;left:0;top:0;right:0;background:var(--aus);display:block}
+.farbfeld{height:26px;border-radius:8px;border:1px solid var(--rand);margin-top:6px}
+.farbregler{display:grid;grid-template-columns:auto 1fr;gap:2px 8px;align-items:center;
+  margin-top:4px;font-size:.74rem;color:var(--leise)}
+.farbregler input[type=range]{margin:2px 0}
 .pin{position:fixed;inset:0;background:rgba(0,0,0,.72);display:flex;align-items:center;
-  justify-content:center;z-index:50}
+  justify-content:center;z-index:60}
 .pin div{background:var(--kachel);padding:26px;border-radius:var(--r);width:min(320px,88vw);
   border:1px solid var(--rand)}
 .pin input{width:100%;font-size:1.5rem;text-align:center;letter-spacing:.4em;padding:12px;
   border-radius:10px;border:1px solid var(--rand);background:var(--kachel2);color:var(--text)}
-.blase{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;z-index:60;
+.blase{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;z-index:70;
   background:var(--kachel);border:1px solid var(--rand);border-left:4px solid var(--an);
   padding:11px 17px;border-radius:12px;font-size:.88rem;box-shadow:0 8px 28px rgba(0,0,0,.32);
   max-width:min(520px,90vw)}
@@ -169,13 +209,30 @@ input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px
 </div>
 
 <main id="raster" style="--spalten:<?= (int) $daten['spalten'] ?>"></main>
+<div id="nachtschleier"></div>
 
 <script>
 "use strict";
-var BASIS = <?= json_encode($basis) ?>;
-var SEITE = <?= json_encode($wunsch) ?>;
-var DATEN = <?= json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
-var TAKT  = <?= max(1, min(30, (int) $cfg['takt'])) * 1000 ?>;
+/* JSON_UNESCAPED_SLASHES ist hier bewusst NICHT gesetzt.
+ *
+ * Das Flag verhindert genau die Maskierung des schliessenden Skript-Tags,
+ * die den Ausbruch aus diesem Block unmoeglich macht. Kacheltitel fallen auf
+ * den Bausteinnamen aus Loxone Config zurueck, und der wird nirgends von
+ * spitzen Klammern und Schraegstrichen befreit - ein Baustein, dessen Name
+ * ein schliessendes Skript-Tag enthaelt, beendete bis 0.9.5 an dieser Stelle
+ * das script-Element. In db_json_raus() darf das Flag bleiben: dort ist der
+ * Inhaltstyp application/json, kein HTML.
+ *
+ * In diesem Kommentar steht die Zeichenfolge DESHALB NICHT ausgeschrieben.
+ * Sie tat es beim ersten Anlauf - und beendete den Skriptblock genau so, wie
+ * der Kommentar es beschreibt. Ein Beispiel, das den beschriebenen Fehler
+ * selbst begeht, ist kein Beispiel. */
+var BASIS = <?= json_encode($basis, JSON_UNESCAPED_UNICODE) ?>;
+var SEITE = <?= json_encode($wunsch, JSON_UNESCAPED_UNICODE) ?>;
+var DATEN = <?= json_encode($daten, JSON_UNESCAPED_UNICODE) ?>;
+var KONF  = <?= json_encode($konf, JSON_UNESCAPED_UNICODE) ?>;
+var LISTE = <?= json_encode($seitenliste, JSON_UNESCAPED_UNICODE) ?>;
+var TAKT  = KONF.takt * 1000;
 var PIN   = "";
 
 /* ---------- Kleinteile ---------- */
@@ -184,6 +241,7 @@ function zahl(v,n){ if(v==null||v==="")return "–";
   var f=parseFloat(v); if(isNaN(f))return String(v);
   return f.toFixed(n===undefined?(Math.abs(f)>=100?0:1):n).replace(".",","); }
 function an(v){ return v!=null && parseFloat(v)>0; }
+function zahl_oder(v, ersatz){ var f=parseFloat(v); return isNaN(f)?ersatz:f; }
 
 function blase(text, fehl){
   var alt=document.querySelector(".blase"); if(alt) alt.remove();
@@ -217,23 +275,17 @@ function pin_fragen(){
   });
 }
 
-/* ---------- Befehl absetzen ---------- */
-function senden(uuid, befehl){
+/* ---------- Absenden ---------- */
+function absenden(pfad){
   if (DATEN.pin && !PIN) {
     return pin_fragen().then(function(p){
       if(p === null){ return; }
       PIN = p;
-      return senden(uuid, befehl);
+      return absenden(pfad);
     });
   }
-  /* &seite= ist Pflicht. Die PIN haengt an der SEITE, nicht am Baustein:
-     liegt ein Tuerschloss auf einer ungeschuetzten und zusaetzlich auf einer
-     geschuetzten Seite, muss der Endpunkt wissen, von welcher der Druck kam.
-     Ohne diesen Parameter nahm er bis 0.9.0 die erstbeste - und damit liess
-     sich die PIN der geschuetzten Seite umgehen. */
-  var u = BASIS+"&aktion=befehl&seite="+encodeURIComponent(SEITE)
-        + "&uuid="+encodeURIComponent(uuid)
-        + "&befehl="+encodeURIComponent(befehl)+(PIN?"&pin="+encodeURIComponent(PIN):"");
+  var u = BASIS + pfad + "&seite=" + encodeURIComponent(SEITE)
+        + (PIN ? "&pin=" + encodeURIComponent(PIN) : "");
   return fetch(u,{cache:"no-store"}).then(function(a){ return a.json().catch(function(){
       return {ok:0,meldung:"Der LoxBerry hat keine lesbare Antwort geschickt."}; }); })
     .then(function(d){
@@ -248,6 +300,36 @@ function senden(uuid, befehl){
       return d;
     })
     .catch(function(){ blase("Der LoxBerry ist nicht erreichbar.", true); });
+}
+
+/* &seite= ist Pflicht. Die PIN haengt an der SEITE, nicht am Baustein:
+   liegt ein Tuerschloss auf einer ungeschuetzten und zusaetzlich auf einer
+   geschuetzten Seite, muss der Endpunkt wissen, von welcher der Druck kam. */
+function senden(uuid, befehl){
+  return absenden("&aktion=befehl&uuid=" + encodeURIComponent(uuid)
+                  + "&befehl=" + encodeURIComponent(befehl));
+}
+function szene_ausloesen(nr){
+  return absenden("&aktion=szene&kachel=" + encodeURIComponent(nr));
+}
+
+/* ---------- Verlaufskurve ----------
+   Ein <svg> aus einem einzigen Polygonzug, ohne Achsen und ohne Zahlen. Sie
+   soll die Richtung zeigen, nicht abgelesen werden - dafuer steht der Wert
+   gross darueber. */
+function kurve(werte){
+  if(!KONF.verlauf || !werte || werte.length < 3){ return ""; }
+  var min = Math.min.apply(null, werte), max = Math.max.apply(null, werte);
+  var spanne = (max - min) || 1;
+  var n = werte.length;
+  var punkte = werte.map(function(w, i){
+    var x = (i / (n - 1)) * 100;
+    var y = 20 - ((w - min) / spanne) * 18;
+    return x.toFixed(1) + "," + y.toFixed(1);
+  }).join(" ");
+  return '<svg class="kurve" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true">'+
+         '<polyline points="'+punkte+'" fill="none" stroke="currentColor" '+
+         'stroke-width="1.2" vector-effect="non-scaling-stroke" opacity=".55"/></svg>';
 }
 
 /* ---------- Kacheln ---------- */
@@ -268,18 +350,26 @@ BAUER.taster = function(k, w){
 };
 
 BAUER.dimmer = function(k, w){
-  var p = w.position==null?0:Math.round(parseFloat(w.position));
-  return {klasse: p>0?"an":"", inhalt:
-    '<div class="w">'+p+'<small>%</small></div>'+
-    '<input type="range" min="0" max="100" step="1" value="'+p+'" data-w="1">'+
+  /* Grenzen aus dem Baustein, wenn der Miniserver sie mitschickt. Bis 0.9.5
+     waren 0..100 fest verdrahtet, obwohl min/max/step abonniert werden. */
+  var lo = zahl_oder(k.min, 0), hi = zahl_oder(k.max, 100), st = zahl_oder(k.step, 1);
+  if (hi <= lo) { lo = 0; hi = 100; }
+  var p = w.position==null?lo:Math.round(parseFloat(w.position));
+  return {klasse: p>lo?"an":"", inhalt:
+    '<div class="w">'+p+'<small>%</small></div>'+ kurve(k.verlauf) +
+    '<input type="range" min="'+lo+'" max="'+hi+'" step="'+(st>0?st:1)+'" value="'+p+'" data-w="1">'+
     '<div class="knoepfe"><button data-b="on">Ein</button><button data-b="off">Aus</button></div>'};
 };
 
 BAUER.schieber = function(k, w){
-  var v = w.value==null?0:parseFloat(w.value);
+  var lo = zahl_oder(k.min, 0), hi = zahl_oder(k.max, 100), st = zahl_oder(k.step, 1);
+  if (hi <= lo) { lo = 0; hi = 100; }
+  var v = w.value==null?lo:parseFloat(w.value);
+  if (isNaN(v)) { v = lo; }
   return {klasse:"", inhalt:
-    '<div class="w">'+zahl(v)+'<small>'+e(k.einheit_kurz||"")+'</small></div>'+
-    '<input type="range" min="0" max="100" step="1" value="'+(isNaN(v)?0:Math.max(0,Math.min(100,v)))+'" data-w="1">'};
+    '<div class="w">'+zahl(v)+'<small>'+e(k.einheit_kurz||"")+'</small></div>'+ kurve(k.verlauf) +
+    '<input type="range" min="'+lo+'" max="'+hi+'" step="'+(st>0?st:1)+'" value="'+
+      Math.max(lo,Math.min(hi,v))+'" data-w="1">'};
 };
 
 BAUER.licht = function(k, w){
@@ -303,6 +393,60 @@ BAUER.licht = function(k, w){
           inhalt:'<div class="w" style="font-size:1.05rem">'+e(text)+'</div>'+kn};
 };
 
+/* Die aeltere Lichtsteuerung (LightController ohne V2).
+   Sie kennt keine Stimmungsliste, sondern Szenennummern: activescene und
+   sceneList. Bis 0.9.5 lief sie ueber dieselbe Kachel wie V2 und griff damit
+   auf moodList/activeMoods zu - Felder, die V1 nie sendet. Die Kachel stand
+   deshalb dauerhaft auf "Aus", und ihr einziger Knopf schickte changeTo/0,
+   was die Befehlsliste von V1 gar nicht kennt. */
+BAUER.lichtszene = function(k, w){
+  var szenen = [];
+  var roh = w.sceneList;
+  if (typeof roh === "string" && roh !== "") {
+    /* sceneList kommt als Text. Zwei Formen sind im Umlauf: eine
+       JSON-Liste und eine Aufzaehlung "0=Aus,1=Hell,...". Beide werden
+       gelesen; was zu keiner passt, wird uebergangen statt geraten. */
+    try {
+      var j = JSON.parse(roh);
+      if (Array.isArray(j)) {
+        szenen = j.map(function(x, i){
+          return (x && typeof x === "object")
+            ? {nr: (x.id!==undefined?x.id:i), name: x.name||String(i)}
+            : {nr: i, name: String(x)};
+        });
+      }
+    } catch(x) {
+      roh.split(",").forEach(function(teil){
+        var t = teil.split("=");
+        if (t.length === 2 && /^\d+$/.test(t[0].trim())) {
+          szenen.push({nr: parseInt(t[0],10), name: t[1].trim()});
+        }
+      });
+    }
+  }
+  var jetzt = w.activescene;
+  var kn = '<div class="knoepfe">';
+  var gezeigt = 0;
+  for (var i=0;i<szenen.length && gezeigt<4;i++){
+    var s = szenen[i];
+    var ist = String(s.nr) === String(jetzt);
+    kn += '<button data-b="'+e(s.nr)+'" class="'+(ist?"stark":"")+'">'+e(s.name)+'</button>';
+    gezeigt++;
+  }
+  if(!gezeigt){
+    kn += '<button data-b="on" class="stark">Ein</button>'+
+          '<button data-b="off">Aus</button>';
+  }
+  kn += '<button data-b="plus" class="leise">+</button>'+
+        '<button data-b="minus" class="leise">&minus;</button></div>';
+  var text = szenen.length
+      ? (szenen.filter(function(s){return String(s.nr)===String(jetzt);})
+               .map(function(s){return s.name;})[0] || ("Szene "+(jetzt==null?"–":jetzt)))
+      : (jetzt==null ? "–" : "Szene "+jetzt);
+  return {klasse: (jetzt!=null && String(jetzt)!=="0")?"an":"",
+          inhalt:'<div class="w" style="font-size:1.05rem">'+e(text)+'</div>'+kn};
+};
+
 BAUER.jalousie = function(k, w){
   /* position: 0 = ganz oben, 1 = ganz unten  [Structure File, Jalousie] */
   var p = w.position==null?0:Math.round(parseFloat(w.position)*100);
@@ -310,6 +454,10 @@ BAUER.jalousie = function(k, w){
   return {klasse:"", inhalt:
     '<div class="w">'+p+'<small>% zu</small></div>'+
     '<div class="rollo"><div class="schacht"><i style="height:'+p+'%"></i></div></div>'+
+    /* Der Schieberegler fehlte bis 0.9.5, obwohl manualPosition/$wert in der
+       Befehlsliste stand und der Regler-Handler ihn behandelte - der Zweig
+       konnte nie ausloesen. */
+    '<input type="range" min="0" max="100" step="1" value="'+p+'" data-w="1" data-art="jalousie">'+
     '<div class="knoepfe"><button data-b="FullUp">&uarr;</button>'+
     '<button data-b="stop">&#9632;</button>'+
     '<button data-b="FullDown">&darr;</button>'+
@@ -322,7 +470,7 @@ BAUER.raumregler = function(k, w){
   var ist = w.tempActual, soll = w.tempTarget;
   var offen = an(w.openWindow);
   return {klasse:"", inhalt:
-    '<div class="w">'+zahl(ist)+'<small>&deg;C</small></div>'+
+    '<div class="w">'+zahl(ist)+'<small>&deg;C</small></div>'+ kurve(k.verlauf) +
     '<div class="u">Soll '+zahl(soll)+'&nbsp;&deg;C'+(offen?' &middot; Fenster offen':'')+'</div>'+
     '<div class="knoepfe">'+
       '<button data-b="setComfortTemperature/'+(Math.round((parseFloat(soll)||20)*2-1)/2)+'">&minus;</button>'+
@@ -361,7 +509,7 @@ BAUER.auswahl = function(k, w){
 
 BAUER.wert = function(k, w){
   return {klasse:"", inhalt:'<div class="w">'+zahl(w.value)+
-    '<small>'+e(k.einheit_kurz||"")+'</small></div>'};
+    '<small>'+e(k.einheit_kurz||"")+'</small></div>'+ kurve(k.verlauf)};
 };
 
 BAUER.zustand = function(k, w){
@@ -376,26 +524,87 @@ BAUER.text = function(k, w){
 
 BAUER.zaehler = function(k, w){
   return {klasse:"", inhalt:'<div class="w">'+zahl(w.actual!=null?w.actual:w.total)+
-    '<small>'+e(k.einheit_kurz||"")+'</small></div>'+
+    '<small>'+e(k.einheit_kurz||"")+'</small></div>'+ kurve(k.verlauf) +
     (w.total!=null&&w.actual!=null?'<div class="u">Summe '+zahl(w.total)+'</div>':'')};
 };
 
 BAUER.alarm = function(k, w){
   var scharf = an(w.armed);
   var stufe = parseFloat(w.level)||0;
-  return {klasse: stufe>0?"":"", inhalt:
+  /* Bis 0.9.5 stand hier stufe>0?"":"" - beide Zweige leer, die Kachel bekam
+     ihre Hervorhebung also nie. */
+  return {klasse: stufe>0?"alarm":(scharf?"an":""), inhalt:
     '<div class="w" style="font-size:1.2rem;'+(stufe>0?"color:var(--fehl)":"")+'">'+
       (stufe>0?"ALARM":(scharf?"scharf":"unscharf"))+'</div>'+
     '<div class="knoepfe">'+
       (stufe>0?'<button data-b="quit" class="warn">Quittieren</button>':
-        (scharf?'<button data-b="off">Unscharf</button>':
+        (scharf?'<button data-b="off" class="warn">Unscharf</button>':
                 '<button data-b="on" class="warn">Scharf schalten</button>'))+
     '</div>'};
 };
 
+/* Brandmelder - eine EIGENE Kachel.
+   Er liefert kein 'armed'. Bis 0.9.5 lief er ueber die Alarm-Kachel, die
+   genau das liest: die Kachel eines Brandmelders zeigte deshalb dauerhaft
+   "unscharf" und bot einen Knopf "Scharf schalten" an, den die Befehlsliste
+   (nur "quit") abwies. Falsche Beschriftung und toter Knopf an einem
+   Sicherheitsgeraet. */
+BAUER.brandmelder = function(k, w){
+  var stufe = parseFloat(w.level)||0;
+  var ursache = w.alarmCause;
+  var akustisch = an(w.acousticAlarm), test = an(w.testAlarm);
+  var text = stufe>0 ? "ALARM" : (test ? "Test laeuft" : "ruhig");
+  var unten = [];
+  if (stufe>0 && ursache!=null && ursache!=="") { unten.push("Ursache "+ursache); }
+  if (akustisch) { unten.push("Sirene an"); }
+  return {klasse: stufe>0?"alarm":"", inhalt:
+    '<div class="w" style="font-size:1.2rem;'+(stufe>0?"color:var(--fehl)":"")+'">'+e(text)+'</div>'+
+    (unten.length?'<div class="u">'+e(unten.join(" · "))+'</div>':'')+
+    '<div class="knoepfe">'+
+      (stufe>0||akustisch
+        ? '<button data-b="quit" class="warn">Quittieren</button>'
+        : '<button disabled title="Ein Brandmelder kennt nur Quittieren.">Quittieren</button>')+
+    '</div>'};
+};
+
+/* Farbwahl. Bis 0.9.5 stand hier "Farbwahl: bitte in der Loxone-App" - der
+   Baustein war also gelistet, aber nicht bedienbar. Zwei Dinge fehlten:
+   die Bedienelemente und, unbemerkt, der passende Eintrag in der
+   Befehlsliste ($wert laesst nur Zahlen durch, hsv(...) waere abgewiesen
+   worden). Beides ist jetzt da. */
 BAUER.farbe = function(k, w){
-  return {klasse:"", inhalt:'<div class="w" style="font-size:1rem">'+e(w.color||"–")+'</div>'+
-    '<div class="u">Farbwahl: bitte in der Loxone-App</div>'};
+  var roh = String(w.color||"");
+  var h=0, s=0, v=0, kelvin=0, art="";
+  var m = roh.match(/^hsv\((\d+),(\d+),(\d+)\)$/i);
+  if (m) { art="hsv"; h=+m[1]; s=+m[2]; v=+m[3]; }
+  else {
+    var t = roh.match(/^temp\((\d+),(\d+)\)$/i);
+    if (t) { art="temp"; v=+t[1]; kelvin=+t[2]; }
+  }
+  var vorschau = art==="hsv" ? "hsl("+h+","+s+"%,"+Math.max(10,Math.min(90,v/2+10))+"%)"
+               : (art==="temp" ? "#ffe9c8" : "var(--kachel2)");
+  var kopf = art==="temp" ? (kelvin+" K") : (art==="hsv" ? (v+"%") : (roh||"–"));
+  return {klasse: v>0?"an":"", inhalt:
+    '<div class="w" style="font-size:1.2rem">'+e(kopf)+'</div>'+
+    '<div class="farbfeld" style="background:'+vorschau+'"></div>'+
+    '<div class="farbregler">'+
+      '<span>Farbe</span><input type="range" min="0" max="360" step="1" value="'+h+'" data-farbe="h">'+
+      '<span>Saett.</span><input type="range" min="0" max="100" step="1" value="'+s+'" data-farbe="s">'+
+      '<span>Hell</span><input type="range" min="0" max="100" step="1" value="'+v+'" data-farbe="v">'+
+    '</div>'+
+    '<div class="knoepfe"><button data-b="off">Aus</button>'+
+    '<button data-weiss="1" class="leise">Warmweiss</button></div>'};
+};
+
+/* Szene: mehrere Befehle auf einen Druck. Sie haengt an keinem Baustein,
+   deshalb hat sie keine UUID - der Endpunkt findet sie ueber die laufende
+   Nummer der Kachel auf dieser Seite und prueft JEDEN Schritt einzeln. */
+BAUER.szene = function(k, w){
+  return {klasse:"", inhalt:
+    '<div class="w" style="font-size:1.05rem">'+(k.schritte||0)+' Schritte</div>'+
+    ((k.beschreibung&&k.beschreibung.length)
+      ? '<div class="u">'+e(k.beschreibung.slice(0,2).join(" · "))+'</div>' : '')+
+    '<div class="knoepfe"><button data-szene="1" class="stark">Ausloesen</button></div>'};
 };
 
 BAUER.generisch = function(k, w){
@@ -436,7 +645,20 @@ function zeichnen(){
     d.style.gridColumn = "span "+Math.max(1,Math.min(6,parseInt(g[0],10)||1));
     d.style.gridRow = "span "+Math.max(1,Math.min(3,parseInt(g[1],10)||1));
     d.dataset.i = i;
-    d.innerHTML = '<div class="t">'+e(k.titel)+'</div>'+r.inhalt;
+    /* Gesichert und nur-lesend werden SICHTBAR gemacht und die Knoepfe
+       abgeschaltet. Bis 0.9.5 lieferte der Endpunkt beide Merkmale mit, und
+       die Anzeige wertete keines aus: ein gesicherter Baustein bekam volle
+       Knoepfe, die dann am Miniserver scheiterten. */
+    var marke = "";
+    if (k.gesichert) { marke = '<span class="marke" title="In Loxone Config gesichert - '+
+      'verlangt das Visualisierungs-Passwort">&#128274;</span>'; }
+    else if (k.nurlesen) { marke = '<span class="marke" title="In Loxone auf nur lesen '+
+      'gesetzt">&#128065;</span>'; }
+    d.innerHTML = '<div class="t">'+e(k.titel)+'</div>'+ marke + r.inhalt;
+    if (k.gesichert || k.nurlesen) {
+      d.querySelectorAll("button[data-b],button[data-szene],button[data-weiss],input[type=range]")
+       .forEach(function(el){ el.disabled = true; });
+    }
     raster.appendChild(d);
   });
 }
@@ -449,33 +671,66 @@ function zeichnen(){
    fehlt es, passiert einfach nichts. Wer es nicht will, schaltet es in den
    Einstellungen ab. */
 function ruetteln(){
-  <?php if (!empty($cfg['haptik'])) { ?>
+  if (!KONF.haptik) { return; }
   try { if (navigator.vibrate) { navigator.vibrate(40); } } catch(e){}
-  <?php } ?>
+}
+
+function kachel_von(el){
+  var kachel = el.closest ? el.closest(".k") : null;
+  if(!kachel) return null;
+  var i = parseInt(kachel.dataset.i,10);
+  return isNaN(i) ? null : {i:i, k:DATEN.kacheln[i], el:kachel};
 }
 
 document.addEventListener("click", function(ev){
-  var b = ev.target.closest ? ev.target.closest("button[data-b]") : null;
-  if(!b) return;
-  var kachel = b.closest(".k"); if(!kachel) return;
-  var k = DATEN.kacheln[parseInt(kachel.dataset.i,10)];
-  if(!k) return;
+  var ziel = ev.target;
+  var b = ziel.closest ? ziel.closest("button") : null;
+  if(!b || b.disabled) return;
+  var kk = kachel_von(b);
+  if(!kk || !kk.k) return;
+  if (b.dataset.szene) { ruetteln(); szene_ausloesen(kk.i); return; }
+  if (b.dataset.weiss) {
+    /* Warmweiss: 2700 K bei der zuletzt angezeigten Helligkeit. Die
+       Reihenfolge der beiden Zahlen (Helligkeit, Kelvin) ist die
+       dokumentierte, aber an keiner Anlage nachgemessen - steht so auch in
+       der README. */
+    ruetteln();
+    var hell = kk.el.querySelector('[data-farbe="v"]');
+    senden(kk.k.uuid, "temp("+(hell?hell.value:80)+",2700)");
+    return;
+  }
+  if (b.dataset.b === undefined) return;
   ruetteln();
-  senden(k.uuid, b.dataset.b);
+  senden(kk.k.uuid, b.dataset.b);
 });
 
 document.addEventListener("change", function(ev){
   var s = ev.target;
-  if(!s || s.type!=="range" || !s.dataset.w) return;
-  var kachel = s.closest(".k"); if(!kachel) return;
-  var k = DATEN.kacheln[parseInt(kachel.dataset.i,10)];
-  if(!k) return;
+  if(!s || s.type!=="range" || s.disabled) return;
+  var kk = kachel_von(s);
+  if(!kk || !kk.k) return;
+
+  /* Farbregler: die drei Schieber gehoeren zusammen, gesendet wird EIN
+     Befehl aus allen dreien. */
+  if (s.dataset.farbe) {
+    var h = kk.el.querySelector('[data-farbe="h"]');
+    var sa = kk.el.querySelector('[data-farbe="s"]');
+    var v = kk.el.querySelector('[data-farbe="v"]');
+    senden(kk.k.uuid, "hsv("+(h?h.value:0)+","+(sa?sa.value:0)+","+(v?v.value:0)+")");
+    return;
+  }
+  if (!s.dataset.w) return;
+
   /* Was der Wert genau bedeutet, haengt am Typ. Deshalb wird hier NICHT
      geraten, sondern die Befehlsliste des Bausteins befragt. */
-  var bef = k.befehle || [];
-  if (bef.indexOf("$wert")>=0) { senden(k.uuid, s.value); }
-  else if (k.kachel==="jalousie") { senden(k.uuid, "manualPosition/"+s.value); }
-  else { senden(k.uuid, s.value); }
+  var bef = kk.k.befehle || [];
+  if (s.dataset.art === "jalousie" || kk.k.kachel === "jalousie") {
+    senden(kk.k.uuid, "manualPosition/"+s.value);
+  } else if (bef.indexOf("$wert")>=0) {
+    senden(kk.k.uuid, s.value);
+  } else {
+    senden(kk.k.uuid, s.value);
+  }
 });
 
 /* ---------- Stoerungsband ---------- */
@@ -488,21 +743,63 @@ document.addEventListener("change", function(ev){
 
 /* ---------- Werte holen ---------- */
 var fehlversuche = 0;
+var letzte_tafel_nr = (DATEN.tafel && DATEN.tafel.nr) || 0;
+
+function uebernehmen(d){
+  fehlversuche = 0;
+  DATEN.kacheln.forEach(function(k){
+    if(d.werte && d.werte[k.uuid]) k.werte = d.werte[k.uuid];
+    if(d.verlauf && d.verlauf[k.uuid]) k.verlauf = d.verlauf[k.uuid];
+  });
+  zeichnen();
+  stand_zeigen(d);
+  if (d.tafel) { tafel_befolgen(d.tafel); }
+}
+
 function werte_holen(){
   fetch(BASIS+"&aktion=werte&seite="+encodeURIComponent(SEITE), {cache:"no-store"})
   .then(function(a){ return a.json(); })
-  .then(function(d){
-    fehlversuche = 0;
-    DATEN.kacheln.forEach(function(k){
-      if(d.werte && d.werte[k.uuid]) k.werte = d.werte[k.uuid];
-    });
-    zeichnen();
-    stand_zeigen(d);
-  })
+  .then(uebernehmen)
   .catch(function(){
     fehlversuche++;
     stand_zeigen(null);
   });
+}
+
+/* Werte geschoben statt abgefragt.
+   Faellt der Strom aus (kein EventSource, Zwischenstation puffert, Endpunkt
+   antwortet nicht), wird auf die Abfrage im Takt zurueckgefallen UND das
+   angezeigt - sonst wird aus dem Ersatz unbemerkt der Normalfall. */
+var strom = null, taktgeber = null, ersatzweg = false;
+
+function abfrage_starten(){
+  if (taktgeber) { return; }
+  taktgeber = setInterval(werte_holen, TAKT);
+  werte_holen();
+}
+
+function strom_starten(){
+  if (!("EventSource" in window)) { ersatzweg = true; abfrage_starten(); return; }
+  try {
+    strom = new EventSource(BASIS+"&aktion=strom&seite="+encodeURIComponent(SEITE));
+  } catch(x) { ersatzweg = true; abfrage_starten(); return; }
+  strom.onmessage = function(ev){
+    try { uebernehmen(JSON.parse(ev.data)); } catch(x){}
+  };
+  strom.onerror = function(){
+    /* EventSource verbindet von selbst neu; der Endpunkt beendet den Lauf
+       ohnehin nach fuenf Minuten. Erst wenn das mehrfach scheitert, wird
+       umgeschaltet. */
+    fehlversuche++;
+    stand_zeigen(null);
+    if (fehlversuche >= 3 && !ersatzweg) {
+      ersatzweg = true;
+      try { strom.close(); } catch(x){}
+      strom = null;
+      blase("Der Werte-Schub kam nicht durch. Es wird wieder im Takt abgefragt.", true);
+      abfrage_starten();
+    }
+  };
 }
 
 function stoerung(an, text){
@@ -514,9 +811,10 @@ function stoerung(an, text){
 function stand_zeigen(d){
   var p = document.getElementById("punkt");
   var t = document.getElementById("stand");
+  var weg = ersatzweg ? " – Ersatzweg: Abfrage im Takt" : "";
   if(!d){
     p.className = "punkt tot";
-    t.textContent = "Der LoxBerry antwortet nicht ("+fehlversuche+" Versuche).";
+    t.textContent = "Der LoxBerry antwortet nicht ("+fehlversuche+" Versuche)."+weg;
     /* Erst nach dem ZWEITEN Fehlversuch abdunkeln. Ein einzelner Aussetzer
        - ein WLAN-Paket, das verloren geht - ist Alltag; das Tablet soll
        deswegen nicht bei jedem Takt aufblinken. */
@@ -532,45 +830,109 @@ function stand_zeigen(d){
   }
   if(d.alter > 60){
     p.className = "punkt alt";
-    t.textContent = "Die Werte sind "+d.alter+" Sekunden alt.";
+    t.textContent = "Die Werte sind "+d.alter+" Sekunden alt."+weg;
     /* Alte Werte sind noch keine Stoerung - sie werden nur benannt. */
     stoerung(false);
     return;
   }
   p.className = "punkt gut";
-  t.textContent = "Verbunden"+(d.weg==="http"?" – ueber HTTP-Abfrage, nicht ueber WebSocket":"")+".";
+  t.textContent = "Verbunden"+(d.weg==="http"?" – ueber HTTP-Abfrage, nicht ueber WebSocket":"")+"."+weg;
   stoerung(false);
 }
 
+/* ---------- Steuerung durch Loxone ----------
+   Der Miniserver legt seinen Wunsch ueber den Endpunkt ab; hier wird er beim
+   naechsten Takt befolgt. Nur eine NEUE laufende Nummer loest etwas aus -
+   sonst spraenge die Seite bei jedem Takt erneut um und waere nicht mehr
+   bedienbar. */
+var hand_hell = null;
+function tafel_befolgen(t){
+  if (!t || !t.nr || t.nr <= letzte_tafel_nr) { return; }
+  letzte_tafel_nr = t.nr;
+  if (t.hell >= 0) { hand_hell = t.hell; schleier_setzen(); }
+  if (t.wach === 1) { hand_hell = null; wach(); schleier_setzen(); }
+  if (t.seite && t.seite !== SEITE) {
+    location.href = "?token="+encodeURIComponent(<?= json_encode($ist, JSON_UNESCAPED_UNICODE) ?>)
+                  + "&seite="+encodeURIComponent(t.seite);
+  }
+}
+
+/* ---------- Nachtabsenkung ---------- */
+function minuten(hhmm){
+  var m = String(hhmm||"").match(/^(\d{1,2}):(\d{2})$/);
+  return m ? (parseInt(m[1],10)*60 + parseInt(m[2],10)) : -1;
+}
+function ist_nacht(){
+  var von = minuten(KONF.nacht_von), bis = minuten(KONF.nacht_bis);
+  if (von < 0 || bis < 0 || von === bis) { return false; }
+  var jetzt = new Date().getHours()*60 + new Date().getMinutes();
+  /* Ueber Mitternacht hinweg: 22:30 bis 06:00 heisst "spaet ODER frueh". */
+  return (von < bis) ? (jetzt >= von && jetzt < bis) : (jetzt >= von || jetzt < bis);
+}
+function schleier_setzen(){
+  var el = document.getElementById("nachtschleier");
+  if (!el) { return; }
+  var hell = (hand_hell !== null) ? hand_hell : (ist_nacht() ? KONF.nacht_hell : 100);
+  el.style.opacity = String(Math.max(0, Math.min(1, (100 - hell) / 100)));
+  el.style.pointerEvents = hell <= 0 ? "auto" : "none";
+}
+/* Eine Beruehrung hebt die Absenkung fuer fuenf Minuten auf - wer nachts vor
+   dem Tablet steht, will es lesen koennen. */
+document.addEventListener("pointerdown", function(){
+  if (hand_hell === null && !ist_nacht()) { return; }
+  hand_hell = 100;
+  schleier_setzen();
+  clearTimeout(window._nachtfrist);
+  window._nachtfrist = setTimeout(function(){ hand_hell = null; schleier_setzen(); }, 300000);
+}, true);
+setInterval(schleier_setzen, 30000);
+
+/* ---------- Seitenrotation ---------- */
+var letzte_beruehrung = 0;
+document.addEventListener("pointerdown", function(){ letzte_beruehrung = Date.now(); }, true);
+if (KONF.rotation > 0 && LISTE.length > 1) {
+  setInterval(function(){
+    /* Nicht weiterblaettern, solange jemand bedient: das Tablet unter der
+       Hand umzuschalten ist der sicherste Weg zu einem Fehlgriff. */
+    if (Date.now() - letzte_beruehrung < 60000) { return; }
+    var i = 0;
+    for (var n=0; n<LISTE.length; n++) { if (LISTE[n].schluessel === SEITE) { i = n; break; } }
+    var naechste = LISTE[(i+1) % LISTE.length].schluessel;
+    if (naechste && naechste !== SEITE) {
+      location.href = "?token="+encodeURIComponent(<?= json_encode($ist, JSON_UNESCAPED_UNICODE) ?>)
+                    + "&seite="+encodeURIComponent(naechste);
+    }
+  }, KONF.rotation * 1000);
+}
+
 /* ---------- Wandtablet-Kleinigkeiten ---------- */
-<?php if (!empty($cfg['wach'])) { ?>
-/* Bildschirm wach halten, solange die Seite sichtbar ist. Der Browser
-   erlaubt das nur nach einer Nutzeraktion oder gar nicht - schlaegt es fehl,
-   passiert einfach nichts. */
 var sperre = null;
 function wach(){
+  if(!KONF.wach) return;
   if(!("wakeLock" in navigator)) return;
   navigator.wakeLock.request("screen").then(function(s){ sperre=s; }).catch(function(){});
 }
-document.addEventListener("visibilitychange", function(){
-  if(document.visibilityState==="visible"){ wach(); werte_holen(); }
-});
-wach();
-document.addEventListener("click", wach, {once:true});
-<?php } ?>
+if (KONF.wach) {
+  document.addEventListener("visibilitychange", function(){
+    if(document.visibilityState==="visible"){ wach(); werte_holen(); }
+  });
+  wach();
+  document.addEventListener("click", wach, {once:true});
+}
 
-<?php if (!empty($cfg['vollbild'])) { ?>
-/* Vollbild erst nach der ersten Beruehrung - Browser lassen es anders nicht zu. */
-document.addEventListener("click", function ersteBeruehrung(){
-  document.removeEventListener("click", ersteBeruehrung);
-  var el = document.documentElement;
-  if(el.requestFullscreen) el.requestFullscreen().catch(function(){});
-}, {once:true});
-<?php } ?>
+if (KONF.vollbild) {
+  /* Vollbild erst nach der ersten Beruehrung - Browser lassen es anders nicht zu. */
+  document.addEventListener("click", function ersteBeruehrung(){
+    document.removeEventListener("click", ersteBeruehrung);
+    var el = document.documentElement;
+    if(el.requestFullscreen) el.requestFullscreen().catch(function(){});
+  }, {once:true});
+}
 
 zeichnen();
 stand_zeigen({ok:DATEN.ok, weg:DATEN.weg, alter:DATEN.alter});
-setInterval(werte_holen, TAKT);
+schleier_setzen();
+if (KONF.sse) { strom_starten(); } else { abfrage_starten(); }
 </script>
 
 <?php } ?>

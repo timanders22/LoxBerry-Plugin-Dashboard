@@ -4,92 +4,10 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.0 — ungeprüft am echten Miniserver.** Gebaut ohne Hardware;
-> geprüft gegen eine Attrappe, die streng nach den Loxone-Dokumenten gebaut
-> ist. Deshalb 0.9.0 und nicht 1.0.0.
-
-## Neu in 0.9.1
-
-### Zwei Blocker
-
-- **TLS lief überhaupt nicht.** Mit eingeschaltetem TLS gingen `urllib` und
-  `websockets` ohne SSL-Kontext an den Miniserver — Python prüft dann nach den
-  Regeln des offenen Internets, und ein Miniserver trägt ein selbstsigniertes
-  Zertifikat. Die Verbindung brach mit `CERTIFICATE_VERIFY_FAILED` ab, bevor
-  ein Byte floss. Jetzt ein ausdrücklicher Kontext mit `check_hostname=False`
-  und `CERT_NONE` — über die öffentliche API, nicht über
-  `ssl._create_unverified_context()`, damit beim Lesen sichtbar bleibt, was
-  abgeschaltet ist. **Was das bedeutet, steht im Code und im Protokoll:** die
-  Verbindung ist verschlüsselt, der Gegenüber aber nicht beglaubigt. Damit die
-  Abwägung nachprüfbar bleibt, wird der SHA-256-Fingerabdruck des Zertifikats
-  einmal ins Protokoll geschrieben.
-- **Die PIN ließ sich umgehen.** Der Endpunkt suchte die erstbeste Seite, auf
-  der der Baustein liegt (`break 2`). Liegt ein Türschloss auf einer
-  ungeschützten *und* auf einer geschützten Seite, entschied die Reihenfolge in
-  der Konfiguration darüber, ob eine PIN verlangt wird — stand die
-  ungeschützte vorn, war die PIN wirkungslos. `&seite=` ist jetzt Pflicht;
-  geprüft wird genau die Seite, von der der Druck kam. Nachgestellt: alle fünf
-  Fälle verhalten sich wie erwartet.
-
-### Weitere Korrekturen
-
-- **Der ColorPickerV2 war nicht bedienbar.** Er schickt `hsv(240,100,80)` und
-  `temp(4000,80)`; Klammern und Komma fehlten im erlaubten Zeichenvorrat, jeder
-  Farbwechsel lief in HTTP 400. Erweitert — `&`, `?`, `#` und
-  Anführungszeichen bleiben gesperrt, weil der Befehl in eine Adresse wandert.
-- **Offline-Installation.** `pip install` setzte eine Internetverbindung
-  voraus, und `cryptography` ohne fertiges Paket braucht einen C- *und* einen
-  Rust-Übersetzer — auf einem Raspberry Pi eine halbe Stunde, meist mit
-  Abbruch. Jetzt: erst nachsehen, ob das System die Module hat, dann `apt`
-  (`python3-websockets`, `python3-cryptography`), und die venv wird mit
-  `--system-site-packages` angelegt. `pip` ist nur noch der letzte Ausweg.
-- **`preupgrade.sh` löschte den Sollmerker nicht.** Der minütliche Wächter
-  konnte den Dienst mitten im Update wieder hochziehen — mit halb
-  ausgetauschten Dateien. Jetzt über `dienst.sh stop`.
-- **`dienst.sh` setzt sich auf `loxberry` herunter**, falls es als root
-  aufgerufen wird, und löst Symlinks mit `readlink -f` auf. Sonst gehörten
-  PID-Datei und Protokoll nach einem Cron-Lauf als root dem falschen Benutzer,
-  und die Oberfläche konnte den Dienst nicht mehr anhalten.
-- **Toter MQTT-Code entfernt.** `db_mqtt_senden()` und `db_mqtt_zustand()`
-  wurden von nirgends aufgerufen — und in der Oberfläche steht ausdrücklich,
-  dass dieses Plugin keinen Broker braucht. Toter Code, der einen ganzen
-  Übertragungsweg andeutet, ist schlimmer als gar keiner.
-- **Antwortdateien werden nach dem Lesen entfernt**, statt auf die
-  120-Sekunden-Kehrschleife des Dienstes zu warten.
-- **Der Platzhalter-Vergleich** rechnete mit `e[:-5]`, obwohl `/$wert` sechs
-  Zeichen hat — es ging gut, weil der Schrägstrich zum Vergleichsstück gehörte.
-  Jetzt wird geteilt statt gerechnet; 0 Abweichungen im Vergleich beider
-  Fassungen.
-- **UUID-Längenprüfung.** Genau nachgemessen: bei acht Bytes stürzte 0.9.0
-  *nicht* ab, sondern lieferte eine falsche UUID; erst unterhalb von acht Bytes
-  kam `struct.error` und riss die Leseschleife des WebSockets mit. Beide Fälle
-  liefern jetzt einen leeren String.
-
-### Erweiterungen
-
-- **Ältere Bausteine.** `LightController` und `IRoomController` (V1) fehlten.
-  Sie bekommen **eigene Einträge**, keine Aliase auf V2: die V1-Lichtsteuerung
-  kennt Szenen als Nummern statt als Stimmungsliste und sendet kein
-  `moodList` — ein Alias hätte die Kachel auf ein Feld gelenkt, das nie kommt,
-  und sie wäre leer geblieben.
-- **Abdunkeln bei Verbindungsverlust.** Einen neun Pixel großen Punkt sieht man
-  am Wandtablet aus drei Metern nicht. Das Raster wird gedämpft und ein Band am
-  unteren Rand eingeblendet — aber erst nach dem **zweiten** Fehlversuch, damit
-  ein einzelner verlorener WLAN-Takt nicht jedes Mal aufblinkt. Die Kacheln
-  bleiben bedienbar: eine Kachel, die gar nicht mehr reagiert, hält man für
-  kaputt, und ein Befehl in einer Störung wird ohnehin sauber abgewiesen.
-- **Kurzes Rütteln beim Antippen** (40 ms, abschaltbar). Wer keine Rückmeldung
-  spürt, drückt ein zweites Mal — und schaltet damit wieder zurück.
-
-### Nicht zutreffend
-
-Die gemeldete **Race Condition** beim Ablegen der Befehle gibt es nicht:
-`db_befehl_absetzen()` schreibt seit jeher in eine `.tmp`-Datei und benennt sie
-mit `rename()` um, und der Zwischenname endet nicht auf `.json`, wird vom
-Dienst also gar nicht erst gesehen. Der **Archiv-Pfad** zur Kacheltabelle ist
-ebenfalls richtig — er gilt dem ausgepackten Archiv, wo `bin/` neben
-`templates/` liegt; für die Installation greift der erste Pfad. Beide Stellen
-haben jetzt einen Kommentar, damit sie niemand „repariert".
+> **Fassung 0.9.6 — ungeprüft am echten Miniserver.** Gebaut ohne Hardware;
+> gemessen gegen eine Attrappe, die streng nach den Loxone-Dokumenten gebaut
+> ist. Deshalb 0.9.6 und nicht 1.0.0. Was ungeprüft bleibt, steht unten unter
+> *Was ungeprüft bleibt* — vollständig und ohne Beschönigung.
 
 ## Warum ein Dienst dazwischen hängt
 
@@ -105,6 +23,23 @@ Verbindung würde einen dieser Plätze verbrauchen — und dazu Benutzername und
 Kennwort im Browser brauchen. Deshalb hält **ein** Dienst **eine** Verbindung
 und bedient damit beliebig viele Tablets.
 
+## Aufbau
+
+    bin/lox_client.py        Miniserver-Client: Token, WebSocket,
+                             Ereignistabellen, HTTP-Rückfall
+    bin/dashboard_dienst.py  Dienst: Verbindung halten, Abbild schreiben,
+                             Befehlswarteschlange, Selbsttest, Proben
+    bin/entwurf.py           Erstentwurf aus der Struktur
+    bin/dienst.sh            Start, Stopp, Wächter, Proben
+    cron/cron.01min          minütlicher Wächter
+    dpkg/apt                 die beiden Debian-Pakete, von LoxBerry als
+                             root installiert
+    templates/kacheln.json   Zuordnung Bausteintyp → Kachel — EINE Datei
+                             für Dienst, Designer und Anzeigeseite
+    webfrontend/htmlauth/    Oberfläche (sechs Reiter) + Designer
+    webfrontend/html/        Endpunkt, Anzeigeseite (tafel.php), Bibliothek
+    uninstall.sh             räumt die Sicherungen mit den Zugangsdaten weg
+
 ## Was am Miniserver benutzt wird
 
 Alles aus der offiziellen Dokumentation, nichts geraten:
@@ -114,9 +49,10 @@ Alles aus der offiziellen Dokumentation, nichts geraten:
 | Erreichbarkeit | `jdev/cfg/api` | K, S. 8 |
 | Öffentlicher Schlüssel | `jdev/sys/getPublicKey` | K, S. 26 |
 | Sitzungsschlüssel | `jdev/sys/keyexchange/{RSA(key:iv)}` | K, S. 9 |
+| Salt-Wechsel | `nextSalt/{prev}/{next}/{cmd}` | K, S. 8 |
 | Anmeldedaten | `jdev/sys/getkey2/{user}` → key, salt, hashAlg | K, S. 29 |
 | Token holen | `jdev/sys/getjwt/…` (**muss** verschlüsselt sein) | K, S. 30 |
-| Wiederanmeldung | `authwithtoken/{hash}/{user}` | K, S. 31 |
+| Wiederanmeldung | `authwithtoken/{hash}/{user}` mit dem hashAlg des Benutzers | K, S. 15, 31 |
 | Struktur | `data/LoxAPP3.json` | K, S. 24 |
 | Zustände einschalten | `jdev/sps/enablebinstatusupdate` | K, S. 18 |
 | Schalten | `jdev/sps/io/{uuid}/{befehl}` | K, S. 13 |
@@ -128,23 +64,6 @@ das steht in vielen Gemeinschaftsbeschreibungen falsch. Vor jeder Nachricht
 steht ein 8-Byte-Kopf, der sagt, was folgt; Wert-Einträge sind je 24 Byte
 (16 Byte UUID + 8 Byte Double), Text-Einträge variabel mit Füllbytes auf ein
 Vielfaches von vier (K, S. 19–22).
-
-## Aufbau
-
-    bin/lox_client.py        Miniserver-Client: Token, WebSocket,
-                             Ereignistabellen, HTTP-Rückfall
-    bin/dashboard_dienst.py  Dienst: Verbindung halten, Abbild schreiben,
-                             Befehlswarteschlange, Selbsttest
-    bin/entwurf.py           Erstentwurf aus der Struktur
-    bin/dienst.sh            Start, Stopp, Wächter
-    cron/cron.01min          minütlicher Wächter
-    templates/kacheln.json   Zuordnung Bausteintyp → Kachel — EINE Datei
-                             für Dienst, Designer und Anzeigeseite
-    webfrontend/htmlauth/    Oberfläche (sechs Reiter) + Designer
-    webfrontend/html/        Endpunkt, Anzeigeseite (tafel.php), Bibliothek
-
-Im venv liegen zwei Pakete: `websockets` und `cryptography`. Beide sind
-Pflicht.
 
 ## Der Erstentwurf
 
@@ -159,16 +78,30 @@ bleiben unangetastet.
 
 ## Welche Bausteine bedient werden
 
-Zehn Typen mit eigenem Bedienelement: `Switch`, `Pushbutton`, `Dimmer`,
-`LightControllerV2`, `Jalousie`, `Gate`, `IRoomControllerV2`, `TimedSwitch`,
-`Radio`, `Alarm`. Dazu Anzeigekacheln für `InfoOnlyAnalog`, `InfoOnlyDigital`,
-`InfoOnlyText`, `TextState`, `Slider`, `ValueSelector`, `Meter`,
-`Hourcounter`, `PresenceDetector`, `SmokeAlarm`, `ColorPickerV2`.
+Bausteine mit eigenem Bedienelement: `Switch`, `Pushbutton`, `Dimmer`,
+`LightControllerV2`, `LightController` (V1, eigene Szenenkachel), `Jalousie`
+(mit Schieberegler), `Gate`, `IRoomControllerV2`, `IRoomController`,
+`TimedSwitch`, `Radio`, `Slider`, `ValueSelector`, `Alarm`, `SmokeAlarm`
+(eigene Kachel) und `ColorPickerV2` (Farbwahl über HSV).
+
+Anzeigekacheln für `InfoOnlyAnalog`, `InfoOnlyDigital`, `InfoOnlyText`,
+`TextState`, `Meter`, `Hourcounter`, `PresenceDetector`, `Webpage`.
+
+Dazu die **Szene**: mehrere Befehle auf einen Druck, im Designer aus
+Baustein und Befehl zusammengestellt.
 
 Jeder andere Typ bekommt eine schlichte Kachel mit seinen Zuständen — **aber
 keinen Schaltknopf**. Welcher Befehl für einen unbekannten Typ richtig wäre,
 weiß hier niemand, und ein geratener Befehl an eine Alarmanlage ist schlimmer
 als ein fehlender Knopf.
+
+**Gesicherte Bausteine** (`isSecured` in Loxone Config) tragen ein Schloss und
+lassen sich hier **nicht** schalten. Loxone verlangt dafür das
+Visualisierungs-Passwort; wie dessen Hash gebildet wird, ließ sich hier gegen
+kein Dokument und keine Anlage messen. Ein geratener Sicherheitsweg ist
+schlimmer als gar keiner — deshalb weist der Endpunkt solche Befehle ab und
+sagt, warum. Dasselbe gilt für Bausteine, die in Loxone auf „nur lesen"
+stehen; sie tragen ein Auge und haben keine Knöpfe.
 
 ## Die Anzeigeseite
 
@@ -176,19 +109,29 @@ als ein fehlender Knopf.
 Schrift aus dem Netz. Ein Wandtablet soll auch dann funktionieren, wenn das
 Haus kein Internet hat — und genau darum geht es bei diesem Plugin.
 
-Sie holt einmal ihre Struktur und danach im Takt nur noch die Werte. Vollbild
-und Bildschirm-wach werden nach der ersten Berührung versucht; klappt es nicht,
-passiert einfach nichts.
+Sie holt einmal ihre Struktur und danach nur noch Werte — im Takt oder,
+wahlweise, geschoben (Server-Sent Events). Kommt der Schub nicht durch, fällt
+sie auf die Abfrage zurück **und zeigt das an**; sonst würde aus dem Ersatz
+unbemerkt der Normalfall.
+
+Dazu kommen, alle **ab Werk abgeschaltet**: Seitenrotation, Nachtabsenkung mit
+Zeitplan, Verlaufskurve auf den Kacheln, und die Steuerung der Anzeige durch
+Loxone (Seitenwechsel, Wecken, Helligkeit) über einen virtuellen Ausgang.
 
 ## Sicherheit
 
 - Endpunkt und Anzeigeseite liegen im unangemeldeten Bereich (damit ein
   Wandtablet ohne Anmeldung offen bleiben kann) und sind durch ein langes
   Zufallstoken geschützt; verglichen wird mit `hash_equals`.
-- Je Seite ist eine PIN möglich.
+- **`?selftest=1`** beantwortet, ob das Token noch stimmt, **ohne dass etwas
+  passiert** — kein Gerätekontakt, kein Schreibzugriff. Ein falsches Token
+  bekommt dieselbe Abweisung wie sonst auch.
+- Je Seite ist eine PIN möglich. Geprüft wird die PIN **der Seite, von der der
+  Druck kam** — deshalb ist `&seite=` bei jedem schaltenden Aufruf Pflicht.
 - Geschaltet werden kann **nur, was auf einer Seite steht**, und nur mit den
-  Befehlen, die die Kacheltabelle für genau diesen Bausteintyp nennt. Beides
-  wird zweimal geprüft: am Endpunkt und noch einmal im Dienst.
+  Befehlen, die die Kacheltabelle für genau diesen Bausteintyp nennt. Bei einer
+  Szene wird **jeder Schritt einzeln** geprüft — sie ist keine Abkürzung an der
+  Prüfung vorbei. Beides wird zweimal geprüft: am Endpunkt und im Dienst.
 - Zugangsdaten liegen in `zugang.json` mit Rechten 0600 — nie in der
   angezeigten Konfiguration, nie auf der Kommandozeile, nie in der Adresse.
   Der Wert eines Kennworts wird nirgends angezeigt, auch nicht verkürzt.
@@ -199,10 +142,23 @@ passiert einfach nichts.
 
 Ob die Token-Anmeldung auf Ihrer Firmware durchgeht, ob die Kachel-Befehle am
 Gerät die erwartete Wirkung haben und wie flüssig sich das Dashboard bei Ihrer
-Anzahl Bausteine anfühlt. Alles davor — Anmeldung, Ereignistabellen,
-Erstentwurf, Designer, Endpunkt, Anzeigeseite — ist gegen eine Attrappe
-gemessen, die aus den Loxone-Dokumenten gebaut wurde und nicht aus diesem
-Quelltext.
+Anzahl Bausteine anfühlt. Für die ersten beiden Fragen gibt es im Reiter
+*Test* je einen Knopf, der sie an Ihrer Anlage **misst** statt sie zu
+vermuten.
+
+Namentlich ungeprüft und deshalb hier genannt:
+
+- **`jdev/sps/io/{uuid}/state`** als HTTP-Notnagel steht in keinem der beiden
+  Loxone-Dokumente. Der Knopf *HTTP-Notnagel messen* probiert es an einem
+  Baustein Ihrer Anlage aus.
+- **Die Reihenfolge in `temp(Helligkeit,Kelvin)`** der Farbkachel ist die
+  dokumentierte, aber an keiner Anlage nachgemessen. Der HSV-Weg
+  (`hsv(Farbton,Sättigung,Helligkeit)`) ist der belegte.
+- **Wetter- und Tageszeittabellen** (Kennung 4 und 7) werden empfangen und
+  bewusst **nicht** ausgewertet: das Format ließ sich hier gegen keine Anlage
+  messen, und ein halb verstandener Datensatz ist schlechter als keiner. Der
+  Reiter *Test* sagt, wie viele ankamen — schweigen wäre ein blinder Fleck.
+- **Das Visualisierungs-Passwort** für gesicherte Bausteine, siehe oben.
 
 ## Grundlage
 
@@ -210,3 +166,8 @@ Quelltext.
 (beide 03.06.2025, loxone.com). Die Abschnitte zu `Switch`, `Pushbutton`,
 `Radio`, `Slider`, `ValueSelector` und `TimedSwitch` fehlten im Textauszug der
 Fassung 16.0 und stammen aus den Fassungen 12.2 und 8.3.
+
+Die Änderungen je Fassung stehen in der Commit-Nachricht und auf der
+GitHub-Release-Seite zum jeweiligen Tag — nicht hier. Eine dritte Kopie
+derselben Aussage läuft zwangsläufig aus dem Takt; genau das war der README
+bis 0.9.5 passiert, die noch 0.9.1 beschrieb.

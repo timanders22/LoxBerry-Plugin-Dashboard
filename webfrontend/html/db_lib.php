@@ -21,6 +21,12 @@ if (!function_exists('db_e')) {
     }
 }
 
+/* Die Obergrenze der Wartezeit steht GENAU EINMAL: hier. Das Formular in der
+ * Oberflaeche liest sie von hier, db_befehl_absetzen() kappt danach. Bis
+ * 0.9.5 standen zwei verschiedene Zahlen an zwei Stellen. */
+if (!defined('DB_WARTEZEIT_MAX')) { define('DB_WARTEZEIT_MAX', 30); }
+if (!defined('DB_WARTEZEIT_MIN')) { define('DB_WARTEZEIT_MIN', 1); }
+
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -78,7 +84,6 @@ function db_paths()
             'config'    => $home . '/config/plugins/' . $dir . '/dashboard.json',
             'geheim'    => $home . '/config/plugins/' . $dir . '/zugang.json',
             'seiten'    => $home . '/config/plugins/' . $dir . '/seiten.json',
-            'sicherung' => $home . '/config/plugins/' . $dir . '.backup.json',
             'datadir'   => $home . '/data/plugins/' . $dir,
             'bindir'    => $home . '/bin/plugins/' . $dir,
             'logdir'    => $home . '/log/plugins/' . $dir,
@@ -93,7 +98,6 @@ function db_paths()
             'config'    => $basis . '/config/dashboard.json',
             'geheim'    => $basis . '/config/zugang.json',
             'seiten'    => $basis . '/config/seiten.json',
-            'sicherung' => $basis . '/config/dashboard.backup.json',
             'datadir'   => $basis . '/data',
             'bindir'    => $basis . '/bin',
             'logdir'    => $basis . '/log',
@@ -101,10 +105,17 @@ function db_paths()
             'kacheln'   => $basis . '/templates/kacheln.json',
         );
     }
+    $p['verlauf'] = $p['datadir'] . '/verlauf.json';
+    $p['tafel']   = $p['datadir'] . '/tafel.json';
     return $p;
 }
 
-/** Voreinstellungen. Muessen zu VORGABEN in bin/dashboard_dienst.py passen. */
+/** Voreinstellungen. Muessen zu VORGABEN in bin/dashboard_dienst.py passen.
+ *
+ * Die Uebereinstimmung prueft der Reiter Test - ein Kommentar, der sie nur
+ * behauptet, ist eine Absichtserklaerung. Bis 0.9.5 fehlte 'haptik' auf der
+ * Python-Seite, obwohl genau hier Gleichheit zugesichert war.
+ */
 function db_vorgaben()
 {
     return array(
@@ -122,6 +133,19 @@ function db_vorgaben()
         // passiert nichts.
         'haptik'         => 1,
         'farbe'          => 'dunkel',
+        /* Neu in 0.9.6. Alle ab Werk AUS: eine bestehende dashboard.json
+         * kennt die Schluessel nicht, also greift die Vorgabe auf JEDER
+         * Anlage beim ersten Aufruf nach dem Update, ohne dass jemand etwas
+         * angeklickt hat. Ein Vorgabewert, der dabei etwas veraendert, ist
+         * ein Fehler (Hausregel). */
+        'rotation'         => 0,    // Sekunden bis zur naechsten Seite, 0 = aus
+        'nacht_von'        => '',   // "22:30", leer = kein Zeitplan
+        'nacht_bis'        => '',
+        'nacht_helligkeit' => 15,   // Prozent, 0 = Bildschirm schwarz
+        'verlauf'          => 0,    // Verlaufskurve je Kachel
+        'verlauf_punkte'   => 60,   // ein Punkt je Minute
+        'sse'              => 0,    // Werte werden geschoben statt abgefragt
+        'tafelsteuerung'   => 0,    // Loxone darf die Anzeigeseite umschalten
     );
 }
 
@@ -144,23 +168,32 @@ function db_json_schreiben($pfad, $daten, $rechte = null)
     return @rename($tmp, $pfad);
 }
 
+/* Es gibt bewusst nur EIN Sicherungsverfahren.
+ *
+ * Bis 0.9.5 liefen zwei nebeneinander: preupgrade.sh schrieb
+ * <ordner>.backup.dashboard.json / .seiten.json / .zugang.json, und diese
+ * Bibliothek zusaetzlich <ordner>.backup.json. Vier aehnlich heissende
+ * Dateien flach nebeneinander, von denen die eine wie die Kurzform der
+ * anderen aussah - und die PHP-Sicherung deckte ausgerechnet seiten.json
+ * nicht ab, also gerade die Handarbeit.
+ *
+ * Schlimmer war die Wiederherstellung: sie sprang an, sobald dashboard.json
+ * leer oder "{}" war. Nach einer Deinstallation und Neuinstallation holte
+ * sie damit stillschweigend die alte Konfiguration samt altem Aktionstoken
+ * zurueck. Eine saubere Neuinstallation war keine.
+ *
+ * Zustaendig sind jetzt preupgrade.sh (sichern), postinstall.sh
+ * (wiederherstellen und die Sicherung wegraeumen) und uninstall.sh.
+ */
+
 function db_config()
 {
-    $p = db_paths();
-    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        @mkdir($p['configdir'], 0775, true);
-        @copy($p['sicherung'], $p['config']);
-    }
-    return array_merge(db_vorgaben(), db_json_lesen($p['config']));
+    return array_merge(db_vorgaben(), db_json_lesen(db_paths()['config']));
 }
 
 function db_config_speichern($cfg)
 {
-    $p = db_paths();
-    if (!db_json_schreiben($p['config'], $cfg, 0644)) { return false; }
-    @copy($p['config'], $p['sicherung']);
-    return true;
+    return db_json_schreiben(db_paths()['config'], $cfg, 0644);
 }
 
 /* ---------------- Zugangsdaten ----------------
@@ -250,19 +283,76 @@ function db_kacheltabelle()
 {
     static $t = null;
     if ($t !== null) { return $t; }
-    $p = db_paths();
-    foreach (array($p['kacheln'], dirname(dirname(__DIR__)) . '/templates/kacheln.json') as $k) {
-        $d = db_json_lesen($k);
-        if (!empty($d['typen'])) { $t = $d; return $t; }
-    }
+    // Nur EIN Pfad. Bis 0.9.5 stand daneben ein zweiter, der als Rueckfall
+    // fuer das ausgepackte Archiv gedacht war: installiert zeigte er ins
+    // Leere (<home>/webfrontend/html/templates/...), und im Archiv war er
+    // Zeichen fuer Zeichen derselbe, den db_paths() ohnehin liefert. Er
+    // konnte in keiner der beiden Lagen greifen und liess einen zweiten
+    // Fundort vermuten, den es nicht gibt.
+    $d = db_json_lesen(db_paths()['kacheln']);
+    if (!empty($d['typen'])) { $t = $d; return $t; }
     $t = array('typen' => array(), 'generisch' => array('kachel' => 'generisch'),
                'groessen' => array(), 'vorgabegroesse' => array());
     return $t;
 }
 
+/** Die Zeile der Kacheltabelle zu einem Loxone-Typ, oder die generische. */
+function db_typzeile($loxtyp)
+{
+    $t = db_kacheltabelle();
+    $typen = isset($t['typen']) && is_array($t['typen']) ? $t['typen'] : array();
+    if ($loxtyp !== '' && isset($typen[$loxtyp]) && is_array($typen[$loxtyp])) {
+        return $typen[$loxtyp];
+    }
+    return isset($t['generisch']) && is_array($t['generisch']) ? $t['generisch'] : array();
+}
+
 function db_struktur()  { return db_json_lesen(db_paths()['datadir'] . '/struktur.json'); }
 function db_abbild()    { return db_json_lesen(db_paths()['datadir'] . '/abbild.json'); }
 function db_zustand()   { return db_json_lesen(db_paths()['datadir'] . '/zustand.json'); }
+
+/** Die Verlaufsreihen des Dienstes - ein Punkt je Minute, nur Zahlenwerte. */
+function db_verlauf()
+{
+    $d = db_json_lesen(db_paths()['verlauf']);
+    return isset($d['reihen']) && is_array($d['reihen']) ? $d['reihen'] : array();
+}
+
+/* ---------------- Steuerung der Anzeigeseite durch Loxone ----------------
+ *
+ * Ein Wandtablet soll bei Alarm auf die Sicherheitsseite springen und nachts
+ * dunkel werden koennen - beides weiss nur Loxone. Der Miniserver legt den
+ * Wunsch ueber einen virtuellen Ausgang im Endpunkt ab, die Anzeigeseite
+ * holt ihn beim naechsten Takt ab.
+ *
+ * Bewusst eine Datei und kein Push: die Anzeigeseite fragt ohnehin im Takt,
+ * und ein zweiter Uebertragungsweg waere eine zweite Fehlerquelle.
+ */
+
+function db_tafel_setzen($feld, $wert)
+{
+    $p = db_paths();
+    $d = db_json_lesen($p['tafel']);
+    $d[$feld] = $wert;
+    $d['ts'] = time();
+    // Jede Aenderung bekommt eine laufende Nummer. Die Anzeigeseite fuehrt
+    // sie mit und reagiert nur auf eine NEUE - sonst spraenge sie bei jedem
+    // Takt erneut auf dieselbe Seite und waere nicht mehr bedienbar.
+    $d['nr'] = (int) (isset($d['nr']) ? $d['nr'] : 0) + 1;
+    return db_json_schreiben($p['tafel'], $d);
+}
+
+function db_tafel_lesen()
+{
+    $d = db_json_lesen(db_paths()['tafel']);
+    return array(
+        'nr'      => (int) (isset($d['nr']) ? $d['nr'] : 0),
+        'seite'   => (string) (isset($d['seite']) ? $d['seite'] : ''),
+        'wach'    => (int) (isset($d['wach']) ? $d['wach'] : 0),
+        'hell'    => (int) (isset($d['hell']) ? $d['hell'] : -1),
+        'ts'      => (int) (isset($d['ts']) ? $d['ts'] : 0),
+    );
+}
 
 function db_bausteine()
 {
@@ -352,6 +442,33 @@ function db_befehl_erlaubt($uuid, $befehl)
     }
     foreach ($erlaubt as $e) {
         if ($e === $befehl) { return array(true, ''); }
+        /* Benannte Formen. Sie stehen HIER und nicht als Ausdruck in der
+         * kacheln.json: ein regulaerer Ausdruck aus einer Konfigurationsdatei,
+         * der in zwei Sprachen ausgewertet wird, laeuft frueher oder spaeter
+         * auseinander. In der Tabelle steht nur der Name.
+         *
+         * '$hsv' und '$temp' kamen mit 0.9.6 dazu. Bis dahin trug der
+         * ColorPickerV2 nur '$wert', und '$wert' laesst ausschliesslich
+         * Zahlen durch - hsv(240,100,80) waere also selbst dann abgewiesen
+         * worden, wenn die Kachel es angeboten haette. Der Zeichenvorrat im
+         * Endpunkt war seit 0.9.1 erweitert, die Positivliste nicht.
+         */
+        if ($e === '$hsv') {
+            if (preg_match('/^hsv\((\d{1,3}),(\d{1,3}),(\d{1,3})\)$/', $befehl, $m)
+                    && (int) $m[1] <= 360 && (int) $m[2] <= 100 && (int) $m[3] <= 100) {
+                return array(true, '');
+            }
+            continue;
+        }
+        if ($e === '$temp') {
+            if (preg_match('/^temp\((\d{1,3}),(\d{4,5})\)$/', $befehl, $m)
+                    && (int) $m[1] <= 100
+                    && (int) $m[2] >= 1000 && (int) $m[2] <= 12000) {
+                return array(true, '');
+            }
+            continue;
+        }
+        if ($e === '$wert' && is_numeric($befehl)) { return array(true, ''); }
         if (substr($e, 0, 1) === '$' && is_numeric($befehl)) { return array(true, ''); }
         if (substr($e, -6) === '/$wert') {
             $kopf = substr($e, 0, -5);
@@ -425,8 +542,28 @@ function db_dienst($befehl)
     }
     $ausgabe = array();
     $code = 0;
-    @exec(escapeshellcmd($skript) . ' ' . escapeshellarg($befehl) . ' 2>&1', $ausgabe, $code);
+    // escapeshellarg auch fuer den Pfad: escapeshellcmd maskiert keine
+    // Leerzeichen. Ausnutzbar ist das hier nicht (der Pfad entsteht aus dem
+    // eigenen Ablageort), aber der richtige Aufruf kostet nichts.
+    @exec(escapeshellarg($skript) . ' ' . escapeshellarg($befehl) . ' 2>&1', $ausgabe, $code);
+    db_log('Dienst ' . $befehl . ': Rueckgabewert ' . (int) $code);
     return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
+}
+
+/** Die messenden Knoepfe des Reiters Test. Rueckgabe: array(ok, Ausgabe). */
+function db_probe($was)
+{
+    $erlaubt = array('anmeldeprobe', 'httpprobe', 'selbsttest');
+    if (!in_array($was, $erlaubt, true)) {
+        return array(0, 'Unbekannte Probe.');
+    }
+    $skript = db_paths()['bindir'] . '/dienst.sh';
+    if (!is_file($skript)) {
+        return array(0, 'dienst.sh nicht gefunden: ' . $skript);
+    }
+    $a = array(); $c = 0;
+    @exec(escapeshellarg($skript) . ' ' . escapeshellarg($was) . ' 2>&1', $a, $c);
+    return array($c === 0 ? 1 : 0, implode("\n", $a));
 }
 
 /* ---------------- Befehlswarteschlange ----------------
@@ -447,10 +584,14 @@ function db_befehl_absetzen($befehl, $wartezeit = null)
     if ($wartezeit === null) {
         $wartezeit = (int) $cfg['wartezeit'];
     }
-    $wartezeit = max(0, min(20, (int) $wartezeit));
+    // Die Grenze muss zu der im Formular passen. Bis 0.9.5 liess das
+    // Formular 1 bis 60 zu und hier wurde bei 20 gekappt - jeder Wert
+    // darueber war wirkungslos, ohne dass es irgendwo stand.
+    $wartezeit = max(1, min(DB_WARTEZEIT_MAX, (int) $wartezeit));
 
     $ordner = $p['datadir'] . '/befehle';
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
+        db_log('Warteschlange nicht anlegbar: ' . $ordner);
         return array(0, 'Der Ordner fuer die Warteschlange liess sich nicht anlegen: ' . $ordner);
     }
     $kennung = bin2hex(random_bytes(8));
@@ -516,22 +657,62 @@ function db_xml_virtual_in_http($kopf, $cmds)
     $o .= 'PollingTime="' . db_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
     $o .= '>' . $crlf;
     foreach ($cmds as $c) {
+        // Grenzen je Feld, nicht pauschal +/-2147483647. Loxone zieht daraus
+        // die Reglergrenzen und die Plausibilitaetspruefung; wer alles offen
+        // laesst, verschenkt beides (Hausregel). Bis 0.9.5 stand hier fuer
+        // JEDES Feld dieselbe Zahl - auch fuer OK, das nur 0 oder 1 wird.
+        $min = isset($c['min']) ? (int) $c['min'] : 0;
+        $max = isset($c['max']) ? (int) $c['max'] : 2147483647;
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . db_x($c['title']) . '" ';
         $o .= 'Comment="' . db_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
         $o .= 'Check="' . db_x(isset($c['check']) ? $c['check'] : ' ') . '" ';
-        $o .= 'Signed="true" ';
-        $o .= 'Analog="true" ';
+        $o .= 'Signed="' . ($min < 0 ? 'true' : 'false') . '" ';
+        $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '" ';
         $o .= 'SourceValLow="0" ';
         $o .= 'DestValLow="0" ';
-        $o .= 'SourceValHigh="100" ';
-        $o .= 'DestValHigh="100" ';
+        $o .= 'SourceValHigh="1" ';
+        $o .= 'DestValHigh="1" ';
         $o .= 'DefVal="0" ';
-        $o .= 'MinVal="-2147483647" ';
-        $o .= 'MaxVal="2147483647"';
+        $o .= 'MinVal="' . $min . '" ';
+        $o .= 'MaxVal="' . $max . '"';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
+    return $o;
+}
+
+/** Virtueller Ausgang: Loxone schickt Befehle an die Anzeigeseite.
+ *
+ * Aufbau nach dem Hausstandard: Wurzel VirtualOut mit Title, Comment,
+ * Address, CloseAfterSend und CmdSep, darunter VirtualOutCmd. Die Adresse
+ * ist hier ein Rechnername (HTTP), kein Geraetepfad - der gilt fuer UDP.
+ */
+function db_xml_virtual_out($kopf, $cmds)
+{
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut ';
+    $o .= 'Title="' . db_x($kopf['title']) . '" ';
+    $o .= 'Comment="' . db_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
+    $o .= 'Address="' . db_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
+    $o .= 'CloseAfterSend="false" ';
+    $o .= 'CmdSep="' . db_x(isset($kopf['cmdsep']) ? $kopf['cmdsep'] : ';') . '"';
+    $o .= '>' . $crlf;
+    foreach ($cmds as $c) {
+        $o .= "\t" . '<VirtualOutCmd ';
+        $o .= 'Title="' . db_x($c['title']) . '" ';
+        $o .= 'Comment="' . db_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
+        $o .= 'CmdOnMethod="' . db_x(isset($c['method']) ? $c['method'] : 'GET') . '" ';
+        $o .= 'CmdOn="' . db_x(isset($c['on']) ? $c['on'] : '') . '" ';
+        $o .= 'CmdOffMethod="' . db_x(isset($c['method']) ? $c['method'] : 'GET') . '" ';
+        $o .= 'CmdOff="' . db_x(isset($c['off']) ? $c['off'] : '') . '" ';
+        $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '" ';
+        $o .= 'Repeat="0" ';
+        $o .= 'RepeatRate="0"';
+        $o .= '/>' . $crlf;
+    }
+    $o .= '</VirtualOut>' . $crlf;
     return $o;
 }
 
@@ -611,23 +792,32 @@ function db_t($schluessel)
 function db_tafel_adresse($seite = '')
 {
     $p = db_paths();
-    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
-        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
-        : (gethostname() ?: 'loxberry');
-    return 'http://' . $host . '/plugins/' . $p['plugin'] . '/tafel.php'
+    return 'http://' . db_host() . '/plugins/' . $p['plugin'] . '/tafel.php'
          . '?token=' . db_token() . ($seite !== '' ? '&seite=' . rawurlencode($seite) : '');
 }
 
-/** Kacheltypen, die es gibt - fuer die Auswahlliste im Designer. */
+/** Kacheltypen, die es gibt - fuer die Auswahlliste im Designer.
+ *
+ * Die Beschriftung kommt aus 'kacheltexte' und gehoert zur KACHEL, nicht zum
+ * Bausteintyp. Bis 0.9.5 wurde sie aus den Typen abgeleitet, und weil
+ * mehrere Typen dieselbe Kachel benutzen, gewann der zuletzt gelesene: aus
+ * "Alarmanlage" wurde "Brandmelder", aus "Zaehler" wurde "Betriebsstunden".
+ * Bei sieben von siebzehn Kacheln stand der falsche Klartext in der Liste.
+ */
 function db_kacheltypen()
 {
     $t = db_kacheltabelle();
+    $texte = isset($t['kacheltexte']) && is_array($t['kacheltexte']) ? $t['kacheltexte'] : array();
     $aus = array();
     foreach ((isset($t['typen']) ? $t['typen'] : array()) as $lox => $z) {
         $k = isset($z['kachel']) ? $z['kachel'] : 'generisch';
-        $aus[$k] = isset($z['text']) ? $z['text'] : $k;
+        $aus[$k] = isset($texte[$k]) ? $texte[$k] : (isset($z['text']) ? $z['text'] : $k);
     }
-    $aus['generisch'] = isset($t['generisch']['text']) ? $t['generisch']['text'] : 'generisch';
+    foreach (array('generisch', 'szene') as $k) {
+        if (!isset($aus[$k])) {
+            $aus[$k] = isset($texte[$k]) ? $texte[$k] : $k;
+        }
+    }
     ksort($aus);
     return $aus;
 }
@@ -638,42 +828,104 @@ function db_groessen()
     return isset($t['groessen']) && is_array($t['groessen']) ? $t['groessen'] : array();
 }
 
+/** Die Schritte einer Szenen-Kachel, geprueft und in Form gebracht. */
+function db_szene_schritte($k)
+{
+    $aus = array();
+    $roh = isset($k['schritte']) && is_array($k['schritte']) ? $k['schritte'] : array();
+    foreach ($roh as $s) {
+        if (!is_array($s)) { continue; }
+        $u = (string) (isset($s['uuid']) ? $s['uuid'] : '');
+        $b = (string) (isset($s['befehl']) ? $s['befehl'] : '');
+        if ($u === '' || $b === '') { continue; }
+        $aus[] = array('uuid' => $u, 'befehl' => $b);
+    }
+    return $aus;
+}
+
 /** Struktur und Werte fuer EINE Seite - genau das, was die Anzeige braucht. */
 function db_seite_daten($schluessel)
 {
     $seite = db_seite($schluessel);
     if ($seite === null) { return null; }
+    $cfg = db_config();
     $abbild = db_abbild();
     $werte = isset($abbild['werte']) && is_array($abbild['werte']) ? $abbild['werte'] : array();
+    $verlauf = !empty($cfg['verlauf']) ? db_verlauf() : array();
     $kacheln = array();
     foreach ((isset($seite['kacheln']) ? $seite['kacheln'] : array()) as $k) {
+        if (!is_array($k)) { continue; }
         if (isset($k['sichtbar']) && !$k['sichtbar']) { continue; }
         $uuid = (string) (isset($k['uuid']) ? $k['uuid'] : '');
+        // Alle Schluessel mit isset() lesen. Der Zweig 'fehlt' tat das bis
+        // 0.9.5 nicht; bei einer handgepflegten seiten.json ohne 'titel' gab
+        // PHP 8 eine Warnung aus - und die steht dann VOR dem JSON, worauf
+        // das Tablet "keine lesbare Antwort" meldet.
+        $titel = (string) (isset($k['titel']) ? $k['titel'] : '');
+        $groesse = (string) (isset($k['groesse']) ? $k['groesse'] : '1x1');
+
+        // Szene: mehrere Befehle auf einen Druck. Sie haengt an keinem
+        // einzelnen Baustein, deshalb VOR der Bausteinsuche.
+        if ((string) (isset($k['kachel']) ? $k['kachel'] : '') === 'szene') {
+            $schritte = db_szene_schritte($k);
+            $namen = array();
+            foreach ($schritte as $s) {
+                $b = db_baustein($s['uuid']);
+                $namen[] = ($b !== null ? (string) $b['name'] : $s['uuid']) . ' → ' . $s['befehl'];
+            }
+            $kacheln[] = array(
+                'uuid' => '', 'titel' => $titel !== '' ? $titel : 'Szene',
+                'kachel' => 'szene', 'groesse' => $groesse,
+                'schritte' => count($schritte), 'beschreibung' => $namen,
+                'werte' => array(), 'befehle' => array(),
+                'nurlesen' => 0, 'gesichert' => 0, 'warnung' => 0,
+            );
+            continue;
+        }
+
         $b = db_baustein($uuid);
         if ($b === null) {
             // Der Baustein steht nicht mehr in der Struktur. Er wird NICHT
             // stillschweigend ausgelassen - sonst sucht jemand vergeblich.
-            $kacheln[] = array('uuid' => $uuid, 'titel' => (string) $k['titel'],
-                               'kachel' => 'fehlt', 'groesse' => (string) $k['groesse'],
-                               'werte' => array(), 'befehle' => array());
+            $kacheln[] = array('uuid' => $uuid, 'titel' => $titel,
+                               'kachel' => 'fehlt', 'groesse' => $groesse,
+                               'werte' => array(), 'befehle' => array(),
+                               'nurlesen' => 1, 'gesichert' => 0, 'warnung' => 0);
             continue;
         }
-        $kacheln[] = array(
+        $zeile = db_typzeile((string) $b['loxtyp']);
+        $eintrag = array(
             'uuid'     => $uuid,
-            'titel'    => (string) (isset($k['titel']) && $k['titel'] !== '' ? $k['titel'] : $b['name']),
+            'titel'    => ($titel !== '' ? $titel : (string) $b['name']),
             'kachel'   => (string) (isset($k['kachel']) ? $k['kachel'] : $b['kachel']),
-            'groesse'  => (string) (isset($k['groesse']) ? $k['groesse'] : '1x1'),
+            'groesse'  => $groesse,
             'loxtyp'   => (string) $b['loxtyp'],
             'einheit'  => (string) $b['format'],
             'befehle'  => isset($b['befehle']) ? $b['befehle'] : array(),
             'nurlesen' => (int) (isset($b['nurlesen']) ? $b['nurlesen'] : 0),
             'gesichert' => (int) (isset($b['gesichert']) ? $b['gesichert'] : 0),
+            // 'warnung' steht in der Kacheltabelle an Alarmanlage und
+            // Brandmelder und wurde bis 0.9.5 von nichts gelesen. Die Kachel
+            // faerbt damit ihre schaltenden Knoepfe.
+            'warnung'  => (int) (isset($zeile['warnung']) ? $zeile['warnung'] : 0),
             'werte'    => isset($werte[$uuid]) ? $werte[$uuid] : array(),
         );
+        // Grenzen des Bausteins, falls der Miniserver sie mitschickt. Ohne
+        // sie klemmte die Anzeige jeden Schieberegler auf 0..100 - bei einem
+        // Slider mit anderem Bereich wich sie damit vom echten Wert ab.
+        foreach (array('min', 'max', 'step') as $g) {
+            if (isset($eintrag['werte'][$g]) && is_numeric($eintrag['werte'][$g])) {
+                $eintrag[$g] = 0 + $eintrag['werte'][$g];
+            }
+        }
+        if (isset($verlauf[$uuid]) && is_array($verlauf[$uuid])) {
+            $eintrag['verlauf'] = array_values($verlauf[$uuid]);
+        }
+        $kacheln[] = $eintrag;
     }
     return array(
         'schluessel' => $schluessel,
-        'name'       => (string) $seite['name'],
+        'name'       => (string) (isset($seite['name']) ? $seite['name'] : $schluessel),
         // Nur die Tatsache, dass eine PIN gesetzt ist - nie ihr Wert.
         'pin'        => !empty($seite['pin']) ? 1 : 0,
         'spalten'    => (int) (isset($seite['spalten']) ? $seite['spalten'] : 6),
@@ -681,6 +933,7 @@ function db_seite_daten($schluessel)
         'ok'         => (int) (isset($abbild['ok']) ? $abbild['ok'] : 0),
         'weg'        => (string) (isset($abbild['weg']) ? $abbild['weg'] : ''),
         'alter'      => db_alter(),
+        'tafel'      => db_tafel_lesen(),
     );
 }
 
@@ -689,19 +942,32 @@ function db_seite_werte($schluessel)
 {
     $seite = db_seite($schluessel);
     if ($seite === null) { return null; }
+    $cfg = db_config();
     $abbild = db_abbild();
     $alle = isset($abbild['werte']) && is_array($abbild['werte']) ? $abbild['werte'] : array();
+    $verlauf = !empty($cfg['verlauf']) ? db_verlauf() : array();
     $aus = array();
+    $kurven = array();
     foreach ((isset($seite['kacheln']) ? $seite['kacheln'] : array()) as $k) {
+        if (!is_array($k)) { continue; }
         $u = (string) (isset($k['uuid']) ? $k['uuid'] : '');
+        if ($u === '') { continue; }
         if (isset($alle[$u])) { $aus[$u] = $alle[$u]; }
+        if (isset($verlauf[$u])) { $kurven[$u] = array_values($verlauf[$u]); }
     }
     return array('ok' => (int) (isset($abbild['ok']) ? $abbild['ok'] : 0),
                  'weg' => (string) (isset($abbild['weg']) ? $abbild['weg'] : ''),
-                 'alter' => db_alter(), 'werte' => $aus);
+                 'alter' => db_alter(), 'werte' => $aus,
+                 'verlauf' => $kurven, 'tafel' => db_tafel_lesen());
 }
 
-/** PIN einer Seite pruefen - in gleichbleibender Zeit. */
+/** PIN einer Seite pruefen - in gleichbleibender Zeit.
+ *
+ * Diese Funktion ist die EINZIGE Stelle, an der eine PIN verglichen wird.
+ * Bis 0.9.5 stand sie hier und wurde von nirgends aufgerufen, waehrend der
+ * Endpunkt eine eigene Kopie desselben Vergleichs fuehrte - zwei Kopien
+ * derselben Logik laufen zwangslaeufig auseinander.
+ */
 function db_pin_stimmt($seite, $eingabe)
 {
     $s = db_seite($seite);
@@ -711,34 +977,44 @@ function db_pin_stimmt($seite, $eingabe)
     return hash_equals($soll, (string) $eingabe);
 }
 
-/** Felder, die der Endpunkt als Zustandszeile liefert. */
+/** Felder, die der Endpunkt als Zustandszeile liefert.
+ *
+ * Je Feld: Einheit, Sprachschluessel, Untergrenze, Obergrenze, analog.
+ * Die Grenzen wandern in die Loxone-Vorlage - OK kann nur 0 oder 1 werden,
+ * und das soll Loxone auch wissen.
+ */
 function db_status_felder()
 {
     return array(
-        'OK'         => array('',  'DB_FELD.OK'),
-        'BAUSTEINE'  => array('',  'DB_FELD.BAUSTEINE'),
-        'SEITEN'     => array('',  'DB_FELD.SEITEN'),
-        'KACHELN'    => array('',  'DB_FELD.KACHELN'),
-        'ALTER'      => array('s', 'DB_FELD.ALTER'),
+        'OK'         => array('',  'DB_FELD.OK',        0, 1,      0),
+        'BAUSTEINE'  => array('',  'DB_FELD.BAUSTEINE', 0, 65535,  0),
+        'SEITEN'     => array('',  'DB_FELD.SEITEN',    0, 255,    0),
+        'KACHELN'    => array('',  'DB_FELD.KACHELN',   0, 65535,  0),
+        'ALTER'      => array('s', 'DB_FELD.ALTER',     0, 86400,  1),
     );
+}
+
+/** Der Hostname, unter dem der Miniserver den LoxBerry erreicht.
+ *
+ * Ein Vorschlag, kein Beleg: gethostname() liefert nicht zwingend den Namen,
+ * unter dem der Miniserver das Geraet findet. Der Reiter sagt das dazu.
+ */
+function db_host()
+{
+    return isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
+        : (gethostname() ?: 'loxberry');
 }
 
 function db_selbsttest_ausgabe()
 {
-    $p = db_paths();
-    $skript = $p['bindir'] . '/dienst.sh';
-    if (!is_file($skript)) { return 'dienst.sh nicht gefunden: ' . $skript; }
-    $a = array(); $c = 0;
-    @exec(escapeshellcmd($skript) . ' selbsttest 2>&1', $a, $c);
-    return implode("\n", $a);
+    list($ok, $text) = db_probe('selbsttest');
+    return $text;
 }
 
 function db_vorlage()
 {
     $p = db_paths();
-    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
-        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
-        : (gethostname() ?: 'loxberry');
     $token = db_token();
     $cmds = array();
     foreach (db_status_felder() as $feld => $info) {
@@ -747,13 +1023,65 @@ function db_vorlage()
             'comment' => trim(strip_tags(html_entity_decode(db_t($info[1]), ENT_QUOTES, 'UTF-8')))
                        . ($info[0] !== '' ? ' [' . $info[0] . ']' : ''),
             'check'   => '\i' . $feld . '=\i\v',
+            'min'     => $info[2],
+            'max'     => $info[3],
+            'analog'  => $info[4],
         );
     }
-    return array('dashboard_status.xml', db_xml_virtual_in_http(array(
+    return array('VI_DASHBOARD_STATUS.xml', db_xml_virtual_in_http(array(
         'title'   => 'Dashboard-Designer',
-        'address' => 'http://' . $host . '/plugins/' . $p['plugin']
+        'address' => 'http://' . db_host() . '/plugins/' . $p['plugin']
                    . '/index.php?token=' . $token . '&aktion=status',
         'polling' => '60',
+        'comment' => 'Erzeugt vom LoxBerry-Plugin Dashboard-Designer (' . date('d.m.Y') . ')',
+    ), $cmds));
+}
+
+/** Die Befehle, mit denen Loxone die Anzeigeseite steuern kann. */
+function db_tafel_befehle()
+{
+    $aus = array();
+    foreach (db_seiten() as $s) {
+        $k = (string) (isset($s['schluessel']) ? $s['schluessel'] : '');
+        if ($k === '') { continue; }
+        $aus[] = array('art' => 'seite', 'wert' => $k,
+                       'name' => (string) (isset($s['name']) ? $s['name'] : $k));
+    }
+    return $aus;
+}
+
+/** Vorlage der Steuerbefehle (virtueller Ausgang). */
+function db_vorlage_out()
+{
+    $p = db_paths();
+    $token = db_token();
+    $basis = 'http://' . db_host() . '/plugins/' . $p['plugin']
+           . '/index.php?token=' . $token . '&aktion=tafel';
+    $cmds = array();
+    foreach (db_tafel_befehle() as $b) {
+        $cmds[] = array(
+            'title'   => 'DASHBOARD_SEITE_' . strtoupper(preg_replace('/[^A-Za-z0-9]/', '_', $b['wert'])),
+            'comment' => 'Schaltet jedes Wandtablet auf die Seite "' . $b['name'] . '".',
+            'on'      => $basis . '&seite=' . rawurlencode($b['wert']),
+            'off'     => '',
+        );
+    }
+    $cmds[] = array(
+        'title'   => 'DASHBOARD_WECKEN',
+        'comment' => 'Weckt den Bildschirm und hebt die Nachtabsenkung auf.',
+        'on'      => $basis . '&wach=1',
+        'off'     => $basis . '&wach=0',
+    );
+    $cmds[] = array(
+        'title'   => 'DASHBOARD_HELLIGKEIT',
+        'comment' => 'Helligkeit der Anzeige in Prozent (0 = schwarz).',
+        'on'      => $basis . '&hell=<v.0>',
+        'off'     => '',
+        'analog'  => 1,
+    );
+    return array('VQ_DASHBOARD_STEUERUNG.xml', db_xml_virtual_out(array(
+        'title'   => 'Dashboard-Designer Steuerung',
+        'address' => 'http://' . db_host(),
         'comment' => 'Erzeugt vom LoxBerry-Plugin Dashboard-Designer (' . date('d.m.Y') . ')',
     ), $cmds));
 }

@@ -15,7 +15,9 @@
   "befehle:   erlaubte Befehle. Ein $ am Anfang bedeutet: der Wert wird angehaengt.",
   "           Die Anzeigeseite darf NUR diese Befehle senden, der Endpunkt",
   "           prueft es ein zweites Mal.",
-  "einheit:   wird aus details.format gelesen, wenn vorhanden"
+  "einheit:   wird aus details.format gelesen, wenn vorhanden",
+  "kacheltexte: die Beschriftung JE KACHEL - nicht je Typ. Zwei Typen",
+  "            koennen dieselbe Kachel benutzen (Meter/Hourcounter)."
  ],
  "typen": {
   "Switch": {
@@ -95,7 +97,7 @@
    "text": "Lichtsteuerung V2"
   },
   "LightController": {
-   "kachel": "licht",
+   "kachel": "lichtszene",
    "haupt": "activescene",
    "zustaende": [
     "activescene",
@@ -203,9 +205,13 @@
     "sequenceColorIdx"
    ],
    "befehle": [
-    "$wert"
+    "$hsv",
+    "$temp",
+    "on",
+    "off"
    ],
-   "text": "Farbwahl"
+   "text": "Farbwahl",
+   "hinweis": "Farbbefehle: hsv(Farbton,Saettigung,Helligkeit) mit 0-360/0-100/0-100. Die Weisstemperatur temp(Helligkeit,Kelvin) ist an keiner Anlage nachgemessen - siehe README."
   },
   "Alarm": {
    "kachel": "alarm",
@@ -331,7 +337,7 @@
    "text": "Praesenzmelder"
   },
   "SmokeAlarm": {
-   "kachel": "alarm",
+   "kachel": "brandmelder",
    "haupt": "level",
    "zustaende": [
     "level",
@@ -411,6 +417,42 @@
   "zaehler": "2x1",
   "treppenlicht": "2x1",
   "tor": "2x1",
-  "generisch": "2x1"
+  "generisch": "2x1",
+  "brandmelder": "2x1",
+  "lichtszene": "2x2",
+  "szene": "2x1"
+ },
+ "kacheltexte": {
+  "schalter": "Schalter",
+  "taster": "Taster",
+  "treppenlicht": "Treppenlicht",
+  "dimmer": "Dimmer",
+  "licht": "Lichtsteuerung (Stimmungen)",
+  "lichtszene": "Lichtsteuerung (Szenennummern)",
+  "jalousie": "Jalousie",
+  "tor": "Tor",
+  "raumregler": "Raumregler",
+  "farbe": "Farbwahl",
+  "alarm": "Alarmanlage",
+  "brandmelder": "Brandmelder",
+  "wert": "Analoger Wert",
+  "zustand": "Digitaler Zustand",
+  "text": "Text",
+  "schieber": "Schieberegler",
+  "auswahl": "Auswahl",
+  "zaehler": "Zaehler",
+  "szene": "Szene (mehrere Befehle)",
+  "generisch": "Ohne eigenes Bedienelement"
+ },
+ "szene": {
+  "kachel": "szene",
+  "text": "Szene (mehrere Befehle)",
+  "_hinweis": [
+   "Eine Szene traegt eine Liste von Schritten (uuid + befehl) statt",
+   "eines eigenen Bausteins. JEDER Schritt wird gegen dieselbe",
+   "Positivliste geprueft wie ein einzelner Befehl - zweimal, am",
+   "Endpunkt und im Dienst. Eine Szene ist keine Abkuerzung an der",
+   "Pruefung vorbei."
+  ]
  }
 }

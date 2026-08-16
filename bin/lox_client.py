@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import collections
 import hashlib
 import hmac
 import json
@@ -47,6 +48,7 @@ import logging
 import re
 import ssl
 import struct
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -185,7 +187,7 @@ class Miniserver:
     """
 
     def __init__(self, host: str, port: int, benutzer: str, passwort: str,
-                 tls: bool = False, kennung: str = "") -> None:
+                 tls: bool = False, kennung: str = "", hashalg: str = "") -> None:
         self.host = host
         self.port = int(port)
         self.benutzer = benutzer
@@ -195,6 +197,12 @@ class Miniserver:
         # Sie muss die dort genannte Form haben und ueber Neustarts gleich
         # bleiben, damit nicht bei jedem Start ein neues Token entsteht.
         self.kennung = kennung or self._kennung_bauen()
+        # Das Hashverfahren des Benutzers kommt aus getkey2 [K, Seite 15]. Es
+        # gehoert zum Benutzer, nicht zur Fassung - deshalb wird es gemerkt und
+        # beim naechsten Start fuer authwithtoken wiederverwendet, statt SHA256
+        # zu raten (das war bis 0.9.5 der Fall und kostete bei jedem Start ein
+        # neues Token).
+        self.hashalg = str(hashalg).upper() if hashalg else ""
         self.ws = None
         self.token: dict = {}
         self.struktur: dict = {}
@@ -202,10 +210,23 @@ class Miniserver:
         self._aes_key = b""
         self._aes_iv = b""
         self._salt = ""
+        self._voriger_salt = ""
         self._pubkey = ""
         self._fingerabdruck_gemeldet = False
-        self._warten: dict[str, asyncio.Future] = {}
+        # Antworten kommen in der Reihenfolge der Befehle [K, Seite 19]:
+        # Textnachrichten sind immer Antworten, nie unaufgefordert. Deshalb
+        # eine Schlange statt eines einzelnen Platzes - und ein Zaehler fuer
+        # verspaetete Antworten, deren Befehl schon aufgegeben hat. Ohne den
+        # bekaeme der NAECHSTE Befehl die alte Antwort, und die Verschiebung
+        # bliebe fuer den Rest der Sitzung bestehen (Befund 0.9.5).
+        self._warten: collections.deque = collections.deque()
+        self._verwerfen = 0
         self._kopf: tuple | None = None
+        self._leser: asyncio.Future | None = None
+        self._selbst_geschlossen = False
+        # Tabellen, die bewusst nicht ausgewertet werden - gezaehlt, damit der
+        # Reiter Test sagen kann, dass sie ankommen.
+        self.uebergangen: dict[str, int] = {"tageszeit": 0, "wetter": 0, "datei": 0}
         self.verbunden = False
         self.weg = ""          # 'websocket' oder 'http'
         self.letzter_fehler = ""
@@ -261,8 +282,14 @@ class Miniserver:
             return
         self._fingerabdruck_gemeldet = True
         try:
-            roh = ssl.get_server_certificate((self.host, self.port),
-                                             timeout=5)
+            # Der Parameter 'timeout' gibt es erst ab Python 3.10; postinstall
+            # laesst ab 3.8 zu. Ohne diese Fallunterscheidung wirft der Aufruf
+            # dort TypeError, der Fingerabdruck wurde also NIE protokolliert -
+            # obwohl die Beschreibung oben ihn zusichert (Befund 0.9.5).
+            if sys.version_info >= (3, 10):
+                roh = ssl.get_server_certificate((self.host, self.port), timeout=5)
+            else:
+                roh = ssl.get_server_certificate((self.host, self.port))
             der = ssl.PEM_cert_to_DER_cert(roh)
             abdruck = hashlib.sha256(der).hexdigest()
             _LOG.info("TLS: Zertifikat des Miniservers, SHA-256 %s",
@@ -283,11 +310,23 @@ class Miniserver:
 
         Nur fuer die drei Aufrufe, die ausdruecklich keine brauchen:
         jdev/cfg/api, jdev/sys/getPublicKey und der Rueckfallweg mit Token.
+
+        Ohne eigenen Oeffner nimmt urllib die Proxy-Einstellung aus dem
+        Umfeld. Der Miniserver steht im eigenen Netz; ein Proxy dazwischen ist
+        nie richtig, und wenn 'no_proxy' ihn nicht ausnimmt, laeuft die
+        Anfrage stumm ins Leere.
         """
         url = "%s/%s" % (self._http_basis, pfad.lstrip("/"))
-        req = urllib.request.Request(url, headers={"User-Agent": "LoxBerry-Dashboard"})
-        with urllib.request.urlopen(req, timeout=zeit,
-                                    context=self._ssl_kontext()) as a:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "LoxBerry-Dashboard",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "de,en;q=0.8",
+            "Accept-Encoding": "identity",
+        })
+        oeffner = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(context=self._ssl_kontext()))
+        with oeffner.open(req, timeout=zeit) as a:
             return a.read().decode("utf-8", "replace")
 
     # ---------------- Anmeldung ----------------
@@ -298,33 +337,71 @@ class Miniserver:
         Der Miniserver antwortet auf Textbefehle mit einem Nachrichtenkopf
         (Kennung 0) und danach der Textnachricht. Das Zusammensetzen macht
         _lesen(); hier wird nur auf das Ergebnis gewartet.
+
+        Die Zuordnung laeuft ueber die REIHENFOLGE, nicht ueber das Feld
+        'control': bei einem verschluesselten Befehl steht dort der
+        verschluesselte Text, und ein Vergleich damit waere Ratearbeit.
+        Antworten kommen laut [K, Seite 19] in der Reihenfolge der Befehle.
+
+        Der Preis dieser Zuordnung ist die Zeitueberschreitung: gibt ein
+        Befehl auf, kommt seine Antwort trotzdem noch. Sie wird gezaehlt und
+        beim Eintreffen verworfen. Bis 0.9.5 landete sie beim naechsten
+        Befehl, und die Verschiebung blieb fuer die ganze Sitzung - ein
+        Schaltbefehl bekam dann die Antwort der Versionsabfrage, und
+        struktur_holen() bekam eine Schaltbestaetigung.
         """
+        if self.ws is None:
+            raise LoxFehler("Es besteht keine Verbindung zum Miniserver.")
         f: asyncio.Future = asyncio.get_running_loop().create_future()
-        # Der Miniserver ordnet Antworten ueber das Feld 'control' zu - das ist
-        # der gesendete Befehl. Bei verschluesselten Befehlen ist es der
-        # verschluesselte Text, deshalb merken wir uns beides.
-        self._warten["*"] = f
+        self._warten.append(f)
         await self.ws.send(cmd)
         try:
             return await asyncio.wait_for(f, timeout=zeit)
-        finally:
-            self._warten.pop("*", None)
+        except asyncio.TimeoutError:
+            try:
+                self._warten.remove(f)
+                # Nur zaehlen, wenn die Zukunft noch in der Schlange stand.
+                # War sie schon entnommen, ist die Antwort bereits da gewesen.
+                self._verwerfen += 1
+            except ValueError:
+                pass
+            raise LoxFehler(
+                "Der Miniserver hat auf '%s' innerhalb von %d s nicht geantwortet."
+                % (cmd.split("/")[0] + "/...", zeit))
 
     async def _befehl_verschluesselt(self, cmd: str, zeit: int = 15) -> Any:
         """jdev/sys/enc/... [K, Seite 27].
 
-        'salt/{salt}/{cmd}' wird AES-verschluesselt, Base64 kodiert und
-        URI-kodiert angehaengt. Der Salt wird nach jedem Befehl gewechselt -
-        das verlangt [K, Seite 9] ausdruecklich gegen Wiedereinspielungen.
+        Der Klartext wird AES-verschluesselt, Base64 kodiert und URI-kodiert
+        angehaengt. Der Salt wird nach jedem Befehl gewechselt - das verlangt
+        [K, Seite 9] ausdruecklich gegen Wiedereinspielungen.
+
+        Zwei Formen, und die Unterscheidung ist nicht kosmetisch [K, Seite 8]:
+
+            salt/{salt}/{cmd}                        beim ersten Befehl
+            nextSalt/{prevSalt}/{nextSalt}/{cmd}     bei jedem Salt-Wechsel
+
+        Bis 0.9.5 wurde immer die erste Form gesendet, obwohl der Salt vorher
+        gewechselt worden war. Das trifft den zweiten verschluesselten Befehl
+        einer Sitzung - also genau den Fall 'gespeichertes Token abgelaufen,
+        danach getjwt'.
         """
-        klar = "salt/%s/%s" % (self._salt, cmd)
+        klar = self._enc_klartext(cmd)
         cipher = _aes_cbc(self._aes_key, self._aes_iv, klar.encode("utf-8"))
         b64 = base64.b64encode(cipher).decode("ascii")
         voll = "jdev/sys/enc/" + urllib.parse.quote(b64, safe="")
         try:
             return await self._befehl(voll, zeit)
         finally:
+            self._voriger_salt = self._salt
             self._salt = self._neuer_salt()
+
+    def _enc_klartext(self, cmd: str) -> str:
+        """Der Klartext vor dem Verschluesseln - eigene Funktion, damit die
+        Selbstpruefung genau diesen Code misst und nicht eine Kopie davon."""
+        if self._voriger_salt and self._voriger_salt != self._salt:
+            return "nextSalt/%s/%s/%s" % (self._voriger_salt, self._salt, cmd)
+        return "salt/%s/%s" % (self._salt, cmd)
 
     @staticmethod
     def _neuer_salt() -> str:
@@ -336,6 +413,7 @@ class Miniserver:
         self._aes_key = os.urandom(32)
         self._aes_iv = os.urandom(16)
         self._salt = self._neuer_salt()
+        self._voriger_salt = ""
         nutzlast = ("%s:%s" % (self._aes_key.hex(), self._aes_iv.hex())).encode("ascii")
         sitzung = base64.b64encode(_pkcs1_rsa(self._pubkey, nutzlast)).decode("ascii")
         await self._befehl("jdev/sys/keyexchange/" + urllib.parse.quote(sitzung, safe=""))
@@ -350,6 +428,10 @@ class Miniserver:
         if not key or not salt:
             raise LoxFehler("Der Miniserver hat auf getkey2 keinen Schluessel geliefert. "
                             "Meist stimmt der Benutzername nicht.")
+        # Das Verfahren gehoert zum Benutzer und wird fuer authwithtoken beim
+        # naechsten Start gebraucht [K, Seite 15]. Der Aufrufer legt es neben
+        # dem Token ab.
+        self.hashalg = alg.upper()
         pw = passwort_hash(self._passwort, salt, alg)
         h = hmac_hash("%s:%s" % (self.benutzer, pw), key, alg)
         cmd = "jdev/sys/getjwt/%s/%s/%d/%s/%s" % (
@@ -373,20 +455,32 @@ class Miniserver:
         return antwort
 
     async def _mit_token_anmelden(self, token: str) -> bool:
-        try:
-            roh = await self._befehl("jdev/sys/getkey")
-            key = str(roh) if not isinstance(roh, dict) else str(roh.get("key", ""))
-            if not key:
-                return False
-            # Seit 11.2 darf das Token auch im Klartext stehen [K, Seite 31].
-            # Wir hashen trotzdem - das geht auf jeder Fassung ab 9.0.
-            h = hmac_hash(token, key, "SHA256")
-            await self._befehl_verschluesselt(
-                "authwithtoken/%s/%s" % (h, urllib.parse.quote(self.benutzer)))
-            return True
-        except (LoxFehler, asyncio.TimeoutError, OSError) as f:
-            _LOG.info("Anmeldung mit vorhandenem Token misslungen: %s", f)
-            return False
+        """Wiederanmeldung mit einem gespeicherten Token [K, Seite 31].
+
+        Das Verfahren ist das des BENUTZERS aus getkey2, nicht pauschal
+        SHA256. Bis 0.9.5 stand SHA256 fest im Code; bei einem Benutzer mit
+        SHA1 schlug die Wiederanmeldung deshalb jedes Mal fehl. Das fiel nicht
+        auf, weil sauber auf ein frisches Token zurueckgefallen wird - der
+        Miniserver stellte dann bei JEDEM Dienststart ein neues aus.
+
+        Das gemerkte Verfahren steht in zugang.json. Fehlt es (erste
+        Aktualisierung auf 0.9.6), werden beide der Reihe nach versucht.
+        """
+        verfahren = [self.hashalg] if self.hashalg else ["SHA256", "SHA1"]
+        for alg in verfahren:
+            try:
+                roh = await self._befehl("jdev/sys/getkey")
+                key = str(roh) if not isinstance(roh, dict) else str(roh.get("key", ""))
+                if not key:
+                    return False
+                h = hmac_hash(token, key, alg)
+                await self._befehl_verschluesselt(
+                    "authwithtoken/%s/%s" % (h, urllib.parse.quote(self.benutzer)))
+                self.hashalg = alg
+                return True
+            except (LoxFehler, asyncio.TimeoutError, OSError) as f:
+                _LOG.info("Anmeldung mit vorhandenem Token misslungen (%s): %s", alg, f)
+        return False
 
     # ---------------- Verbindung ----------------
 
@@ -407,9 +501,18 @@ class Miniserver:
         self._fingerabdruck_melden()
         url = "%s://%s:%d/ws/rfc6455" % ("wss" if self.tls else "ws", self.host, self.port)
         # 'remotecontrol' als Unterprotokoll [K, Seite 8, Punkt 3b].
-        self.ws = await websockets.connect(
-            url, subprotocols=["remotecontrol"], open_timeout=15,
-            ping_interval=None, max_size=None, ssl=self._ssl_kontext())
+        args = dict(subprotocols=["remotecontrol"], open_timeout=15,
+                    ping_interval=None, max_size=None, ssl=self._ssl_kontext())
+        # Ab websockets 14.2 hat connect() die Vorgabe proxy=True und liest
+        # http_proxy/https_proxy aus dem Umfeld. Der Miniserver steht im
+        # eigenen Netz - ein Proxy davor ist nie richtig. Die aeltere Fassung
+        # (Debian 12 liefert 10.4) kennt den Parameter nicht und reicht
+        # unbekannte Argumente an create_connection durch, was TypeError gibt.
+        # Deshalb versuchen und im Fehlerfall ohne.
+        try:
+            self.ws = await websockets.connect(url, proxy=None, **args)
+        except TypeError:
+            self.ws = await websockets.connect(url, **args)
 
         self._leser = asyncio.ensure_future(self._lesen())
         await self._schluesseltausch()
@@ -456,15 +559,42 @@ class Miniserver:
 
     async def keepalive(self) -> None:
         """[K, Seite 34]: Der Miniserver antwortet mit Kennung 6."""
+        if self.ws is None:
+            raise LoxFehler("Es besteht keine Verbindung zum Miniserver.")
         await self.ws.send("keepalive")
 
     async def schliessen(self) -> None:
+        """Verbindung UND Leser-Task abbauen.
+
+        Der Leser-Task war bis 0.9.5 nirgends abgebrochen. Scheiterte die
+        Anmeldung, blieb er samt offenem WebSocket stehen - der Miniserver
+        trennt erst nach fuenf Minuten Leerlauf, und weil er nur 31 Clients
+        gleichzeitig Zustaende empfangen laesst, hat eine Fehlerschleife genau
+        die Ressource aufgebraucht, fuer deren Schonung es dieses Plugin gibt.
+        Gemessen: vier Fehlversuche, vier offene Verbindungen.
+        """
         self.verbunden = False
+        self._selbst_geschlossen = True
         try:
             if self.ws is not None:
                 await self.ws.close()
         except Exception:
             pass
+        leser = self._leser
+        self._leser = None
+        if leser is not None and not leser.done():
+            leser.cancel()
+            try:
+                await leser
+            except (asyncio.CancelledError, Exception):
+                pass
+        # Wartende Befehle nicht haengen lassen.
+        while self._warten:
+            f = self._warten.popleft()
+            if not f.done():
+                f.set_exception(LoxFehler("Die Verbindung wurde geschlossen."))
+        self._verwerfen = 0
+        self.ws = None
 
     # ---------------- Empfangsschleife ----------------
 
@@ -498,14 +628,40 @@ class Miniserver:
                     self._texte_lesen(nachricht)
                 elif kennung in (KOPF_TAGESZEIT, KOPF_WETTER):
                     # Tageszeit- und Wettertabellen werden bewusst nicht
-                    # ausgewertet: keine Kachel braucht sie, und ein halb
-                    # verstandener Datensatz ist schlechter als keiner.
-                    pass
+                    # ausgewertet: ein halb verstandener Datensatz ist
+                    # schlechter als keiner, und es gibt hier keinen echten
+                    # Miniserver, gegen den sich das Format nachmessen liesse.
+                    # Gezaehlt werden sie trotzdem - dann sagt der Reiter
+                    # Test, dass sie ankommen, statt zu schweigen.
+                    self.uebergangen["wetter" if kennung == KOPF_WETTER
+                                     else "tageszeit"] += 1
+                elif kennung == KOPF_BINDATEI:
+                    # Eine angeforderte Datei (Symbol, Bild). Das Plugin
+                    # fordert nichts dergleichen an; wuerde sie an
+                    # _text_verarbeiten gereicht, loeste sie die Zukunft eines
+                    # wartenden Befehls mit Binaermuell auf (Befund 0.9.5).
+                    self.uebergangen["datei"] += 1
                 elif isinstance(nachricht, (str, bytes)):
                     self._text_verarbeiten(
                         nachricht.decode("utf-8", "replace")
                         if isinstance(nachricht, bytes) else nachricht)
+            # Hier endet die Schleife OHNE Ausnahme - das ist der regulaere
+            # Verbindungsschluss (Code 1000/1001), und genau den meldet der
+            # Miniserver mit Kennung 5 vor einer Aktualisierung an. Bis 0.9.5
+            # blieb 'verbunden' dann auf True: der Dienst schrieb bis zu 60 s
+            # lang "ok" mit frischem Zeitstempel und eingefrorenen Werten,
+            # bis der naechste Keepalive stolperte. Eine stille Falschaussage.
+            self.verbunden = False
+            if self._selbst_geschlossen:
+                # Wir haben zugemacht - das ist keine Meldung wert und schon
+                # gar nicht als "der Miniserver hat geschlossen".
+                return
+            if not self.letzter_fehler:
+                self.letzter_fehler = "Der Miniserver hat die Verbindung geschlossen."
+            _LOG.info("Der Miniserver hat die Verbindung regulaer geschlossen "
+                      "(meist eine Aktualisierung der Firmware).")
         except asyncio.CancelledError:
+            self.verbunden = False
             raise
         except Exception as f:
             self.verbunden = False
@@ -513,8 +669,19 @@ class Miniserver:
             _LOG.warning("Die Verbindung zum Miniserver ist abgerissen: %s", f)
 
     def _text_verarbeiten(self, text: str) -> None:
-        f = self._warten.get("*")
-        if f is None or f.done():
+        # Eine verspaetete Antwort, deren Befehl schon aufgegeben hat, wird
+        # verworfen - sonst bekaeme sie der naechste Befehl.
+        if self._verwerfen > 0:
+            self._verwerfen -= 1
+            _LOG.info("Verspaetete Antwort des Miniservers verworfen.")
+            return
+        f = None
+        while self._warten:
+            kandidat = self._warten.popleft()
+            if not kandidat.done():
+                f = kandidat
+                break
+        if f is None:
             return
         # Zwei Sorten Textnachricht: eine LL-Antwort auf einen Befehl, oder
         # eine ganze Datei (LoxAPP3.json). Unterschieden wird am LL-Umschlag -
@@ -572,21 +739,38 @@ class Miniserver:
 
     # ---------------- Rueckfall auf HTTP ----------------
 
-    def http_zustand(self, uuid: str) -> Any:
+    def http_marke(self) -> str:
+        """Die Beglaubigung fuer den HTTP-Weg - EINMAL je Runde, nicht je Wert.
+
+        Bis 0.9.5 holte http_zustand() fuer jeden einzelnen Baustein erst
+        'jdev/sys/getkey' und dann den Wert: bei 1500 Bausteinen 3000
+        blockierende Umlaeufe je Durchgang. Jetzt wird die Marke einmal
+        gebildet und fuer die ganze Runde weitergereicht.
+        """
+        token = str(self.token.get("token", ""))
+        if not token:
+            raise LoxFehler("Fuer den HTTP-Weg fehlt ein gueltiges Token.")
+        schluessel = str(_wert_aus_antwort(self._http("jdev/sys/getkey")))
+        h = hmac_hash(token, schluessel, self.hashalg or "SHA256")
+        return "autht=%s&user=%s" % (h, urllib.parse.quote(self.benutzer))
+
+    def http_zustand(self, uuid: str, marke: str = "") -> Any:
         """Einen einzelnen Zustand ueber HTTP holen - der Notnagel.
 
         Das Token wird als Parameter angehaengt [K, Seite 31]:
         '?autht={hash}&user={user}'. Ohne gueltiges Token weist der
         Miniserver mit 401 ab. Es wird bewusst NICHT auf Basic-Auth
         zurueckgefallen: das Passwort stuende dann in der Adresse.
+
+        Achtung, ehrlich gesagt: dass '/state' ein gueltiger Befehl ist, steht
+        in keinem der beiden Loxone-Dokumente. Belegt ist nur
+        'jdev/sps/io/{uuid}/{befehl}'. Der Reiter Test hat deshalb einen Knopf,
+        der genau diesen Aufruf einmal gegen die eigene Anlage probiert -
+        gemessen ist besser als vermutet.
         """
-        token = str(self.token.get("token", ""))
-        if not token:
-            raise LoxFehler("Fuer den HTTP-Weg fehlt ein gueltiges Token.")
-        schluessel = str(_wert_aus_antwort(self._http("jdev/sys/getkey")))
-        h = hmac_hash(token, schluessel, "SHA256")
-        pfad = "jdev/sps/io/%s/state?autht=%s&user=%s" % (
-            uuid, h, urllib.parse.quote(self.benutzer))
+        if not marke:
+            marke = self.http_marke()
+        pfad = "jdev/sps/io/%s/state?%s" % (uuid, marke)
         return _wert_aus_antwort(self._http(pfad))
 
 
@@ -647,6 +831,66 @@ def selbstpruefung() -> list[tuple[bool, str]]:
     k = Miniserver._kennung_bauen(None)  # type: ignore[arg-type]
     e.append((re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{16}$", k) is not None,
               "Client-Kennung in der dokumentierten Form: %s" % k))
+
+    # ---- Die drei Korrekturen aus 0.9.6, jede einzeln nachgestellt ----
+    #
+    # Ohne diese Zeilen waeren es Behauptungen. Sie laufen ohne Miniserver.
+
+    # 1. Ein sauberer Verbindungsschluss muss 'verbunden' loeschen.
+    class _WsZu:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    m2 = Miniserver.__new__(Miniserver)
+    m2.ws = _WsZu()
+    m2._kopf = None
+    m2._warten = collections.deque()
+    m2._verwerfen = 0
+    m2.zustaende = {}
+    m2.auf_aenderung = None
+    m2.verbunden = True
+    m2.letzter_fehler = ""
+    m2.uebergangen = {"tageszeit": 0, "wetter": 0, "datei": 0}
+    asyncio.run(Miniserver._lesen(m2))
+    e.append((m2.verbunden is False,
+              "Sauberer Verbindungsschluss setzt 'verbunden' auf False"))
+
+    # 2. Eine verspaetete Antwort darf nicht beim naechsten Befehl landen.
+    async def _versatz():
+        m3 = Miniserver.__new__(Miniserver)
+        m3._warten = collections.deque()
+        m3._verwerfen = 0
+        schleife = asyncio.get_running_loop()
+        alt = schleife.create_future()          # Befehl A, gibt gleich auf
+        m3._warten.append(alt)
+        m3._warten.remove(alt)
+        m3._verwerfen += 1                      # so macht es _befehl() bei Timeout
+        neu = schleife.create_future()          # Befehl B
+        m3._warten.append(neu)
+        Miniserver._text_verarbeiten(m3, json.dumps(
+            {"LL": {"control": "a", "value": "ANTWORT-AUF-A", "Code": "200"}}))
+        offen_danach = not neu.done()
+        Miniserver._text_verarbeiten(m3, json.dumps(
+            {"LL": {"control": "b", "value": "ANTWORT-AUF-B", "Code": "200"}}))
+        return offen_danach, (neu.result() if neu.done() else None)
+
+    offen, wert = asyncio.run(_versatz())
+    e.append((offen and wert == "ANTWORT-AUF-B",
+              "Verspaetete Antwort verworfen, Befehl bekommt die eigene: %r" % wert))
+
+    # 3. Der Salt-Wechsel nimmt die Form nextSalt/{prev}/{next}/{cmd}
+    #    [K, Seite 8]. Geprueft wird der erzeugte Klartext, nicht das Chiffrat.
+    m4 = Miniserver.__new__(Miniserver)
+    m4._voriger_salt, m4._salt = "", "aa11"
+    erst = Miniserver._enc_klartext(m4, "jdev/sys/getjwt/x")
+    m4._voriger_salt, m4._salt = "aa11", "bb22"
+    zweit = Miniserver._enc_klartext(m4, "jdev/sys/getjwt/x")
+    e.append((erst == "salt/aa11/jdev/sys/getjwt/x"
+              and zweit == "nextSalt/aa11/bb22/jdev/sys/getjwt/x",
+              "Salt: erster Befehl 'salt/', nach dem Wechsel 'nextSalt/'"))
 
     return e
 

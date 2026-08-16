@@ -50,6 +50,13 @@ for f in dashboard.json seiten.json zugang.json; do
         if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ] || [ "$INHALT" = '{"seiten":[]}' ]; then
             cp -p "$BK" "$CF" && echo "<OK> $f aus Sicherung wiederhergestellt."
         fi
+        # Die Sicherung danach wegraeumen. Sie liegt eine Ebene UEBER dem
+        # Pluginordner und ueberlebt deshalb eine Deinstallation. Bis 0.9.5
+        # blieb sie liegen - eine spaetere Neuinstallation holte daraus
+        # stillschweigend die alte Konfiguration samt altem Aktionstoken
+        # zurueck, und dashboard.backup.zugang.json mit dem
+        # Miniserver-Kennwort lag unbegrenzt im Dateisystem.
+        rm -f "$BK"
     fi
 done
 chmod 600 "$PCONFIG/zugang.json"
@@ -69,45 +76,35 @@ echo "<INFO> Gefundenes Python: $PYVER"
 
 # ---------- Die beiden Pakete ----------
 #
-# Reihenfolge: erst nachsehen, ob das SYSTEM sie schon hat, dann apt, und
-# erst zuletzt pip.
+# Die Debian-Pakete stehen in der Datei 'dpkg/apt' des Archivs:
 #
-# Warum diese Reihenfolge: bis 0.9.0 ging es sofort ueber pip in eine
-# abgeschottete venv. Das setzt eine Internetverbindung voraus - und ein
-# LoxBerry haengt oft in einem Netz ohne Weg nach draussen. Schlimmer noch
-# bei 'cryptography': gibt es fuer die Architektur kein fertiges Paket, baut
-# pip es aus dem Quelltext, und dafuer braucht es einen C- UND einen
-# Rust-Uebersetzer. Auf einem Raspberry Pi dauert das eine halbe Stunde und
-# scheitert meist an fehlendem Arbeitsspeicher.
+#     python3-websockets
+#     python3-cryptography
+#     python3-venv
 #
-# Debian 12 bringt beide Pakete fertig mit: python3-websockets und
-# python3-cryptography. Die venv wird deshalb MIT --system-site-packages
-# angelegt - dann sieht sie die Systempakete, und pip muss gar nichts mehr
-# holen. Erst wenn beides fehlt, wird pip bemueht.
+# LoxBerry installiert sie SELBST und als root, bevor dieses Skript laeuft.
+# Bis 0.9.5 stand hier stattdessen ein eigener 'apt-get install'-Aufruf. Der
+# konnte nie greifen: plugininstall.pl startet postinstall.sh mit
+# 'sudo -n -u loxberry', und als loxberry scheitert apt-get an
+# /var/lib/dpkg/lock-frontend. Genau der Weg, den der Kommentar als Loesung
+# fuer Netze ohne Internet beschrieb, war also tot.
+#
+# Warum das wichtig ist: 'pip install cryptography' braucht eine
+# Internetverbindung, und gibt es fuer die Architektur kein fertiges Paket,
+# uebersetzt pip aus dem Quelltext - dafuer braeuchte es einen C- UND einen
+# Rust-Uebersetzer. pip bleibt deshalb der letzte Ausweg, nicht der erste.
+#
+# Die venv wird MIT --system-site-packages angelegt; dann sieht sie die
+# Systempakete, und pip muss gar nichts mehr holen.
 BRAUCHT_PIP=0
 for MODUL in websockets cryptography; do
     if "$PY3" -c "import $MODUL" >/dev/null 2>&1; then
         echo "<OK> Python-Modul $MODUL ist systemweit vorhanden."
     else
+        echo "<INFO> Python-Modul $MODUL fehlt systemweit (dpkg/apt hat es nicht eingerichtet)."
         BRAUCHT_PIP=1
     fi
 done
-
-if [ "$BRAUCHT_PIP" = "1" ]; then
-    echo "<INFO> Es fehlt mindestens ein Modul - Versuch ueber apt."
-    if command -v apt-get >/dev/null 2>&1; then
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            python3-websockets python3-cryptography >/tmp/dashboard_apt.log 2>&1 \
-            && echo "<OK> Pakete ueber apt eingerichtet." \
-            || { echo "<INFO> apt konnte die Pakete nicht einrichten:";
-                 tail -n 5 /tmp/dashboard_apt.log; }
-        rm -f /tmp/dashboard_apt.log
-    fi
-    BRAUCHT_PIP=0
-    for MODUL in websockets cryptography; do
-        "$PY3" -c "import $MODUL" >/dev/null 2>&1 || BRAUCHT_PIP=1
-    done
-fi
 
 # Die venv sieht die Systempakete. Ohne --system-site-packages waere sie
 # abgeschottet, und alles oben waere umsonst gewesen.
@@ -166,8 +163,17 @@ else
 fi
 
 # ---------- Selbsttest ----------
+#
+# Mit $PYTEST, nicht fest mit der venv: gibt es keine venv, waere der Aufruf
+# bis 0.9.5 an "No such file or directory" gescheitert - und wegen '|| true'
+# haette die Installation trotzdem "abgeschlossen" gemeldet. Die
+# Abschlusspruefung waere also genau in dem Fall ausgefallen, fuer den der
+# Rueckfall gebaut wurde.
 echo "<INFO> Selbsttest:"
-"$VENV/bin/python3" "$PBIN/dashboard_dienst.py" --selbsttest 2>&1 | sed 's/^/<INFO> /' || true
+PYTHONDONTWRITEBYTECODE=1 "$PYTEST" "$PBIN/dashboard_dienst.py" --selbsttest 2>&1 | sed 's/^/<INFO> /' || true
+
+# Kein __pycache__ ausliefern und keines zuruecklassen.
+rm -rf "$PBIN/__pycache__" 2>/dev/null
 
 echo "<INFO> Naechste Schritte:"
 echo "<INFO>   1. Plugin oeffnen, Reiter Einstellungen, Dienst starten"

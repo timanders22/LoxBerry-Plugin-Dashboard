@@ -113,14 +113,105 @@ function db_pruefungen()
     $zeilen[] = db_pruefzeile(!empty($cfg['steuerung_ein']) ? 1 : -1, db_t('TEST.F_STEUERUNG'),
         !empty($cfg['steuerung_ein']) ? db_t('TEST.A_STEUERUNG_EIN') : db_t('TEST.A_STEUERUNG_AUS'));
 
+    // Der Miniserver selbst - Seriennummer und Projektname stehen in der
+    // Struktur und wurden bis 0.9.5 nirgends gezeigt.
+    $z = db_zustand();
+    $msinfo = isset($z['msinfo']) && is_array($z['msinfo']) ? $z['msinfo']
+            : (isset($s['msinfo']) && is_array($s['msinfo']) ? $s['msinfo'] : array());
+    if ($msinfo) {
+        $zeilen[] = db_pruefzeile(1, db_t('TEST.F_MSINFO'),
+            db_e(trim((isset($msinfo['msName']) ? $msinfo['msName'] : '?')
+                 . ' · ' . (isset($msinfo['projectName']) ? $msinfo['projectName'] : '?')
+                 . ' · ' . (isset($msinfo['serialNr']) ? $msinfo['serialNr'] : '?'))));
+    }
+
+    // Tabellen, die bewusst nicht ausgewertet werden. Sie zu verschweigen
+    // waere ein blinder Fleck: hier steht, dass sie ankommen.
+    $ueb = isset($z['uebergangen']) && is_array($z['uebergangen']) ? $z['uebergangen'] : array();
+    if (!empty($ueb['wetter']) || !empty($ueb['tageszeit'])) {
+        $zeilen[] = db_pruefzeile(-1, db_t('TEST.F_UEBERGANGEN'),
+            sprintf(db_t('TEST.A_UEBERGANGEN'),
+                    (int) (isset($ueb['wetter']) ? $ueb['wetter'] : 0),
+                    (int) (isset($ueb['tageszeit']) ? $ueb['tageszeit'] : 0)));
+    }
+
+    // Die Vorgabewerte der Oberflaeche und die des Dienstes muessen
+    // uebereinstimmen. Ein Kommentar, der das nur behauptet, ist eine
+    // Absichtserklaerung - bis 0.9.5 fehlte 'haptik' auf der Python-Seite.
+    $py = db_paths()['bindir'] . '/dashboard_dienst.py';
+    if (is_file($py)) {
+        $roh = (string) @file_get_contents($py);
+        if (preg_match('/VORGABEN\s*=\s*\{(.*?)\n\}/s', $roh, $m)) {
+            preg_match_all('/"([a-z_]+)"\s*:/', $m[1], $t);
+            $dort = array_values($t[1]);
+            $hier = array_keys(db_vorgaben());
+            $fehlt = array_merge(array_diff($hier, $dort), array_diff($dort, $hier));
+            $zeilen[] = db_pruefzeile($fehlt ? 0 : 1, db_t('TEST.F_VORGABEN'),
+                $fehlt ? sprintf(db_t('TEST.A_VORGABEN_FEHL'), db_e(implode(', ', $fehlt)))
+                       : sprintf(db_t('TEST.A_VORGABEN'), count($hier)));
+        }
+    }
+
+    // Jede Kachel, die eine Seite benutzt, muss es in tafel.php auch geben -
+    // sonst faellt sie stumm auf die generische Liste zurueck.
+    $tafel = dirname(__DIR__) . '/html/tafel.php';
+    if (!is_file($tafel)) { $tafel = db_paths()['home'] . '/webfrontend/html/plugins/'
+                                   . db_paths()['plugin'] . '/tafel.php'; }
+    if (is_file($tafel)) {
+        $roh = (string) @file_get_contents($tafel);
+        preg_match_all('/BAUER\.([a-z]+)\s*=/', $roh, $m);
+        $gebaut = array_flip($m[1]);
+        $gebraucht = array();
+        foreach (db_kacheltabelle()['typen'] as $z2) {
+            $gebraucht[isset($z2['kachel']) ? $z2['kachel'] : 'generisch'] = 1;
+        }
+        $ohne = array_keys(array_diff_key($gebraucht, $gebaut));
+        $zeilen[] = db_pruefzeile($ohne ? 0 : 1, db_t('TEST.F_KACHELN'),
+            $ohne ? sprintf(db_t('TEST.A_KACHELN_FEHL'), db_e(implode(', ', $ohne)))
+                  : sprintf(db_t('TEST.A_KACHELN'), count($gebraucht)));
+    }
+
+    // Reiterleiste, Bereiche und Positivliste muessen dieselben Namen
+    // fuehren. Die Leiste steht ausgeschrieben im Rumpf, damit
+    // hausstandard_pruefen.py sie findet - dafuer prueft diese Zeile, dass
+    // sie nicht auseinanderlaeuft. Fehlt ein Name in der Positivliste, ist
+    // der Reiter sichtbar und anklickbar, springt aber nach jedem Absenden
+    // zurueck auf Einstellungen.
+    $ui = __DIR__ . '/index.php';
+    if (is_file($ui)) {
+        $roh = (string) @file_get_contents($ui);
+        preg_match_all('/data-ziel="(tab-[a-z0-9]+)"/', $roh, $m1);
+        preg_match_all('/id="(tab-[a-z0-9]+)"/', $roh, $m2);
+        preg_match_all("/'([a-z0-9]+)'\s*=>\s*'REITER\./", $roh, $m3);
+        preg_match('/\^tab-\(([a-z0-9|]+)\)/', $roh, $m4);
+        $leiste = array_unique($m1[1]);
+        $bereiche = array_unique($m2[1]);
+        $liste = array_map(function ($k) { return 'tab-' . $k; }, $m3[1]);
+        $muster = isset($m4[1]) ? array_map(function ($k) { return 'tab-' . $k; },
+                                            explode('|', $m4[1])) : array();
+        sort($leiste); sort($bereiche); sort($liste); sort($muster);
+        $gleich = ($leiste === $bereiche && $leiste === $liste && $leiste === $muster
+                   && count($leiste) > 0);
+        $zeilen[] = db_pruefzeile($gleich ? 1 : 0, db_t('TEST.F_REITER'),
+            $gleich ? sprintf(db_t('TEST.A_REITER'), count($leiste))
+                    : sprintf(db_t('TEST.A_REITER_FEHL'),
+                              db_e(implode(', ', $leiste)),
+                              db_e(implode(', ', $bereiche)),
+                              db_e(implode(', ', $liste))));
+    }
+
     return $zeilen;
 }
 
 function db_pruefungen_html()
 {
+    $zeilen = db_pruefungen();
+    // Eine Pruefung ohne Fundstellen ist kein Nachweis, sondern ein blinder
+    // Fleck. Deshalb sagt die Tabelle, WIE VIELE Stellen sie angesehen hat.
     return '<table class="sm-tabelle"><tr><th>&nbsp;</th><th>' . db_e(db_t('TEST.T_FRAGE'))
          . '</th><th>' . db_e(db_t('TEST.T_BEFUND')) . '</th></tr>'
-         . implode('', db_pruefungen()) . '</table>';
+         . implode('', $zeilen) . '</table>'
+         . '<p class="sm-hilfe">' . sprintf(db_e(db_t('TEST.ANZAHL')), count($zeilen)) . '</p>';
 }
 
 /** Die Knoepfe des Reiters Test. Rueckgabe: array(stand, Text). */

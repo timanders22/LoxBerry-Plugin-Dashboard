@@ -25,9 +25,13 @@ SKRIPT="$SELF/dashboard_dienst.py"
 # Rueckfallebene - postinstall.sh legt die Umgebung inzwischen MIT
 # --system-site-packages an und kommt notfalls auch ganz ohne sie aus.
 PY="$SELF/venv/bin/python3"
+PYQUELLE="virtuelle Umgebung"
 if [ ! -x "$PY" ]; then
     PY=$(command -v python3 2>/dev/null)
+    PYQUELLE="System-Python"
 fi
+# Kein __pycache__ neben den Plugin-Dateien anlegen.
+export PYTHONDONTWRITEBYTECODE=1
 
 # Als loxberry laufen, nicht als root.
 #
@@ -40,11 +44,26 @@ fi
 # Deshalb setzt sich das Skript selbst auf loxberry herunter, EINMAL, bevor
 # es irgendetwas anlegt. exec, damit kein zusaetzlicher Prozess stehen
 # bleibt.
+# '-s /bin/bash' ausdruecklich: ohne das nimmt su die Login-Shell aus
+# /etc/passwd. Steht dort nologin oder /bin/false, endet dieses Skript hier
+# still und ohne Meldung - und weil es 'exec' ist, kaeme nicht einmal ein
+# Rueckgabewert zurueck. Auf einem regulaeren LoxBerry ist der Zweig
+# ohnehin unerreichbar (der Cron laeuft bereits als loxberry); er greift nur,
+# wenn jemand von Hand mit sudo aufruft.
 if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
-    exec su loxberry -c "$(printf '%q ' "$0" "$@")"
+    exec su -s /bin/bash loxberry -c "$(printf '%q ' "$0" "$@")"
 fi
 
 mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+
+# Zeitgrenze fuer die einmaligen Betriebsarten. 'timeout' gehoert zu
+# coreutils und ist auf jedem Debian da; fehlt es doch, wird ohne gearbeitet
+# statt den Aufruf zu verweigern.
+if command -v timeout >/dev/null 2>&1; then
+    ZEITGRENZE="timeout 25"
+else
+    ZEITGRENZE=""
+fi
 
 laeuft() {
     [ -f "$PID" ] || return 1
@@ -61,8 +80,14 @@ starten() {
         echo "laeuft bereits (PID $(cat "$PID"))"
         return 0
     fi
-    if [ ! -x "$PY" ]; then
-        echo "FEHLER: virtuelle Python-Umgebung fehlt ($PY). Plugin neu installieren."
+    # Die Meldung muss sagen, was wirklich fehlt. Bis 0.9.5 stand hier
+    # "virtuelle Python-Umgebung fehlt" - dieser Zweig wird aber NUR erreicht,
+    # wenn es ueberhaupt kein python3 auf dem System gibt, und dann hilft
+    # "Plugin neu installieren" nicht weiter.
+    if [ -z "$PY" ] || [ ! -x "$PY" ]; then
+        echo "FEHLER: Auf diesem System ist kein python3 zu finden - weder unter"
+        echo "        $SELF/venv/bin/python3 noch im Suchpfad."
+        echo "        Abhilfe:  sudo apt-get install -y python3 python3-venv"
         return 1
     fi
     if [ ! -f "$SKRIPT" ]; then
@@ -74,16 +99,26 @@ starten() {
         return 1
     fi
     touch "$SOLL"
-    # Ausgabe geht in die Logdatei. Das Python-Skript protokolliert deshalb
-    # NICHT zusaetzlich nach stdout - sonst stuende jede Zeile doppelt darin.
-    nohup "$PY" "$SKRIPT" >> "$LOGDATEI" 2>&1 &
+    # Die Ausgabe geht nach /dev/null, NICHT in die Logdatei: das Python-Skript
+    # schreibt sie im Dauerbetrieb selbst, mit Rotation. Bis 0.9.5 zeigten
+    # beide auf dieselbe Datei - jede Zeile stand doppelt darin, und nach dem
+    # Umbenennen durch die Rotation schrieb dieser Deskriptor in die
+    # umbenannte (spaeter geloeschte) Datei weiter, die dadurch den Platz auf
+    # der SD-Karte unsichtbar belegte.
+    nohup "$PY" "$SKRIPT" >/dev/null 2>&1 &
     echo $! > "$PID"
     sleep 1
     if laeuft; then
-        echo "gestartet (PID $(cat "$PID"))"
+        echo "gestartet (PID $(cat "$PID"), $PYQUELLE)"
         return 0
     fi
+    # Der Sollmerker wird wieder entfernt. Bliebe er stehen, versuchte der
+    # minuetliche Waechter den Start jede Minute erneut - dauerhaft, mit rund
+    # 2.880 Logzeilen am Tag, waehrend die Oberflaeche "gestoppt" zeigt.
+    rm -f "$SOLL"
     echo "FEHLER: Start fehlgeschlagen - siehe $LOGDATEI"
+    echo "        Letzte Zeilen:"
+    tail -n 5 "$LOGDATEI" 2>/dev/null | sed 's/^/        /'
     rm -f "$PID"
     return 1
 }
@@ -126,10 +161,23 @@ case "$1" in
         "$PY" "$SKRIPT" --selbsttest
         ;;
     einmal)
-        "$PY" "$SKRIPT" --einmal
+        # Mit Zeitgrenze. Die Oberflaeche ruft das ueber exec() auf und liest
+        # bis EOF; antwortet der Miniserver gar nicht, haengt der Aufruf am
+        # TCP-Zeitlimit des Betriebssystems (typisch rund 130 s) und damit
+        # weit ueber PHPs max_execution_time - der Anwender saehe eine weisse
+        # Seite statt einer Meldung.
+        $ZEITGRENZE "$PY" "$SKRIPT" --einmal
         ;;
     entwurf)
-        "$PY" "$SKRIPT" --entwurf $2
+        # $2 bewusst OHNE Anfuehrungszeichen: ist es nicht gesetzt, entsteht
+        # so gar kein Argument. Quotiert entstuende ein leeres.
+        $ZEITGRENZE "$PY" "$SKRIPT" --entwurf $2
+        ;;
+    anmeldeprobe)
+        $ZEITGRENZE "$PY" "$SKRIPT" --anmeldeprobe
+        ;;
+    httpprobe)
+        $ZEITGRENZE "$PY" "$SKRIPT" --httpprobe
         ;;
     waechter)
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
@@ -140,7 +188,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Aufruf: $0 {start|stop|restart|status|selbsttest|einmal|entwurf|waechter}"
+        echo "Aufruf: $0 {start|stop|restart|status|selbsttest|einmal|entwurf|anmeldeprobe|httpprobe|waechter}"
         exit 2
         ;;
 esac
