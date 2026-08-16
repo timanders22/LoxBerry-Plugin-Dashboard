@@ -420,7 +420,33 @@ class Miniserver:
         self._voriger_salt = ""
         nutzlast = ("%s:%s" % (self._aes_key.hex(), self._aes_iv.hex())).encode("ascii")
         sitzung = base64.b64encode(_pkcs1_rsa(self._pubkey, nutzlast)).decode("ascii")
-        await self._befehl("jdev/sys/keyexchange/" + urllib.parse.quote(sitzung, safe=""))
+        # Der Sitzungsschluessel geht ROH ueber die Leitung - NICHT URI-kodiert.
+        #
+        # Das Dokument unterscheidet drei Stellen, und nur zwei davon werden
+        # kodiert [K, "Step-by-step Guide HTTP Requests" und "Sending
+        # encrypted commands over the websocket"]:
+        #
+        #   Schritt 11 (HTTP):      "URI-Component-Encode the {session-key}"
+        #                           - dort steht er in ?sk=, also im Abfrageteil
+        #   enc ueber WebSocket:    "URI-Component-Encode the {cipher}"
+        #   Schritt 7 (WebSocket):  "Pass encrypted session-key to Miniserver
+        #                           via jdev/sys/keyexchange/{...}" - KEINE
+        #                           Kodierung genannt, nur Base64 aus Schritt 6
+        #
+        # Bis 0.9.6 wurde auch hier kodiert. Am 16.08.2026 an einem Miniserver
+        # mit Fassung 17.1.7.27 gemessen:
+        #
+        #   URI-kodiert  -> Code 401     roh -> Code 200
+        #
+        # Die 401 ist dabei keine Anmeldefrage: an dieser Stelle ist noch kein
+        # Kennwort im Spiel. Der Miniserver bekommt schlicht kein
+        # entschluesselbares Paket - laut Dokument antwortet er darauf mit 401
+        # ("If it cannot be decrypted ... it will return 401").
+        #
+        # Die Attrappe hat das NICHT gefunden: sie ruft beim Entschluesseln
+        # urllib.parse.unquote() auf und nimmt deshalb beide Schreibweisen an.
+        # Sie war dem Client nachgebaut, nicht dem Geraet.
+        await self._befehl("jdev/sys/keyexchange/" + sitzung)
 
     async def _token_holen(self) -> dict:
         roh = await self._befehl("jdev/sys/getkey2/%s" % urllib.parse.quote(self.benutzer))
@@ -937,6 +963,20 @@ class Miniserver:
 # Selbstpruefung ohne Miniserver
 # --------------------------------------------------------------------------
 
+def _pruefschluessel() -> str:
+    """Ein Wegwerf-RSA-Schluessel fuer die Selbstpruefung.
+
+    Er wird nur gebraucht, um einen echten Sitzungsschluessel zu erzeugen und
+    dessen Schreibweise zu pruefen - er verlaesst diese Funktion nicht.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    s = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return s.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+
+
 def selbstpruefung() -> list[tuple[bool, str]]:
     """Prueft die Teile, die sich ohne Miniserver pruefen lassen.
 
@@ -1024,6 +1064,43 @@ def selbstpruefung() -> list[tuple[bool, str]]:
     Miniserver._wetter_lesen(m5, roh + struct.pack("<Ii", 1, 9999))
     e.append((m5.zustaende == {},
               "Wetter-Tabelle mit unplausibler Eintragszahl wird verworfen"))
+
+    # Der Sitzungsschluessel darf NICHT URI-kodiert werden.
+    #
+    # Am 16.08.2026 an einem Miniserver 17.1.7.27 gemessen: URI-kodiert
+    # antwortet er mit 401, roh mit 200. Die Attrappe hatte das nicht
+    # gefunden, weil sie beim Entschluesseln unquote() aufrief - sie war dem
+    # Client nachgebaut, nicht dem Geraet. Diese Pruefung ersetzt das nicht,
+    # aber sie faengt die Rueckkehr des Fehlers ohne Miniserver ab.
+    m6 = Miniserver.__new__(Miniserver)
+    m6._aes_key, m6._aes_iv = b"\x01" * 32, b"\x02" * 16
+    gesendet = []
+
+    class _WsMerk:
+        async def send(self, cmd):
+            gesendet.append(cmd)
+
+    async def _tausch():
+        m6.ws = _WsMerk()
+        m6._warten = collections.deque()
+        m6._verwerfen = 0
+        # Ein Schluessel, dessen Base64 sicher '+' und '/' enthaelt.
+        m6._pubkey = _pruefschluessel()
+        f = asyncio.get_running_loop().create_future()
+        f.set_result(None)
+        async def _sofort(cmd, zeit=15):
+            gesendet.append(cmd)
+            return None
+        m6._befehl = _sofort
+        await Miniserver._schluesseltausch(m6)
+
+    try:
+        asyncio.run(_tausch())
+        cmd = gesendet[-1] if gesendet else ""
+        e.append(("%" not in cmd and cmd.startswith("jdev/sys/keyexchange/"),
+                  "Sitzungsschluessel roh, nicht URI-kodiert"))
+    except Exception as f:  # noqa: BLE001
+        e.append((False, "Sitzungsschluessel: Pruefung nicht durchgelaufen (%s)" % f))
 
     # Kennung: die von Loxone genannte Form [K, Seite 30].
     k = Miniserver._kennung_bauen(None)  # type: ignore[arg-type]

@@ -9,12 +9,15 @@ Loxone-App aufrufen lassen.
 > ist. Deshalb 0.9.7 und nicht 1.0.0. Was ungeprüft bleibt, steht unten unter
 > *Was ungeprüft bleibt* — vollständig und ohne Beschönigung.
 >
-> **Wer 0.9.6 installiert hat, sollte aktualisieren.** Die als 0.9.6
-> veröffentlichte Fassung war ein Zwischenstand: sie enthält die Korrekturen
-> am Verbindungsabbau, an der Rückfrage vor dem Löschen, am Protokoll und an
-> der Paketbeschaffung — aber **nicht** die Farbwahl, die gesicherten
-> Bausteine, die Wetter- und Zeitschaltuhr-Kachel und den Abgleich auf die
-> Dokumentfassung 17.0. Alles vier ist in 0.9.7.
+> **Wer 0.9.5 oder 0.9.6 installiert hat, muss aktualisieren.** Beide Fassungen
+> kommen an einem Miniserver mit aktueller Firmware **gar nicht erst zustande**:
+> der Sitzungsschlüssel wurde URI-kodiert übertragen, und der Miniserver weist
+> das mit Code 401 ab — noch bevor ein Kennwort im Spiel ist. Am 16.08.2026 an
+> Firmware 17.1.7.27 gemessen. Siehe *Der Schlüsseltausch* weiter unten.
+>
+> Dazu enthält 0.9.6 vier fertige Punkte nicht, die als Zwischenstand
+> veröffentlicht wurde: Farbwahl, gesicherte Bausteine, Wetter- und
+> Zeitschaltuhr-Kachel, Abgleich auf die Dokumentfassung 17.0.
 
 ## Warum ein Dienst dazwischen hängt
 
@@ -67,6 +70,23 @@ Alles aus der offiziellen Dokumentation, nichts geraten:
 K = *Communicating with the Miniserver*, Fassung 17.0 vom 31.03.2026.
 S = *Structure File*, Fassung 17.0 vom 31.03.2026.
 Beide frei abrufbar unter loxone.com/enen/kb/api/.
+
+### Der Schlüsseltausch
+
+Der Sitzungsschlüssel geht **roh** über den WebSocket, nicht URI-kodiert. Das
+Dokument unterscheidet drei Stellen und kodiert nur zwei davon:
+
+| Stelle | Dokument |
+|---|---|
+| Sitzungsschlüssel im HTTP-Aufruf (`?sk=`) | „URI-Component-Encode the {session-key}" |
+| Verschlüsselter Befehl über WebSocket (`jdev/sys/enc/…`) | „URI-Component-Encode the {cipher}" |
+| Sitzungsschlüssel über WebSocket (`jdev/sys/keyexchange/…`) | **keine Kodierung genannt** |
+
+Bis 0.9.6 wurde auch die dritte Stelle kodiert. Gemessen an Firmware
+17.1.7.27: URI-kodiert antwortet der Miniserver mit **401**, roh mit **200**.
+Die 401 ist dabei keine Anmeldefrage — an dieser Stelle ist noch kein Kennwort
+im Spiel; der Miniserver bekommt schlicht kein entschlüsselbares Paket, und
+darauf antwortet er laut Dokument mit 401.
 
 **Zustände kommen als binäre Ereignistabellen**, nicht als Text `uuid:wert` —
 das steht in vielen Gemeinschaftsbeschreibungen falsch. Vor jeder Nachricht

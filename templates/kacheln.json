@@ -334,7 +334,7 @@
     "totalWeek"
    ],
    "befehle": [],
-   "text": "Zaehler",
+   "text": "Zähler",
    "hinweis": "totalDay und totalWeek gibt es seit 13.01 - [S] Meter, States. Sie fehlen bei aelteren Bausteinen; die Kachel zeigt dann nur, was ankommt."
   },
   "Hourcounter": {
@@ -359,7 +359,7 @@
     "infoText"
    ],
    "befehle": [],
-   "text": "Praesenzmelder"
+   "text": "Präsenzmelder"
   },
   "SmokeAlarm": {
    "kachel": "brandmelder",
@@ -447,7 +447,7 @@
   "2x2": {
    "spalten": 2,
    "zeilen": 2,
-   "text": "gross"
+   "text": "groß"
   },
   "4x1": {
    "spalten": 4,
@@ -497,7 +497,7 @@
   "text": "Text",
   "schieber": "Schieberegler",
   "auswahl": "Auswahl",
-  "zaehler": "Zaehler",
+  "zaehler": "Zähler",
   "szene": "Szene (mehrere Befehle)",
   "generisch": "Ohne eigenes Bedienelement",
   "wetter": "Wetter",
