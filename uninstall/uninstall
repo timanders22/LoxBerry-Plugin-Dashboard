@@ -1,0 +1,30 @@
+#!/bin/bash
+# Dashboard - Deinstallation
+#
+# LoxBerry entfernt beim Deinstallieren nur die Ordner des Plugins selbst:
+# config/plugins/<x>/, data/plugins/<x>/, bin/, templates/ und beide
+# webfrontend/-Ordner (gemessen in sbin/plugininstall.pl, purge_installation,
+# Schritt 7). Was NEBEN diesen Ordnern liegt, bleibt liegen - und genau
+# dorthin gehoert alles, was ein Update ueberstehen soll:
+#
+#   config/plugins/<x>.backup.json          Zweitschrift der Einstellungen
+#   config/plugins/<x>.backup.dashboard.json Zweitschrift der Einstellungen
+#   data/plugins/<x>.upgrade_sicherung      der Verlauf waehrend des Updates
+#
+# Aufruf: <ZUFALLSKENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <TEMPFOLDER>
+# ACHTUNG: $1 ist NICHT der Arbeitsordner, sondern eine zehnstellige
+# Zufallskennung. Gearbeitet wird deshalb mit $3 und $5.
+UN_FOLDER="${3:-dashboard}"
+UN_BASE="${5:-$LBHOMEDIR}"
+
+if [ -z "$UN_BASE" ] || [ ! -d "$UN_BASE" ]; then
+    echo "<INFO> Kein Wurzelverzeichnis uebergeben - nichts abgeraeumt."
+    exit 0
+fi
+
+# Der Punkt hinter dem Ordnernamen ist Absicht: er trennt den Nachbarn vom
+# Ordner. Das Sternchen trifft deshalb nur die eigenen Zweitschriften.
+rm -f  "$UN_BASE/config/plugins/$UN_FOLDER".backup.* 2>/dev/null
+rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" 2>/dev/null
+echo "<OK> Zweitschriften und Update-Sicherung entfernt."
+exit 0

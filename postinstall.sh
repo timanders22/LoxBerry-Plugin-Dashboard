@@ -181,4 +181,22 @@ echo "<INFO>   2. Reiter Dashboards, 'Entwurf erzeugen' - danach steht schon etw
 echo "<INFO>   3. Reiter Designer, Kacheln ordnen"
 echo "<INFO>   4. Reiter Dashboards, Adresse auf dem Tablet oeffnen"
 echo "<OK> Installation abgeschlossen."
+
+# ---------- Langzeitwerte zurueckholen ----------
+# Gegenstueck zu preupgrade.sh. Zwischen beiden Skripten hat der Installer
+# data/plugins/<x>/ vollstaendig geloescht; der Nachbar mit dem Punkt hat es
+# ueberstanden. Zurueckgeholt wird nur, was fehlt - eine Neuinstallation
+# findet nichts vor und faengt sauber bei null an.
+LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
+if [ -d "$LANG_SICHER" ]; then
+    for LANG_F in verlauf.json; do
+        if [ -f "$LANG_SICHER/$LANG_F" ] \
+           && [ ! -s "$BASE/data/plugins/$PFOLDER/$LANG_F" ]; then
+            mkdir -p "$BASE/data/plugins/$PFOLDER" 2>/dev/null
+            cp -p "$LANG_SICHER/$LANG_F" "$BASE/data/plugins/$PFOLDER/$LANG_F" \
+                2>/dev/null && echo "<OK> $LANG_F ueber das Update gerettet."
+        fi
+    done
+    rm -rf "$LANG_SICHER" 2>/dev/null
+fi
 exit 0
