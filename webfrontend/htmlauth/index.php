@@ -414,6 +414,54 @@ $db_rahmen = class_exists('LBWeb', false) && method_exists('LBWeb', 'lbheader');
 if ($db_rahmen) {
     LBWeb::lbheader(db_t('ALLG.TITEL'), 'https://www.loxone.com/enen/kb/api/', 'help.html');
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($db_post && isset($_POST['db_sichern'])) {
+    $db_js = json_encode(db_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($db_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="dashboard_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $db_js;
+        exit;
+    }
+    $db_fehler[] = db_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($db_post && isset($_POST['db_zurueck'])) {
+    if (!isset($_FILES['db_sicherung']) || !is_array($_FILES['db_sicherung'])
+        || !isset($_FILES['db_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['db_sicherung']['tmp_name'])) {
+        $db_fehler[] = db_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['db_sicherung']['size'] > 262144) {
+        $db_fehler[] = db_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($db_neu, $db_mangel, $db_n) = db_sicherung_lesen(
+            (string) @file_get_contents($_FILES['db_sicherung']['tmp_name']));
+        if ($db_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $db_fehler[] = db_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $db_mangel);
+        } elseif (db_config_speichern($db_neu)) {
+            $db_meldungen[] = sprintf(db_t('EINST.SICH_UEBERNOMMEN'), $db_n);
+        } else {
+            $db_fehler[] = db_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 .sm-wrap { max-width: 980px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
@@ -688,6 +736,25 @@ if ($db_rahmen) {
 <button data-role="none" class="sm-btn sm-b-aktion" name="speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+
+<h2><?= db_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= db_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= db_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="db_sichern" value="1"><?= db_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="db_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="db_zurueck" value="1"><?= db_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Dashboards ================= -->
