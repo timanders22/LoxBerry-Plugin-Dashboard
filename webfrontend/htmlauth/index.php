@@ -88,6 +88,23 @@ $db_sauber = function ($feld) {
         (string) (isset($_POST[$feld]) ? $_POST[$feld] : '')));
 };
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ---------------- Loxone-Vorlagen herunterladen ----------------
  *
  * Die Anfuehrungszeichen um den Dateinamen sind Pflicht - ohne sie bricht
@@ -411,9 +428,6 @@ $db_kachelzahl = 0;
 foreach ($db_seiten as $db_s) { $db_kachelzahl += count(isset($db_s['kacheln']) ? $db_s['kacheln'] : array()); }
 
 $db_rahmen = class_exists('LBWeb', false) && method_exists('LBWeb', 'lbheader');
-if ($db_rahmen) {
-    LBWeb::lbheader(db_t('ALLG.TITEL'), 'https://www.loxone.com/enen/kb/api/', 'help.html');
-}
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -460,6 +474,11 @@ if ($db_post && isset($_POST['db_zurueck'])) {
             $db_fehler[] = db_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($db_rahmen) {
+    LBWeb::lbheader(db_t('ALLG.TITEL'), 'https://www.loxone.com/enen/kb/api/', 'help.html');
 }
 
 ?>
