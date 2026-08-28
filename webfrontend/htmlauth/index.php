@@ -78,6 +78,24 @@ if (isset($_POST['activetab']) && preg_match($db_muster, (string) $_POST['active
 
 $db_meldungen = array();
 $db_fehler = array();
+
+/* ---------------------------------------------------------------- *
+ * Der Wachposten - EIN Posten, vor allen Handlern.
+ * Abgewiesen heisst gemeldet, und es wird NICHTS ausgefuehrt: $_POST
+ * wird geleert, nur der aktive Reiter bleibt stehen, damit der Bediener
+ * nach der Abweisung dort steht, wo er war.
+ * ---------------------------------------------------------------- */
+$db_wache = db_wachposten();
+if ($db_wache !== '') {
+    $db_reiter_merk = isset($_POST['activetab']) && is_string($_POST['activetab'])
+        ? (string) $_POST['activetab'] : null;
+    $_POST = array();
+    if ($db_reiter_merk !== null) {
+        $_POST['activetab'] = $db_reiter_merk;
+    }
+    $db_fehler[] = $db_wache;
+}
+
 $db_ausgabe = '';
 $db_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
@@ -608,6 +626,7 @@ if ($db_rahmen) {
   <span><i class="sm-punkt sm-b-aktion"></i> <?= db_t('LEGENDE.AKTION') ?></span>
 </div>
 <form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-settings">
   <div class="sm-knopfreihe">
   <!-- Die Trennlinie zwischen Gruen und Orange ist nicht "hat eine Wirkung",
@@ -621,6 +640,7 @@ if ($db_rahmen) {
 </form>
 
 <form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
 <h2><?= db_e(db_t('EINST.H_MS')) ?></h2>
@@ -765,10 +785,12 @@ if ($db_rahmen) {
        Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
+    <?php echo db_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="db_sichern" value="1"><?= db_t('EINST.K_SICHERN') ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
+    <?php echo db_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="db_sicherung" accept=".json">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="db_zurueck" value="1"><?= db_t('EINST.K_ZURUECK') ?></button>
@@ -785,6 +807,7 @@ if ($db_rahmen) {
   <span><i class="sm-punkt sm-b-aktion"></i> <?= db_t('LEGENDE.AKTION') ?></span>
 </div>
 <form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-boards">
   <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-lesen" name="struktur_holen" value="1"><?= db_e(db_t('BOARD.K_STRUKTUR')) ?></button>
@@ -800,6 +823,7 @@ if ($db_rahmen) {
 <div class="sm-warnung"><?= db_t('BOARD.KEINE_SEITEN') ?></div>
 <?php } else { ?>
 <form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-boards">
 <table class="sm-tabelle">
 <tr><th><?= db_e(db_t('BOARD.T_NAME')) ?></th><th><?= db_e(db_t('BOARD.T_KACHELN')) ?></th>
@@ -861,6 +885,7 @@ if ($db_rahmen) {
 <div id="dz-bau"></div>
 
 <form action="index.php" method="post" id="dz-form">
+  <?php echo db_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-designer">
   <input data-role="none" type="hidden" name="aufbau" id="dz-aufbau" value="">
   <div class="sm-knopfreihe">
@@ -898,6 +923,7 @@ if ($db_rahmen) {
 <h4 style="margin:14px 0 2px"><?= db_e(db_t('LOX.ALLES_TITEL')) ?></h4>
 <p class="sm-hilfe"><?= db_t('LOX.ALLES_TEXT') ?></p>
 <form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-technik" name="vorlage" value="1"><?= db_e(db_t('LOX.K_VORLAGE')) ?></button>
@@ -979,6 +1005,7 @@ foreach ($db_bausteinliste as $db_z) { ?>
 <tr><th><?= db_e(db_t('LOX.T_TOKEN')) ?></th><td class="sm-mono"><?= db_e($db_token) ?></td></tr>
 </table>
 <form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" name="token_neu" value="1"
@@ -1014,6 +1041,7 @@ foreach ($db_bausteinliste as $db_z) { ?>
   <span><i class="sm-punkt sm-b-technik"></i> <?= db_t('LEGENDE.TECHNIK') ?></span>
 </div>
 <form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
   <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-lesen" name="test" value="status"><?= db_e(db_t('TEST.K_STATUS')) ?></button>
@@ -1025,6 +1053,7 @@ foreach ($db_bausteinliste as $db_z) { ?>
 <h2><?= db_e(db_t('TEST.H_MESSEN')) ?></h2>
 <p class="sm-hilfe"><?= db_t('TEST.MESSEN_ERKLAERUNG') ?></p>
 <form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-test">
   <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-lesen" name="probe" value="anmeldeprobe"><?= db_e(db_t('TEST.K_ANMELDUNG')) ?></button>
@@ -1062,6 +1091,7 @@ if (!$db_zeilen) { ?>
   <span><i class="sm-punkt sm-b-aktion"></i> <?= db_t('LEGENDE.AKTION_LOG') ?></span>
 </div>
 <form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-log">
   <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" name="log_leeren" value="1"><?= db_e(db_t('LOG.K_LEEREN')) ?></button>
