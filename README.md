@@ -4,20 +4,23 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.7 — ungeprüft am echten Miniserver.** Gebaut ohne Hardware;
-> gemessen gegen eine Attrappe, die streng nach den Loxone-Dokumenten gebaut
-> ist. Deshalb 0.9.7 und nicht 1.0.0. Was ungeprüft bleibt, steht unten unter
+> **Fassung 0.9.13 — die Anmeldung ist am Gerät gemessen, die Wirkung der
+> Befehle nicht.** Am 17.08.2026 an einem Miniserver mit Firmware 17.1.7.27
+> nachgemessen: Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung
+> mit gespeichertem Token, die Strukturdatei (638 Bausteine, 3539 Zustände)
+> und der HTTP-Rückfall `jdev/sps/io/<uuid>/state`. Alles Übrige ist gegen
+> eine Attrappe gemessen, die streng nach den Loxone-Dokumenten gebaut ist.
+> Deshalb 0.9.13 und nicht 1.0.0. Was ungeprüft bleibt, steht unten unter
 > *Was ungeprüft bleibt* — vollständig und ohne Beschönigung.
 >
-> **Wer 0.9.5 oder 0.9.6 installiert hat, muss aktualisieren.** Beide Fassungen
-> kommen an einem Miniserver mit aktueller Firmware **gar nicht erst zustande**:
-> der Sitzungsschlüssel wurde URI-kodiert übertragen, und der Miniserver weist
-> das mit Code 401 ab — noch bevor ein Kennwort im Spiel ist. Am 16.08.2026 an
-> Firmware 17.1.7.27 gemessen. Siehe *Der Schlüsseltausch* weiter unten.
->
-> Dazu enthält 0.9.6 vier fertige Punkte nicht, die als Zwischenstand
-> veröffentlicht wurde: Farbwahl, gesicherte Bausteine, Wetter- und
-> Zeitschaltuhr-Kachel, Abgleich auf die Dokumentfassung 17.0.
+> **Wer 0.9.12 oder älter installiert hat, sollte aktualisieren.** Die
+> Farbkachel konnte bis dahin **überhaupt nicht schalten**: der letzte von
+> vier Zeichenvorräten kannte weder Klammer noch Komma, und `hsv(240,100,80)`,
+> `temp(80,4000)` und `lumitech(80,4000)` starben unmittelbar vor dem
+> Absenden mit „Das ist kein gueltiger Befehl." — einer Meldung, die nach
+> einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
+> unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
+> Release-Seite zu `v0.9.13`.
 
 ## Warum ein Dienst dazwischen hängt
 
@@ -49,6 +52,9 @@ und bedient damit beliebig viele Tablets.
     webfrontend/htmlauth/    Oberfläche (sechs Reiter) + Designer
     webfrontend/html/        Endpunkt, Anzeigeseite (tafel.php), Bibliothek
     uninstall.sh             räumt die Sicherungen mit den Zugangsdaten weg
+    uninstall/uninstall      dasselbe — welches der beiden LoxBerry ausführt,
+                             ist hier nicht nachgemessen, deshalb tut seit
+                             0.9.13 jedes die ganze Arbeit
 
 ## Was am Miniserver benutzt wird
 
@@ -178,8 +184,30 @@ sie auf die Abfrage zurück **und zeigt das an**; sonst würde aus dem Ersatz
 unbemerkt der Normalfall.
 
 Dazu kommen, alle **ab Werk abgeschaltet**: Seitenrotation, Nachtabsenkung mit
-Zeitplan, Verlaufskurve auf den Kacheln, und die Steuerung der Anzeige durch
-Loxone (Seitenwechsel, Wecken, Helligkeit) über einen virtuellen Ausgang.
+Zeitplan, Verlaufskurve auf den Kacheln, das Ruhebild (siehe unten), und die
+Steuerung der Anzeige durch Loxone (Seitenwechsel, Wecken, Helligkeit,
+Ruhebild) über einen virtuellen Ausgang.
+
+### Das Ruhebild
+
+Nach einer einstellbaren Zeit ohne Berührung tritt die Bedienung zurück. Es
+bleiben Uhrzeit, Datum, die aktuelle Wetterlage und bis zu zwölf Werte —
+lesbar aus einigen Metern, dunkler als die Tafel, wahlweise über einem eigenen
+Hintergrundbild. Jede Berührung holt die Tafel zurück, und **diese eine
+Berührung schaltet nichts**: ein Griff im Vorbeigehen soll kein Fehlgriff
+werden.
+
+Es ist dem **Ambient Mode** der Loxone-App nachempfunden. Nachgebaut ist das
+*Verhalten* — der Ambient Mode ist eine Betriebsart der App (ab App und
+Config 14.x, nur Querformat, mindestens 1024×700), keine Schnittstelle. Dieses
+Plugin spricht keine an und benutzt ausschließlich die eigenen Werte.
+
+Die Wetterzeile erscheint nur, wenn in Loxone ein Wetterdienst eingerichtet
+ist; fehlt der Klartext zu einer Wetterlage in der Anlage, steht die Zahl da
+und keine erfundene Beschreibung. Je Kachel steht **ein** Wert — der
+Hauptzustand aus der Kacheltabelle, nicht irgendeiner. Solange das Ruhebild
+aufliegt, blättert die Seitenrotation nicht weiter, und eine Nachtabsenkung
+wirkt zusätzlich.
 
 ## Sicherheit
 
@@ -254,27 +282,11 @@ GitHub-Release-Seite zum jeweiligen Tag — nicht hier. Eine dritte Kopie
 derselben Aussage läuft zwangsläufig aus dem Takt; genau das war der README
 bis 0.9.5 passiert, die noch 0.9.1 beschrieb.
 
-## Fassung 0.9.12 — der Stat-Zwischenspeicher
-Die Protokollkappung (512 000 Byte) stand in
-`webfrontend/html/db_lib.php:534`. PHP merkt sich aber die Antworten von
-`stat()`: innerhalb **eines** Prozesses sieht `filesize()` die erste Größe
-und danach nie wieder eine neue — `file_put_contents(…, FILE_APPEND)` macht
-den Eintrag nicht ungültig. Die Kappung fällt dann still aus.
-
-Gemessen am 29.08.2026, 20 000 Zeilen im selben Prozess:
-
-| | ohne `clearstatcache` | mit |
-|---|---|---|
-| PHP 7.4.33 | 1 220 000 Byte, **nicht gekappt** | 220 332 Byte, gekappt |
-| PHP 8.4.24 | 220 332 Byte, gekappt | 220 332 Byte, gekappt |
-
-Die beiden PHP-Fassungen verhalten sich also verschieden — und LoxBerry 3.x
-fährt 7.4. Wer nur unter 8.4 misst, sieht den Fehler nie. Folgen hatte das
-hier nicht: die Aufrufer sind kurzlebig, und ein **frischer** Prozess kappt
-richtig. Eine Funktion darf aber nicht davon abhängen, wer sie wie oft ruft.
-
-Abhilfe: `clearstatcache(true, …)` **vor** dem Tor; der zweite Parameter
-beschränkt das Leeren auf diese eine Datei. Dasselbe Muster tragen Robonect,
-Saugroboter, SignalBot, Octopus, Sprachsteuerung und WärmepumpeCloud schon
-länger — es ist am 29.08.2026 im ganzen Bestand nachgezogen worden.
-
+**Und es ist wieder passiert.** Unter diesem Absatz stand bis 0.9.12 ein
+Abschnitt „Fassung 0.9.12 — der Stat-Zwischenspeicher", also genau die
+vierte Kopie, gegen die der Absatz darüber sich ausspricht; die Kopfzeile
+dieser Datei nannte gleichzeitig noch die Fassung 0.9.7 und behauptete, das
+Plugin sei am Miniserver ungeprüft — fünf Fassungen und eine Messung am
+Gerät später. Der Abschnitt ist entfernt, der Inhalt steht auf der
+Release-Seite zu `v0.9.12`. Eine Regel, die man im selben Text bricht, ist
+keine.

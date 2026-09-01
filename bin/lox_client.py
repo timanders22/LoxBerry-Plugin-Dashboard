@@ -81,6 +81,25 @@ class LoxFehler(Exception):
     """Ein benannter Fehler. Die Meldung ist fuer den Anwender gedacht."""
 
 
+class LoxZeit(LoxFehler):
+    """Der Miniserver hat auf einen Befehl nicht geantwortet.
+
+    Eigene Klasse, WEIL der Aufrufer diesen Fall von jedem anderen
+    unterscheiden muss: nach einer Zeitueberschreitung ist die Zuordnung von
+    Befehl und Antwort nicht mehr sicher, und die Verbindung gehoert erneuert.
+
+    Sie erbt von LoxFehler, damit jeder bestehende 'except LoxFehler' sie
+    weiterhin faengt - eine neue Klasse, die bestehende Fehlerwege stillegt,
+    waere schlimmer als der Fall, den sie loesen soll.
+
+    In 0.9.13 stand im Dienst zuerst 'isinstance(f, asyncio.TimeoutError)'.
+    Das konnte NIE greifen: _befehl() faengt die TimeoutError und wirft einen
+    LoxFehler. Der Neuaufbau war damit toter Code, waehrend Kommentar und
+    Freigabenotiz ihn zusicherten. Gefunden hat es eine Durchsicht, nicht der
+    Lauf - deshalb steht dazu jetzt eine Selbstpruefung weiter unten.
+    """
+
+
 # --------------------------------------------------------------------------
 # Kleinteile
 # --------------------------------------------------------------------------
@@ -228,9 +247,19 @@ class Miniserver:
         self._kopf: tuple | None = None
         self._leser: asyncio.Future | None = None
         self._selbst_geschlossen = False
-        # Tabellen, die bewusst nicht ausgewertet werden - gezaehlt, damit der
-        # Reiter Test sagen kann, dass sie ankommen.
-        self.uebergangen: dict[str, int] = {"tageszeit": 0, "wetter": 0, "datei": 0}
+        # Die Ereignistabellen, gezaehlt nach Kennung - damit der Reiter Test
+        # sagen kann, WAS ankommt.
+        #
+        # Bis 0.9.12 hiess dieses Feld 'uebergangen' und trug die Kommentar-
+        # zeile "Tabellen, die bewusst nicht ausgewertet werden". Das stimmte
+        # seit 0.9.6 nicht mehr: Wetter (Kennung 7) und Tageszeit (Kennung 4)
+        # werden seither ausgewertet und tragen die beiden Kacheln. Erhoeht
+        # wurde deshalb nur noch 'datei'. Folge: die beiden Anzeigestellen -
+        # im Selbsttest und im Reiter Test - haengen an 'if wetter or
+        # tageszeit' und waren damit unerreichbar, und ihr Text behauptete das
+        # Gegenteil dessen, was der Code tut. Der einzige Zaehler, der wirklich
+        # zaehlt, wurde von keiner der beiden gezeigt.
+        self.tabellen: dict[str, int] = {"wetter": 0, "tageszeit": 0, "bindatei": 0}
         self.verbunden = False
         self.weg = ""          # 'websocket' oder 'http'
         self.letzter_fehler = ""
@@ -343,11 +372,35 @@ class Miniserver:
         Das ist kein Schoenheitsgrund: hinter dem Verb stehen Hashes, Token
         und der Benutzername - 'authwithtoken/9f3c…/admin' gehoert in keine
         Bildschirmmeldung und in kein Protokoll.
+
+        Bis 0.9.12 war genau dieses Beispiel die Luecke: 'authwithtoken/
+        {hash}/{user}' hat GENAU drei Abschnitte, wurde also unveraendert
+        durchgereicht - mit vollem Hash und vollem Benutzernamen. Ueber
+        _befehl() und _mit_token_anmelden() landete es im Protokoll. Die
+        Selbstpruefung dazu war gruen, weil sie diese Ausgabe als Sollwert
+        festgeschrieben hatte: eine Pruefung, die den Fehler beglaubigt.
+
+        Es wird deshalb nicht nur nach der ZAHL der Abschnitte gekuerzt,
+        sondern auch VOR dem ersten Abschnitt, der wie ein Geheimnis
+        aussieht - lang oder reine Hexadezimalzeichen. Der Benutzername
+        steht in allen bekannten Formen dahinter und faellt damit mit weg.
         """
         teile = [t for t in cmd.split("/") if t]
-        if len(teile) <= 3:
-            return "/".join(teile)
-        return "/".join(teile[:3]) + "/..."
+        genommen = []
+        for t in teile:
+            # Ein Abschnitt gilt als Geheimnis, wenn er reine Hexzeichen
+            # traegt (Hash, Salt, UUID ohne Striche) oder schlicht zu lang
+            # ist fuer ein Verb (Token, Base64). Der erste Abschnitt ist nie
+            # ein Geheimnis - er ist der Namensraum ('jdev', 'data',
+            # 'authwithtoken', 'salt').
+            if genommen and (re.match(r"^[0-9a-fA-F]{8,}$", t) or len(t) > 24):
+                break
+            if len(genommen) >= 3:
+                break
+            genommen.append(t)
+        if len(genommen) == len(teile):
+            return "/".join(genommen)
+        return "/".join(genommen) + "/..."
 
     async def _befehl(self, cmd: str, zeit: int = 15, name: str = "") -> Any:
         """Einen Befehl ueber den WebSocket senden und auf die Antwort warten.
@@ -394,9 +447,16 @@ class Miniserver:
                 self._verwerfen += 1
             except ValueError:
                 pass
-            raise LoxFehler(
+            # Der Schritt steht seit dem Beginn dieser Methode in 'schritt' -
+            # bis 0.9.12 wurde er hier nicht benutzt, sondern nur der erste
+            # Abschnitt des Befehls gezeigt. Der ist bei fuenf der sechs
+            # Schritte aus der Tabelle schlicht 'jdev', und die Meldung sagte
+            # damit genau so wenig wie das blosse "Code 401", gegen das der
+            # Zweig darueber gebaut ist. Bleibt der Miniserver bei 'getjwt'
+            # stumm, sucht der Anwender sonst wieder beim Kennwort.
+            raise LoxZeit(
                 "Der Miniserver hat auf '%s' innerhalb von %d s nicht geantwortet."
-                % (cmd.split("/")[0] + "/...", zeit))
+                % (schritt, zeit))
 
     async def _befehl_verschluesselt(self, cmd: str, zeit: int = 15) -> Any:
         """jdev/sys/enc/... [K, Seite 27].
@@ -572,19 +632,31 @@ class Miniserver:
         except TypeError:
             self.ws = await websockets.connect(url, **args)
 
+        # Ab hier stehen WebSocket und Leser-Task. Jeder Schritt danach kann
+        # werfen - Schluesseltausch, getkey2, getjwt. Die Pflicht, hinter sich
+        # zuzumachen, liegt bei dem Objekt, das den Task startet, NICHT bei
+        # seinen Aufrufern: der Miniserver laesst nur 31 Clients gleichzeitig
+        # zu, und ausgerechnet dieses Plugin gibt es, um diese Plaetze zu
+        # schonen. Bis 0.9.12 stand die Klammer nur an den drei Aufrufstellen
+        # in dashboard_dienst.py - richtig, aber jede vierte Aufrufstelle
+        # haette sofort wieder Leichen angelegt.
         self._leser = asyncio.ensure_future(self._lesen())
-        await self._schluesseltausch()
+        try:
+            await self._schluesseltausch()
 
-        if altes_token and await self._mit_token_anmelden(altes_token):
-            self.token = {"token": altes_token}
-            _LOG.info("Mit dem gespeicherten Token angemeldet.")
-        else:
-            self.token = await self._token_holen()
-            _LOG.info("Neues Token erhalten, gueltig bis %s (Sekunden seit 2009).",
-                      self.token.get("validUntil"))
-            if self.token.get("unsecurePass"):
-                _LOG.warning("Der Miniserver meldet ein schwaches Passwort fuer diesen "
-                             "Benutzer. Das sollte geaendert werden.")
+            if altes_token and await self._mit_token_anmelden(altes_token):
+                self.token = {"token": altes_token}
+                _LOG.info("Mit dem gespeicherten Token angemeldet.")
+            else:
+                self.token = await self._token_holen()
+                _LOG.info("Neues Token erhalten, gueltig bis %s (Sekunden seit 2009).",
+                          self.token.get("validUntil"))
+                if self.token.get("unsecurePass"):
+                    _LOG.warning("Der Miniserver meldet ein schwaches Passwort fuer diesen "
+                                 "Benutzer. Das sollte geaendert werden.")
+        except BaseException:
+            await self.schliessen()
+            raise
 
         self.verbunden = True
         self.weg = "websocket"
@@ -704,7 +776,26 @@ class Miniserver:
         """
         if not re.match(r"^[0-9a-fA-F-]{8,60}$", uuid):
             raise LoxFehler("Das ist keine gueltige UUID.")
-        if not re.match(r"^[A-Za-z0-9_./+%:-]{1,120}$", befehl):
+        # DERSELBE Zeichenvorrat wie im Endpunkt - Zeichen fuer Zeichen.
+        # Bis zu einem Zwischenstand von 0.9.13 waren es vier Tore mit vier
+        # verschiedenen Vorraeten: der Endpunkt liess zusaetzlich das
+        # Leerzeichen durch, dieses hier stattdessen das Prozentzeichen. Kein
+        # Befehl in kacheln.json traegt eines von beiden, es war also
+        # folgenlos - aber es ist genau die Bauart, gegen die dieser Zweig
+        # berichtigt wurde. Beide Vorraete tragen jetzt dieselben Zeichen.
+        #
+        # Klammer und Komma gehoeren dazu: hsv(240,100,80), temp(80,4000) und
+        # lumitech(80,4000) sind die Befehlsformen der beiden Farbwaehler [S,
+        # ColorPickerV2 / ColorPicker]. Bis 0.9.12 fehlten sie hier - und weil
+        # dies das LETZTE der vier Tore ist, war die Farbkachel damit
+        # vollstaendig lahmgelegt: Endpunkt (webfrontend/html/index.php),
+        # db_befehl_erlaubt() und befehl_erlaubt() liessen die Form durch, und
+        # erst hier, unmittelbar vor dem Absenden, kam "Das ist kein
+        # gueltiger Befehl." - eine Meldung, die nach einem Fehler des
+        # Anwenders klingt. Genau die Fehlerklasse, die db_lib.php eine Stufe
+        # weiter vorn schon einmal hatte und im Kommentar beschreibt: eine
+        # Positivliste, die die Formen nicht kennt, die sie zulassen muss.
+        if not re.match(r"^[A-Za-z0-9_./+:(),-]{1,120}$", befehl):
             raise LoxFehler("Das ist kein gueltiger Befehl.")
         if visu_pw:
             h = await self.visu_hash(visu_pw)
@@ -789,15 +880,17 @@ class Miniserver:
                 elif kennung == KOPF_TEXTE and isinstance(nachricht, bytes):
                     self._texte_lesen(nachricht)
                 elif kennung == KOPF_WETTER and isinstance(nachricht, bytes):
+                    self.tabellen["wetter"] += 1
                     self._wetter_lesen(nachricht)
                 elif kennung == KOPF_TAGESZEIT and isinstance(nachricht, bytes):
+                    self.tabellen["tageszeit"] += 1
                     self._tageszeit_lesen(nachricht)
                 elif kennung == KOPF_BINDATEI:
                     # Eine angeforderte Datei (Symbol, Bild). Das Plugin
                     # fordert nichts dergleichen an; wuerde sie an
                     # _text_verarbeiten gereicht, loeste sie die Zukunft eines
                     # wartenden Befehls mit Binaermuell auf (Befund 0.9.5).
-                    self.uebergangen["datei"] += 1
+                    self.tabellen["bindatei"] += 1
                 elif isinstance(nachricht, (str, bytes)):
                     self._text_verarbeiten(
                         nachricht.decode("utf-8", "replace")
@@ -1158,14 +1251,33 @@ def selbstpruefung() -> list[tuple[bool, str]]:
     # Am 17.08.2026 stand auf dem Bildschirm nur "Der Miniserver hat mit Code
     # 401 geantwortet." Das passt auf sechs verschiedene Schritte mit sechs
     # verschiedenen Ursachen; die Suche begann beim Kennwort und lag falsch.
+    # Bis 0.9.12 stand hier als Sollwert, dass 'authwithtoken/9f3caffe/admin'
+    # UNVERAENDERT durchgereicht wird - genau die Zeichenkette, die REGELN_2
+    # als Beispiel dafuer nennt, was in keine Meldung gehoert. Die Pruefung
+    # war gruen und hat den Fehler beglaubigt. Sie ist jetzt in BEIDE
+    # Richtungen geeicht: was gekuerzt werden MUSS, und was NICHT gekuerzt
+    # werden darf (sonst kuerzt eine zu scharfe Regel die Schrittangabe weg,
+    # um derentwillen es die Funktion ueberhaupt gibt).
     e.append((Miniserver._schrittname("data/LoxAPP3.json") == "data/LoxAPP3.json"
               and Miniserver._schrittname("jdev/sps/enablebinstatusupdate")
               == "jdev/sps/enablebinstatusupdate"
-              and Miniserver._schrittname("authwithtoken/9f3caffe/admin")
-              == "authwithtoken/9f3caffe/admin"
+              and Miniserver._schrittname("jdev/cfg/api") == "jdev/cfg/api"
+              and Miniserver._schrittname("jdev/sys/getPublicKey")
+              == "jdev/sys/getPublicKey"
+              and Miniserver._schrittname("jdev/sys/getkey2/loxuser")
+              == "jdev/sys/getkey2/..."
               and Miniserver._schrittname("jdev/sps/ios/9f3caffe/0af1/on")
               == "jdev/sps/ios/...",
-              "Schrittname kurz gehalten, Hash und Benutzer nicht darueber hinaus"))
+              "Schrittname kurz gehalten, harmlose Schritte bleiben ganz"))
+    e.append((Miniserver._schrittname("authwithtoken/9f3caffe11223344/loxuser")
+              == "authwithtoken/..."
+              and "loxuser" not in Miniserver._schrittname(
+                  "authwithtoken/9f3caffe11223344/loxuser")
+              and Miniserver._schrittname("jdev/sys/getvisusalt/loxuser")
+              == "jdev/sys/getvisusalt/..."
+              and Miniserver._schrittname("salt/a1b2c3d4e5/jdev/sps/io/x/on")
+              == "salt/...",
+              "authwithtoken zeigt weder Hash noch Benutzernamen"))
 
     async def _benennt():
         m7 = Miniserver.__new__(Miniserver)
@@ -1194,6 +1306,42 @@ def selbstpruefung() -> list[tuple[bool, str]]:
                   "Fehlermeldung nennt den Schritt: %s" % text))
     except Exception as f:  # noqa: BLE001
         e.append((False, "Schrittangabe: Pruefung nicht durchgelaufen (%s)" % f))
+
+    # Dasselbe fuer die ZEITUEBERSCHREITUNG. Bis 0.9.12 nannte dieser Zweig
+    # nur den ersten Abschnitt des Befehls - also 'jdev/...' bei fuenf der
+    # sechs Schritte, die ueberhaupt in Frage kommen. Der Fehlerzweig darueber
+    # war gemessen, dieser nicht: die Regel galt an einer Stelle und war an
+    # der zweiten eine Absichtserklaerung.
+    async def _benennt_zeit():
+        m8 = Miniserver.__new__(Miniserver)
+        m8._warten = collections.deque()
+        m8._verwerfen = 0
+
+        class _WsStumm:
+            """Nimmt den Befehl an und antwortet nie - der Miniserver, der
+            bei 'getjwt' schweigt."""
+
+            async def send(self, cmd):
+                return None
+
+        m8.ws = _WsStumm()
+        try:
+            await Miniserver._befehl(m8, "jdev/sys/getjwt/abc", zeit=1)
+        except LoxFehler as fehler:
+            return str(fehler), (isinstance(fehler, LoxZeit), isinstance(fehler, LoxFehler))
+        return "", (False, False)
+
+    try:
+        text_z, art_z = asyncio.run(_benennt_zeit())
+        e.append(("jdev/sys/getjwt" in text_z and "'jdev/...'" not in text_z,
+                  "Zeitueberschreitung nennt den Schritt: %s" % text_z))
+        # Und sie ist als Zeitueberschreitung ERKENNBAR - sonst kann der
+        # Dienst nicht entscheiden, ob er neu verbinden muss. Beide Richtungen:
+        # eigene Klasse ja, aber weiterhin ein LoxFehler.
+        e.append((art_z == (True, True),
+                  "Zeitueberschreitung ist als LoxZeit erkennbar und bleibt ein LoxFehler"))
+    except Exception as f:  # noqa: BLE001
+        e.append((False, "Zeitueberschreitung: Pruefung nicht durchgelaufen (%s)" % f))
 
     # Kennung: die von Loxone genannte Form [K, Seite 30].
     k = Miniserver._kennung_bauen(None)  # type: ignore[arg-type]
@@ -1228,7 +1376,7 @@ def selbstpruefung() -> list[tuple[bool, str]]:
     # Protokoll; eine Pruefung, die aus dem falschen Grund gruen ist, ist
     # schlimmer als keine.
     m2._selbst_geschlossen = False
-    m2.uebergangen = {"tageszeit": 0, "wetter": 0, "datei": 0}
+    m2.tabellen = {"wetter": 0, "tageszeit": 0, "bindatei": 0}
     asyncio.run(Miniserver._lesen(m2))
     e.append((m2.verbunden is False and m2.letzter_fehler != "",
               "Sauberer Verbindungsschluss: 'verbunden' False, Grund vermerkt"))

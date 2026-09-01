@@ -47,14 +47,32 @@ function db_pruefungen()
         // Erreichbarkeit: nur der TCP-Port, kein Anmeldeversuch. Ein
         // fehlgeschlagener Anmeldeversuch je Seitenaufruf wuerde den
         // Miniserver irgendwann sperren.
-        $auf = @fsockopen($ms['adresse'], (int) $ms['port'], $en, $es, 2);
-        if ($auf) {
-            fclose($auf);
+        //
+        // HOECHSTENS EINMAL JE MINUTE. Bis 0.9.12 lief dieser Aufruf bei JEDEM
+        // Seitenaufruf: die Reiter werden alle serverseitig gebaut und erst im
+        // Browser umgeschaltet, der Reiter Test also auch dann, wenn der
+        // Bediener in den Einstellungen steht. Bei nicht erreichbarem
+        // Miniserver kostete das gemessene 2,007 s - je Klick und je
+        // Speichervorgang, und ausgerechnet dann, wenn jemand gerade die
+        // falsche Adresse berichtigen will.
+        //
+        // Gemessen wird weiter, nur nicht sechzigmal in der Minute dasselbe.
+        // Wie alt der Messwert ist, steht in der Antwort - eine Anzeige, die
+        // ihr Alter verschweigt, ist eine Behauptung.
+        // Die beiden Schluessel stehen AUSGESCHRIEBEN in je einem eigenen
+        // sprintf. Als Ternaer im ersten Argument waren sie fuer
+        // sprachplatzhalter_pruefen.py unsichtbar, und das Werkzeug meldete
+        // zu Recht "traegt Platzhalter, wird aber nirgends durch sprintf
+        // gereicht". Sauberer Code, der eine Pruefung blind macht, ist keiner.
+        list($db_erreichbar, $db_alter_s) = db_erreichbarkeit($ms['adresse'], (int) $ms['port']);
+        if ($db_erreichbar) {
             $zeilen[] = db_pruefzeile(1, db_t('TEST.F_ERREICHBAR'),
-                sprintf(db_t('TEST.A_ERREICHBAR'), db_e($ms['adresse']), (int) $ms['port']));
+                sprintf(db_t('TEST.A_ERREICHBAR'),
+                        db_e($ms['adresse']), (int) $ms['port'], (int) $db_alter_s));
         } else {
             $zeilen[] = db_pruefzeile(0, db_t('TEST.F_ERREICHBAR'),
-                sprintf(db_t('TEST.A_NICHT_ERREICHBAR'), db_e($ms['adresse']), (int) $ms['port']));
+                sprintf(db_t('TEST.A_NICHT_ERREICHBAR'),
+                        db_e($ms['adresse']), (int) $ms['port'], (int) $db_alter_s));
         }
     }
 
@@ -101,7 +119,19 @@ function db_pruefungen()
     $verwaist = 0;
     foreach ($seiten as $x) {
         foreach ((isset($x['kacheln']) ? $x['kacheln'] : array()) as $k) {
-            if (!isset($bekannt[(string) $k['uuid']])) { $verwaist++; }
+            if (!is_array($k)) { continue; }
+            // Eine Szene haengt an keinem einzelnen Baustein und traegt
+            // deshalb bewusst KEINE UUID (htmlauth/index.php legt sie mit
+            // uuid: '' an und erzwingt das beim Speichern noch einmal). Bis
+            // 0.9.12 fehlte diese Zeile: jede Szene zaehlte als verwaist,
+            // und der Reiter Test meldete "n Kacheln zeigen ins Leere.
+            // Meist wurde der Baustein in Loxone Config umbenannt oder
+            // geloescht" - bei vier Szenen viermal, ohne dass eine einzige
+            // davon defekt war. Der Designer wusste es besser als die
+            // Pruefung, die ihn pruefen soll.
+            if ((string) (isset($k['kachel']) ? $k['kachel'] : '') === 'szene') { continue; }
+            $uuid = (string) (isset($k['uuid']) ? $k['uuid'] : '');
+            if ($uuid === '' || !isset($bekannt[$uuid])) { $verwaist++; }
         }
     }
     if ($b) {
@@ -125,14 +155,24 @@ function db_pruefungen()
                  . ' · ' . (isset($msinfo['serialNr']) ? $msinfo['serialNr'] : '?'))));
     }
 
-    // Tabellen, die bewusst nicht ausgewertet werden. Sie zu verschweigen
-    // waere ein blinder Fleck: hier steht, dass sie ankommen.
-    $ueb = isset($z['uebergangen']) && is_array($z['uebergangen']) ? $z['uebergangen'] : array();
-    if (!empty($ueb['wetter']) || !empty($ueb['tageszeit'])) {
-        $zeilen[] = db_pruefzeile(-1, db_t('TEST.F_UEBERGANGEN'),
-            sprintf(db_t('TEST.A_UEBERGANGEN'),
-                    (int) (isset($ueb['wetter']) ? $ueb['wetter'] : 0),
-                    (int) (isset($ueb['tageszeit']) ? $ueb['tageszeit'] : 0)));
+    // Welche Ereignistabellen ankommen. Sie zu verschweigen waere ein blinder
+    // Fleck - deshalb steht die Zeile da, sobald der Dienst einmal lief,
+    // auch mit lauter Nullen. Vor dem ersten Lauf (oder bei einer
+    // zustand.json aus 0.9.12) fehlt das Feld und die Zeile entfaellt -
+    // nichts zu sagen ist besser, als eine Null zu behaupten.
+    //
+    // Bis 0.9.12 hing sie an 'wetter oder tageszeit' aus einem Feld namens
+    // 'uebergangen', dessen beide Zaehler seit 0.9.6 nie mehr erhoeht wurden
+    // (die Tabellen werden seither ausgewertet). Die Zeile war damit
+    // unerreichbar, und ihr Text behauptete, Wetter und Tageszeit wuerden
+    // "bewusst nicht ausgewertet" - waehrend zwei Kacheln genau daraus leben.
+    $tab = isset($z['tabellen']) && is_array($z['tabellen']) ? $z['tabellen'] : array();
+    if ($tab) {
+        $zeilen[] = db_pruefzeile(-1, db_t('TEST.F_TABELLEN'),
+            sprintf(db_t('TEST.A_TABELLEN'),
+                    (int) (isset($tab['wetter']) ? $tab['wetter'] : 0),
+                    (int) (isset($tab['tageszeit']) ? $tab['tageszeit'] : 0),
+                    (int) (isset($tab['bindatei']) ? $tab['bindatei'] : 0)));
     }
 
     // Die Vorgabewerte der Oberflaeche und die des Dienstes muessen
@@ -169,6 +209,35 @@ function db_pruefungen()
         $zeilen[] = db_pruefzeile($ohne ? 0 : 1, db_t('TEST.F_KACHELN'),
             $ohne ? sprintf(db_t('TEST.A_KACHELN_FEHL'), db_e(implode(', ', $ohne)))
                   : sprintf(db_t('TEST.A_KACHELN'), count($gebraucht)));
+
+        /* Dasselbe fuer das Ruhebild: jede Kachelart braucht dort entweder
+         * einen Kurzwert (RUHE_KURZ) oder einen ausdruecklichen Grund, warum
+         * sie keinen hat (RUHE_OHNE). Ohne diese Zeile faellt beim naechsten
+         * neuen Bausteintyp wieder etwas stumm heraus - und im Ruhebild
+         * heisst "stumm" nicht "leer", sondern eine falsche Zahl.
+         *
+         * Die erste Fassung von 0.9.13 hatte fuenf Sonderfaelle und liess
+         * alles Uebrige durch zahl(): ein ausgeloester Brandmelder stand als
+         * "1,0" da, ein Wetterdienst als "[object Object]". */
+        $ruhe_kurz = array();
+        if (preg_match('/var RUHE_KURZ = \{(.*?)
+\};/s', $roh, $mk)) {
+            preg_match_all('/^\s{2}([a-z]+):\s*function/m', $mk[1], $m2);
+            $ruhe_kurz = array_flip($m2[1]);
+        }
+        $ruhe_ohne = array();
+        if (preg_match('/var RUHE_OHNE = \{(.*?)
+\};/s', $roh, $mo)) {
+            preg_match_all('/^\s{2}([a-z]+):/m', $mo[1], $m3);
+            $ruhe_ohne = array_flip($m3[1]);
+        }
+        $ruhe_fehlt = array_keys(array_diff_key($gebraucht,
+                                                $ruhe_kurz + $ruhe_ohne));
+        $zeilen[] = db_pruefzeile($ruhe_fehlt ? 0 : 1, db_t('TEST.F_RUHE_KACHELN'),
+            $ruhe_fehlt
+                ? sprintf(db_t('TEST.A_RUHE_KACHELN_FEHL'), db_e(implode(', ', $ruhe_fehlt)))
+                : sprintf(db_t('TEST.A_RUHE_KACHELN'),
+                          count($ruhe_kurz), count($ruhe_ohne)));
     }
 
     // Reiterleiste, Bereiche und Positivliste muessen dieselben Namen

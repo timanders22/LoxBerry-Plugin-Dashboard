@@ -7,24 +7,68 @@
 # Schritt 7). Was NEBEN diesen Ordnern liegt, bleibt liegen - und genau
 # dorthin gehoert alles, was ein Update ueberstehen soll:
 #
-#   config/plugins/<x>.backup.json          Zweitschrift der Einstellungen
+#   config/plugins/<x>.backup.json           Zweitschrift der Einstellungen
 #   config/plugins/<x>.backup.dashboard.json Zweitschrift der Einstellungen
-#   data/plugins/<x>.upgrade_sicherung      der Verlauf waehrend des Updates
+#   config/plugins/<x>.backup.seiten.json    die ganze Handarbeit
+#   config/plugins/<x>.backup.zugang.json    Benutzer und Kennwort
+#   data/plugins/<x>.upgrade_sicherung       der Verlauf waehrend des Updates
+#
+# ACHTUNG: Dieses Skript und uninstall.sh im Wurzelverzeichnis raeumen SEIT
+# 0.9.13 dasselbe ab und halten beide den Dienst an. Bis 0.9.12 waren ihre
+# Aufgaben aufgeteilt: dieses hier raeumte beide Sorten, hielt aber den Dienst
+# nicht an; jenes hielt ihn an, liess dafuer die .upgrade_sicherung liegen.
+# Welches der beiden LoxBerry ausfuehrt, ist hier nicht nachgemessen - deshalb
+# tut jetzt jedes die ganze Arbeit. Beide sind mehrfach ausfuehrbar, ein
+# zweiter Lauf findet nichts mehr und meldet 0.
 #
 # Aufruf: <ZUFALLSKENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <TEMPFOLDER>
 # ACHTUNG: $1 ist NICHT der Arbeitsordner, sondern eine zehnstellige
 # Zufallskennung. Gearbeitet wird deshalb mit $3 und $5.
+
+# Aufwaerts suchen, bis ein Verzeichnis gefunden ist, das nachweislich eine
+# LoxBerry-Wurzel IST. Eine feste Zahl '..' waere nur die naechste Wette:
+# je nach Ablageort sind es drei Ebenen oder vier.
+lb_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ]; then
+            echo "$v"; return 0
+        fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
+
 UN_FOLDER="${3:-dashboard}"
 UN_BASE="${5:-$LBHOMEDIR}"
-
 if [ -z "$UN_BASE" ] || [ ! -d "$UN_BASE" ]; then
-    echo "<INFO> Kein Wurzelverzeichnis uebergeben - nichts abgeraeumt."
+    UN_BASE=$(lb_wurzel_suchen)
+fi
+if [ -z "$UN_BASE" ] || [ ! -d "$UN_BASE" ]; then
+    echo "<INFO> Kein Wurzelverzeichnis gefunden - nichts abgeraeumt."
     exit 0
+fi
+
+# Zuerst anhalten - sonst schreibt der Dienst noch in Ordner, die gleich
+# verschwinden, und legt dabei genau die Dateien wieder an, die hier weg
+# sollen.
+DIENST="$UN_BASE/bin/plugins/$UN_FOLDER/dienst.sh"
+if [ -x "$DIENST" ]; then
+    "$DIENST" stop >/dev/null 2>&1
+    echo "<INFO> Dienst angehalten."
 fi
 
 # Der Punkt hinter dem Ordnernamen ist Absicht: er trennt den Nachbarn vom
 # Ordner. Das Sternchen trifft deshalb nur die eigenen Zweitschriften.
-rm -f  "$UN_BASE/config/plugins/$UN_FOLDER".backup.* 2>/dev/null
-rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" 2>/dev/null
-echo "<OK> Zweitschriften und Update-Sicherung entfernt."
+ANZAHL=0
+for f in "$UN_BASE/config/plugins/$UN_FOLDER".backup.*; do
+    [ -e "$f" ] || continue
+    rm -f "$f" && ANZAHL=$((ANZAHL + 1))
+done
+if [ -e "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" ]; then
+    rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" && ANZAHL=$((ANZAHL + 1))
+fi
+
+echo "<OK> $ANZAHL Datei(en)/Ordner mit Konfiguration, Handarbeit und Zugangsdaten entfernt."
 exit 0

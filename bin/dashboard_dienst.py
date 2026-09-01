@@ -46,7 +46,7 @@ HIER = Path(__file__).resolve().parent
 sys.path.insert(0, str(HIER))
 
 from entwurf import entwurf_bauen, bausteine_sammeln          # noqa: E402
-from lox_client import Miniserver, LoxFehler, selbstpruefung   # noqa: E402
+from lox_client import Miniserver, LoxFehler, LoxZeit, selbstpruefung   # noqa: E402
 
 
 def lb_wurzel_ermitteln():
@@ -147,6 +147,18 @@ VORGABEN = {
     "sse": 0,                # Werte werden geschoben statt abgefragt
     "tafelsteuerung": 0,     # Loxone darf die Anzeigeseite umschalten
     "gesichert_schalten": 0, # gesicherte Bausteine mit Visu-Passwort schalten
+    # Das Ruhebild - neu in 0.9.13, ebenfalls ab Werk AUS. Der Dienst benutzt
+    # keinen dieser Werte; sie stehen hier, weil der Reiter Test die beiden
+    # Vorgabetabellen gegeneinander haelt. Ein Schluessel, der nur auf einer
+    # Seite steht, ist genau der Fehler, den diese Pruefung finden soll (bis
+    # 0.9.5 fehlte 'haptik' hier).
+    "ruhe_nach": 0,          # Sekunden ohne Beruehrung, 0 = aus
+    "ruhe_uhr": 1,           # Uhrzeit und Datum gross
+    "ruhe_wetter": 1,        # Wetterzeile, wenn ein Wetterdienst da ist
+    "ruhe_kacheln": 6,       # Verknuepfungen, 0 bis 12
+    "ruhe_seite": "",        # leer = die Seite, die gerade offen ist
+    "ruhe_hell": 60,         # Prozent - "unaufdringlich" heisst dunkler
+    "ruhe_bild": "",         # Endung des Hintergrundbilds, leer = keines
 }
 
 _LOG = logging.getLogger("dashboard")
@@ -369,8 +381,22 @@ def abbild_bauen(ms: Miniserver, index: dict, ok: int | None = None) -> dict:
         "werte": werte,
         "anzahl_bausteine": len(ms.struktur.get("controls") or {}),
         "anzahl_zustaende": len(ms.zustaende),
-        "uebergangen": dict(getattr(ms, "uebergangen", {}) or {}),
+        "tabellen": dict(getattr(ms, "tabellen", {}) or {}),
     }
+
+
+def _haupt_zustand(b: dict) -> str:
+    """Die Zustands-UUID des Hauptzustands - mit Rueckfall auf den ersten.
+
+    Steht an EINER Stelle, weil beide Aufrufer (HTTP-Notnagel und httpprobe)
+    denselben Griff brauchen und er bis 0.9.12 an beiden Stellen derselbe
+    falsche war.
+    """
+    z = b.get("zustaende") or {}
+    haupt = str(b.get("haupt") or "")
+    if haupt and z.get(haupt):
+        return str(z[haupt])
+    return str(list(z.values())[0])
 
 
 def haupt_index(struktur: dict) -> dict:
@@ -576,6 +602,20 @@ async def warteschlange(ms: Miniserver, struktur: dict) -> None:
                 _LOG.warning("Befehl misslungen: %s %s - %s", uuid, befehl, f)
                 meldungen.append(str(f))
                 gesamt_ok = 0
+                if isinstance(f, LoxZeit):
+                    # Dieselbe Begruendung wie bei der Versionsabfrage, und sie
+                    # traegt hier genauso: nach einer Zeitueberschreitung ist
+                    # die Zuordnung von Befehl und Antwort nicht mehr sicher.
+                    # _befehl() erhoeht dabei _verwerfen, und abgebaut wird der
+                    # Zaehler nur, wenn die verspaetete Antwort TATSAECHLICH
+                    # noch kommt. Bleibt sie aus, verwirft die Sitzung ab da
+                    # jede erste Antwort, laeuft in die naechste
+                    # Zeitueberschreitung und vergiftet sich selbst. Bis 0.9.12
+                    # wurde das nur protokolliert; jetzt wird neu verbunden.
+                    _LOG.warning("Zeitueberschreitung beim Schalten - die Zuordnung von "
+                                 "Befehl und Antwort ist nicht mehr sicher. Es wird neu "
+                                 "verbunden.")
+                    ms.verbunden = False
 
         if len(schritte) > 1:
             # Bei einer Szene wird gesagt, wie viele Schritte durchgingen -
@@ -698,7 +738,7 @@ class Dienst:
                             "bausteine": len(struktur.get("bausteine") or []),
                             "zustaende": len(ms.zustaende),
                             "msinfo": struktur.get("msinfo") or {},
-                            "uebergangen": dict(ms.uebergangen)})
+                            "tabellen": dict(ms.tabellen)})
                     if time.time() - letzte_pruefung > 60:
                         letzte_pruefung = time.time()
                         try:
@@ -716,6 +756,12 @@ class Dienst:
                                 struktur_ablegen(ms, tabelle)
                                 struktur = json_lesen(DATEI_STRUKTUR)
                                 index = zustands_index(struktur)
+                                # Bis 0.9.12 fehlte diese Zeile: 'index' wurde
+                                # neu gebaut, 'hindex' nicht. Die Verlaufskurve
+                                # schrieb danach fuer neue oder umgehaengte
+                                # Bausteine nichts mehr fort und fuer geloeschte
+                                # weiter - bis zum naechsten Neuverbinden.
+                                hindex = haupt_index(struktur)
                         except Exception as f:
                             _LOG.info("Versionsabfrage misslungen: %s", f)
                             # Eine Zeitueberschreitung heisst: die Zuordnung
@@ -786,7 +832,17 @@ class Dienst:
         struktur = json_lesen(DATEI_STRUKTUR)
         index = zustands_index(struktur)
         # Nur Bausteine, die ueberhaupt einen Zustand haben.
-        paare = [(b["uuid"], list((b.get("zustaende") or {}).values())[0])
+        # Der HAUPTzustand, nicht irgendeiner. Bis 0.9.12 stand hier
+        # values()[0] - also der Zustand, den Loxone in 'states' zufaellig
+        # zuerst nennt. Der Wert aus jdev/sps/io/<uuid>/state landete damit in
+        # einem beliebigen Platz, und abbild_bauen() bildet ihn ueber
+        # zustands_index() genau auf dessen Rolle ab. Bei einer Jalousie
+        # (haupt = position) konnte so 'up' den Positionswert tragen. Bei
+        # einem Switch mit dem einzigen Zustand 'active' faellt das nie auf -
+        # deshalb konnte der Notnagel oberflaechlich funktionieren und
+        # trotzdem falsch sein. 'haupt' steht in jedem Baustein bereit;
+        # haupt_index() nutzt es zwanzig Zeilen weiter oben genau dafuer.
+        paare = [(b["uuid"], _haupt_zustand(b))
                  for b in (struktur.get("bausteine") or [])
                  if (b.get("zustaende") or {})]
         if not paare:
@@ -847,7 +903,7 @@ async def einmal() -> int:
                                        "bausteine": len(struktur.get("bausteine") or []),
                                        "zustaende": len(ms.zustaende),
                                        "msinfo": struktur.get("msinfo") or {},
-                                       "uebergangen": dict(ms.uebergangen)})
+                                       "tabellen": dict(ms.tabellen)})
         print("Struktur und Abbild geschrieben: %d Bausteine, %d Zustaende."
               % (len(struktur.get("bausteine") or []), len(ms.zustaende)))
         return 0
@@ -948,7 +1004,8 @@ async def httpprobe() -> int:
         print("[FEHL] Kein gespeichertes Token. Erst 'Anmeldung jetzt pruefen'.")
         return 1
     struktur = json_lesen(DATEI_STRUKTUR)
-    paare = [(b["uuid"], b.get("name"), list((b.get("zustaende") or {}).values())[0])
+    # Derselbe Griff wie im Notnagel - siehe _haupt_zustand().
+    paare = [(b["uuid"], b.get("name"), _haupt_zustand(b))
              for b in (struktur.get("bausteine") or []) if (b.get("zustaende") or {})]
     if not paare:
         print("[FEHL] Keine Struktur zwischengespeichert. Erst 'Struktur holen'.")
@@ -1047,11 +1104,20 @@ def selbsttest() -> int:
                    if db.get("seiten") else "Noch kein Dashboard - Entwurf erzeugen"))
 
     z = json_lesen(DATEI_ZUSTAND)
-    ueb = z.get("uebergangen") if isinstance(z.get("uebergangen"), dict) else {}
-    if ueb.get("wetter") or ueb.get("tageszeit"):
-        zeilen.append((-1, "Vom Miniserver kamen %d Wetter- und %d Tageszeittabellen. "
-                           "Sie werden bewusst nicht ausgewertet - siehe README."
-                       % (int(ueb.get("wetter") or 0), int(ueb.get("tageszeit") or 0))))
+    tab = z.get("tabellen") if isinstance(z.get("tabellen"), dict) else {}
+    # Auch mit lauter Nullen zeigen: eine Pruefung, die bei 0 verschwindet,
+    # beantwortet die Frage "kommt ueberhaupt etwas an?" gerade dann nicht,
+    # wenn man sie stellt. Bis 0.9.12 hing die Zeile an zwei Zaehlern, die
+    # nie erhoeht wurden, und war damit unerreichbar.
+    #
+    # Fehlt das Feld ganz (vor dem ersten Lauf dieser Fassung), entfaellt
+    # die Zeile - dann ist nichts zu sagen, und nichts wird behauptet.
+    if tab:
+        zeilen.append((-1, "Ereignistabellen seit dem Verbindungsaufbau: "
+                           "%d Wetter, %d Tageszeit (beide werden ausgewertet), "
+                           "%d Binaerdatei abgefangen."
+                       % (int(tab.get("wetter") or 0), int(tab.get("tageszeit") or 0),
+                          int(tab.get("bindatei") or 0))))
     _t, _k, alg = token_holen()
     zeilen.append((1 if alg else -1,
                    "Hashverfahren des Benutzers gemerkt: %s" % alg if alg
@@ -1082,12 +1148,17 @@ def selbsttest() -> int:
         print(("[OK]   " if ok else "[FEHL] ") + text)
         fehlt += 0 if ok else 1
     print()
+    print("An EINEM Miniserver gemessen (17.08.2026, Fassung 17.1.7.27):")
+    print("  - Anmeldung, Hashverfahren des Benutzers SHA1")
+    print("  - Wiederanmeldung mit gespeichertem Token")
+    print("  - Strukturdatei: 638 Bausteine, 3539 Zustaende")
+    print("  - 'jdev/sps/io/<uuid>/state' traegt als HTTP-Notnagel")
+    print("  Ob es auf IHRER Anlage ebenso ist, sagen die Knoepfe im Reiter Test.")
+    print()
     print("Nicht geprueft, weil dafuer ein echter Miniserver noetig ist:")
-    print("  - ob die Token-Anmeldung an Ihrer Firmware durchgeht")
-    print("    (dafuer gibt es den Knopf 'Anmeldung jetzt pruefen')")
-    print("  - ob 'jdev/sps/io/<uuid>/state' als HTTP-Notnagel traegt")
-    print("    (dafuer gibt es den Knopf 'HTTP-Notnagel messen')")
     print("  - ob die Kachel-Befehle am Geraet die erwartete Wirkung haben")
+    print("  - ob der Weg fuer gesicherte Bausteine traegt (es ist kein")
+    print("    Visualisierungs-Passwort hinterlegt, an dem man es messen koennte)")
     print("  - wie schnell die Anzeige bei Ihrer Anzahl Bausteine nachzieht")
     return 1 if fehlt else 0
 

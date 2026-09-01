@@ -1,3 +1,17 @@
+# Debian-Pakete, die LoxBerry selbst und als root installiert.
+#
+# Sie gehoeren hierher und NICHT in postinstall.sh: dort laeuft ein
+# 'apt-get install' als Benutzer loxberry und scheitert an
+# /var/lib/dpkg/lock-frontend. Bis 0.9.5 stand genau das im postinstall.sh,
+# war seit jeher tot, und die Installation fiel auf pip durch - also in
+# genau den Fall, den der Weg vermeiden sollte.
+#
+# python3-websockets     der WebSocket zum Miniserver (ws/rfc6455)
+# python3-cryptography    RSA fuer den Schluesseltausch, AES-256-CBC fuer die
+#                         verschluesselten Befehle
+# python3-venv            Rueckfallebene: reicht die Systemfassung von
+#                         websockets nicht, baut postinstall.sh eine eigene
+#                         Umgebung und holt sie ueber pip
 python3-websockets
 python3-cryptography
 python3-venv

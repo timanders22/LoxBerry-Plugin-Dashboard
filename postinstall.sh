@@ -1,6 +1,10 @@
 #!/bin/bash
 # Dashboard-Designer - postinstall
-# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+# Aufruf: <ZUFALLSKENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <TEMPFOLDER>
+# ACHTUNG: $1 ist NICHT der Arbeitsordner, sondern eine zehnstellige
+# Zufallskennung. Gearbeitet wird deshalb mit $3 und $5. Bis 0.9.12 stand
+# hier die falsche Reihenfolge - folgenlos, weil keines der Skripte $1
+# benutzt, aber uninstall/uninstall schrieb es im selben Plugin richtig hin.
 #
 # In die eigene venv kommen genau zwei Pakete:
 #   websockets    das Protokoll zum Miniserver
@@ -197,6 +201,24 @@ if [ -d "$LANG_SICHER" ]; then
                 2>/dev/null && echo "<OK> $LANG_F ueber das Update gerettet."
         fi
     done
+    # Lief der Dienst vor dem Update, laeuft er auch danach wieder.
+    # Gestartet wird ueber dienst.sh - das setzt den Sollmerker selbst und
+    # nimmt ihn im Fehlerfall zurueck; ein von Hand gelegter Merker ohne
+    # laufenden Dienst waere genau die Endlosschleife, die dienst.sh
+    # vermeidet.
+    if [ -f "$LANG_SICHER/lief_vorher" ]; then
+        if [ -x "$PBIN/dienst.sh" ]; then
+            if "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+                echo "<OK> Der Dienst lief vor dem Update und wurde wieder gestartet."
+            else
+                echo "<INFO> Der Dienst lief vor dem Update, liess sich aber nicht wieder"
+                echo "<INFO> starten. Reiter Einstellungen, 'Dienst starten' - dort steht,"
+                echo "<INFO> woran es liegt."
+            fi
+        else
+            echo "<INFO> Der Dienst lief vor dem Update; dienst.sh ist nicht ausfuehrbar."
+        fi
+    fi
     rm -rf "$LANG_SICHER" 2>/dev/null
 fi
 exit 0

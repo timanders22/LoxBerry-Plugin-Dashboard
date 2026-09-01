@@ -59,6 +59,20 @@ $konf = array(
     'haptik'    => !empty($cfg['haptik']) ? 1 : 0,
     'vollbild'  => !empty($cfg['vollbild']) ? 1 : 0,
     'wach'      => !empty($cfg['wach']) ? 1 : 0,
+    /* Das Ruhebild. Grenzen stehen hier UND im Speicher-Handler der
+     * Oberflaeche - beide lesen dieselben Konstanten aus db_lib.php, damit
+     * nicht wieder eine Grenze an zwei Stellen mit zwei Zahlen steht. */
+    'ruhe_nach'    => ((int) $cfg['ruhe_nach'] <= 0) ? 0
+                      : max(DB_RUHE_NACH_MIN, min(DB_RUHE_NACH_MAX, (int) $cfg['ruhe_nach'])),
+    'ruhe_uhr'     => !empty($cfg['ruhe_uhr']) ? 1 : 0,
+    'ruhe_wetter'  => !empty($cfg['ruhe_wetter']) ? 1 : 0,
+    'ruhe_kacheln' => max(0, min(DB_RUHE_KACHELN_MAX, (int) $cfg['ruhe_kacheln'])),
+    'ruhe_seite'   => preg_match('/^[a-z0-9-]{1,60}$/', (string) $cfg['ruhe_seite'])
+                      ? (string) $cfg['ruhe_seite'] : '',
+    'ruhe_hell'    => max(DB_RUHE_HELL_MIN, min(DB_RUHE_HELL_MAX, (int) $cfg['ruhe_hell'])),
+    /* Nur die Tatsache, dass eines hinterlegt ist - der Dateiname geht die
+     * Anzeigeseite nichts an, sie holt es ueber aktion=ruhebild. */
+    'ruhe_bild'    => ((string) $cfg['ruhe_bild'] !== '' && is_file(db_paths()['ruhebild'])) ? 1 : 0,
 );
 $seitenliste = array();
 foreach ($seiten as $s) {
@@ -118,6 +132,45 @@ body.gestoert #stoerband{display:block}
 /* Nachtabsenkung. Ein eigener Schleier statt CSS-filter auf dem Koerper:
    filter erzeugt einen neuen Bezugsrahmen, und die fest stehenden Elemente
    (PIN-Fenster, Stoerband) sprangen dadurch an die falsche Stelle. */
+/* ---------- Ruhebild ----------
+   Es liegt UNTER dem Nachtschleier (z-index 40): eine Nachtabsenkung gilt
+   auch fuer das Ruhebild. Und ueber allem anderen, damit kein Knopf der
+   Tafel versehentlich zu treffen ist, waehrend es aufliegt. */
+#ruhe{position:fixed;inset:0;z-index:30;display:none;overflow:hidden;
+  background:var(--bg);background-size:cover;background-position:center;
+  color:var(--text);cursor:default;-webkit-user-select:none;user-select:none}
+#ruhe.an{display:block}
+/* Der Schleier liegt UEBER dem Inhalt (z 2 gegen z 1). Bis zu einem
+   Zwischenstand von 0.9.13 stand er darunter und dunkelte nur den eigenen
+   Grund: Uhr, Datum und Kacheln blieben voll hell. In der hellen Farbwahl
+   war die Folge unlesbar - fast schwarze Flaeche, darauf die dunkle
+   Schrift von --text und daneben reinweisse Kacheln. Die Beschriftung sagt
+   "Helligkeit des Ruhebilds", also gilt sie fuer das ganze Ruhebild. */
+#ruhe .dunst{position:absolute;inset:0;background:#000;pointer-events:none;z-index:2}
+#ruhe .inhalt{position:relative;z-index:1;height:100%;box-sizing:border-box;
+  padding:min(6vh,54px) min(6vw,64px);display:flex;flex-direction:column;gap:min(3vh,26px)}
+#ruhe .uhr{font-size:min(16vw,150px);font-weight:250;line-height:.95;
+  letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+#ruhe .datum{font-size:min(3.4vw,26px);opacity:.72;margin-top:.35em}
+#ruhe .wetterzeile{font-size:min(3.4vw,26px);opacity:.82;display:flex;
+  flex-wrap:wrap;gap:0 1.2em;align-items:baseline}
+#ruhe .wetterzeile b{font-weight:600;font-size:1.5em}
+#ruhe .kurz{margin-top:auto;display:flex;flex-wrap:wrap;gap:min(1.6vw,14px)}
+#ruhe .kurz .kk{flex:1 1 auto;min-width:clamp(120px,13vw,190px);max-width:260px;
+  background:var(--kachel);border:1px solid var(--rand);border-radius:14px;
+  padding:12px 14px;display:flex;flex-direction:column;gap:3px;overflow:hidden}
+#ruhe .kurz .kt{font-size:13px;opacity:.66;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+#ruhe .kurz .kw{font-size:22px;font-weight:600;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+#ruhe .kurz .kk.ein{border-color:var(--an)}
+#ruhe .kurz .kk.ein .kw{color:var(--an)}
+#ruhe .hinweis{position:absolute;z-index:1;right:min(6vw,64px);bottom:min(4vh,32px);
+  font-size:13px;opacity:.4}
+/* Hochkant ist zu schmal fuer Uhr und Verknuepfungen nebeneinander -
+   die Verknuepfungen entfallen dann, die Uhr bleibt. Der Ambient Mode von
+   Loxone verlangt aus demselben Grund Querformat. */
+@media (orientation:portrait){ #ruhe .kurz{display:none} }
 #nachtschleier{position:fixed;inset:0;z-index:40;background:#000;opacity:0;
   pointer-events:none;transition:opacity .8s ease}
 @media (prefers-reduced-motion: reduce){#raster,#nachtschleier{transition:none}}
@@ -209,6 +262,18 @@ input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px
 </div>
 
 <main id="raster" style="--spalten:<?= (int) $daten['spalten'] ?>"></main>
+<div id="ruhe" aria-hidden="true">
+  <div class="dunst"></div>
+  <div class="inhalt">
+    <div id="ruhe_zeit">
+      <div class="uhr" id="ruhe_uhr">--:--</div>
+      <div class="datum" id="ruhe_datum"></div>
+    </div>
+    <div class="wetterzeile" id="ruhe_wetter"></div>
+    <div class="kurz" id="ruhe_kurz"></div>
+  </div>
+  <div class="hinweis" id="ruhe_hinweis"></div>
+</div>
 <div id="nachtschleier"></div>
 
 <script>
@@ -233,10 +298,20 @@ var DATEN = <?= json_encode($daten, JSON_UNESCAPED_UNICODE) ?>;
 var KONF  = <?= json_encode($konf, JSON_UNESCAPED_UNICODE) ?>;
 var LISTE = <?= json_encode($seitenliste, JSON_UNESCAPED_UNICODE) ?>;
 var TAKT  = KONF.takt * 1000;
+var WETTER = (DATEN && DATEN.wetter) || null;
+/* Der einzige Text, den das Ruhebild selbst schreibt - deshalb aus der
+   Sprachdatei und nicht fest im Quelltext. */
+var RUHE_HINWEIS = <?= json_encode(db_t('ALLG.RUHE_BERUEHREN'), JSON_UNESCAPED_UNICODE) ?>;
 var PIN   = "";
 
 /* ---------- Kleinteile ---------- */
-function e(t){ var d=document.createElement("div"); d.textContent=t==null?"":String(t); return d.innerHTML; }
+/* Maskiert fuer Inhalt UND Attribut - siehe die ausfuehrliche Begruendung in
+   webfrontend/htmlauth/index.php. Kurz: textContent -> innerHTML laesst das
+   Anfuehrungszeichen stehen, und e() steht hier in data-b="..." (Szenen,
+   Lichtstimmungen, Radioausgaenge). Bis 0.9.12 haette ein Wert mit einem
+   Anfuehrungszeichen das Attribut aufgerissen. */
+function e(t){ var d=document.createElement("div"); d.textContent=t==null?"":String(t);
+               return d.innerHTML.replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
 function zahl(v,n){ if(v==null||v==="")return "–";
   var f=parseFloat(v); if(isNaN(f))return String(v);
   return f.toFixed(n===undefined?(Math.abs(f)>=100?0:1):n).replace(".",","); }
@@ -846,6 +921,13 @@ function kachel_von(el){
 }
 
 document.addEventListener("click", function(ev){
+  /* Die Beruehrung, die das Ruhebild weggenommen hat, schaltet nicht mit.
+     Die Sperre steht HIER und nicht als eigener Zuhoerer in der einfangenden
+     Phase: ein stopPropagation() am document haelt auch die Blasenphase
+     desselben Objekts an und traf damit den Vollbild-Zuhoerer und den
+     PIN-Dialog gleich mit. Ein Wandtablet brauchte dann zwei Beruehrungen,
+     bis es in den Vollbildmodus ging. */
+  if (Date.now() < ruhe_sperre_bis) { return; }
   var ziel = ev.target;
   var b = ziel.closest ? ziel.closest("button") : null;
   if(!b || b.disabled) return;
@@ -867,6 +949,8 @@ document.addEventListener("click", function(ev){
 });
 
 document.addEventListener("change", function(ev){
+  /* Dieselbe Sperre wie beim Klick - siehe dort. */
+  if (Date.now() < ruhe_sperre_bis) { return; }
   var s = ev.target;
   if(!s || s.type!=="range" || s.disabled) return;
   var kk = kachel_von(s);
@@ -931,9 +1015,14 @@ function uebernehmen(d){
     if(d.werte && d.werte[k.uuid]) k.werte = d.werte[k.uuid];
     if(d.verlauf && d.verlauf[k.uuid]) k.verlauf = d.verlauf[k.uuid];
   });
+  /* 'wetter' steht nur in der Nutzlast, wenn das Ruhebild es braucht. Ist es
+     nicht dabei, bleibt der letzte Stand stehen - er waere sonst bei jedem
+     Takt weg und das Ruhebild fluechtig leer. */
+  if (d.wetter !== undefined && d.wetter !== null) { WETTER = d.wetter; }
   zeichnen();
   stand_zeigen(d);
   if (d.tafel) { tafel_befolgen(d.tafel); }
+  if (ruhe_an) { ruhe_fuellen(); }
 }
 
 function werte_holen(){
@@ -1031,6 +1120,14 @@ function tafel_befolgen(t){
   letzte_tafel_nr = t.nr;
   if (t.hell >= 0) { hand_hell = t.hell; schleier_setzen(); }
   if (t.wach === 1) { hand_hell = null; wach(); schleier_setzen(); }
+  /* -1 heisst "nichts gesagt" - nur 0 und 1 schalten. Nach dem Wegnehmen
+     laeuft die Frist wieder an: sonst waere das Ruhebild nach einem einzigen
+     '&ruhe=0' aus Loxone stillgelegt, bis ein Mensch das Tablet beruehrt -
+     die Vorlage verspricht daneben "Ohne diesen Befehl kommt es von selbst".
+     Die 700-ms-Klicksperre gilt hier nicht: es war keine Beruehrung im
+     Spiel, und der naechste Druck soll sofort schalten koennen. */
+  if (t.ruhe === 1) { ruhe_zeigen(); }
+  if (t.ruhe === 0) { ruhe_sperre_bis = 0; ruhe_wegnehmen(); ruhe_frist_neu(); }
   if (t.seite && t.seite !== SEITE) {
     location.href = "?token="+encodeURIComponent(<?= json_encode($ist, JSON_UNESCAPED_UNICODE) ?>)
                   + "&seite="+encodeURIComponent(t.seite);
@@ -1075,6 +1172,10 @@ if (KONF.rotation > 0 && LISTE.length > 1) {
     /* Nicht weiterblaettern, solange jemand bedient: das Tablet unter der
        Hand umzuschalten ist der sicherste Weg zu einem Fehlgriff. */
     if (Date.now() - letzte_beruehrung < 60000) { return; }
+    /* Und nicht, solange das Ruhebild aufliegt: ein Seitenwechsel laedt die
+       Seite neu, das Ruhebild waere weg und kaeme nach der Wartezeit wieder -
+       ein Tablet, das sich nachts von selbst hell schaltet. */
+    if (ruhe_an) { return; }
     var i = 0;
     for (var n=0; n<LISTE.length; n++) { if (LISTE[n].schluessel === SEITE) { i = n; break; } }
     var naechste = LISTE[(i+1) % LISTE.length].schluessel;
@@ -1107,6 +1208,347 @@ if (KONF.vollbild) {
     var el = document.documentElement;
     if(el.requestFullscreen) el.requestFullscreen().catch(function(){});
   }, {once:true});
+}
+
+/* ---------- Ruhebild ----------
+
+   Dem Ambient Mode der Loxone-App nachempfunden: nach einer Weile ohne
+   Beruehrung tritt die Bedienung zurueck und es bleibt, was man aus drei
+   Metern Entfernung lesen will - Uhrzeit, Datum, Wetter und ein paar Werte.
+   Jede Beruehrung holt die Tafel zurueck.
+
+   Nachgebaut ist das VERHALTEN. Der Ambient Mode ist eine Betriebsart der
+   Loxone-App (ab App und Config 14.x, nur Querformat, mindestens 1024x700);
+   eine Schnittstelle dafuer gibt es nicht, und dieses Plugin spricht auch
+   keine an. Es benutzt ausschliesslich die eigenen Werte. */
+var ruhe_an = false;
+var ruhe_frist = null;
+var ruhe_ticker = null;
+/* Bis wann ein Klick verschluckt wird. Die Beruehrung, die das Ruhebild
+   wegnimmt, darf NICHT zusaetzlich schalten - sonst macht ein Griff im
+   Vorbeigehen das Licht an. 'preventDefault' auf pointerdown unterdrueckt den
+   folgenden Klick nur MEISTENS; darauf ist bei einem Tablet an der Wand kein
+   Verlass, deshalb hier ein eigenes Zeitfenster. */
+var ruhe_sperre_bis = 0;
+
+function ruhe_moeglich(){ return KONF.ruhe_nach > 0; }
+
+function ruhe_uhr_stellen(){
+  /* Ohne Haken wird der Block AUSGEBLENDET. Bis zu einem Zwischenstand von
+     0.9.13 kehrte die Funktion hier nur um - und dann blieb der Platzhalter
+     "--:--" aus dem HTML stehen, in min(16vw,150px). Statt "keine Uhr" stand
+     dort eine riesige kaputte Uhr. */
+  var block = document.getElementById("ruhe_zeit");
+  if (!KONF.ruhe_uhr) { block.hidden = true; return; }
+  block.hidden = false;
+  var j = new Date();
+  var hh = String(j.getHours()).padStart(2, "0");
+  var mm = String(j.getMinutes()).padStart(2, "0");
+  document.getElementById("ruhe_uhr").textContent = hh + ":" + mm;
+  /* Datum aus der Spracheinstellung des Geraets. Faellt die aus, steht ein
+     schlichtes Datum da statt einer Ausnahme. */
+  var d = "";
+  try {
+    d = j.toLocaleDateString(undefined,
+        {weekday:"long", day:"numeric", month:"long", year:"numeric"});
+  } catch(x) { d = j.getDate()+"."+(j.getMonth()+1)+"."+j.getFullYear(); }
+  document.getElementById("ruhe_datum").textContent = d;
+}
+
+function ruhe_wetterzeile(){
+  var el = document.getElementById("ruhe_wetter");
+  if (!KONF.ruhe_wetter || !WETTER) { el.textContent = ""; return; }
+  var t = WETTER.texte || {};
+  var nr = WETTER.art;
+  /* Fehlt der Klartext in der Anlage, steht die ZAHL da - keine erfundene
+     Beschreibung. Dieselbe Regel wie in der Wetterkachel. */
+  var lage = (nr == null) ? "" :
+             (t[nr] != null ? String(t[nr])
+              : (t[String(nr)] != null ? String(t[String(nr)]) : "Lage " + nr));
+  var stuecke = [];
+  if (WETTER.temperatur != null) {
+    stuecke.push("<b>" + e(zahl(WETTER.temperatur)) + "&nbsp;&deg;C</b>");
+  }
+  if (lage !== "") { stuecke.push(e(lage)); }
+  if (WETTER.gefuehlt != null) {
+    stuecke.push("gefuehlt " + e(zahl(WETTER.gefuehlt)) + "&nbsp;&deg;C");
+  }
+  if (WETTER.feuchte != null) { stuecke.push(e(zahl(WETTER.feuchte,0)) + "&nbsp;% rF"); }
+  if (WETTER.wind != null) { stuecke.push("Wind " + e(zahl(WETTER.wind)) + "&nbsp;km/h"); }
+  el.innerHTML = stuecke.map(function(x){ return "<span>"+x+"</span>"; }).join("");
+}
+
+/* Die Verknuepfungen: bis zu zwoelf Kacheln, nur ANSEHEN - keine Knoepfe.
+   Wer etwas schalten will, beruehrt das Tablet, und dann ist die Tafel da.
+   Ein Schaltknopf im Ruhebild waere genau der Fehlgriff, den ein Tablet an
+   der Wand im Vorbeigehen macht. */
+function ruhe_fuellen(){
+  ruhe_uhr_stellen();
+  ruhe_wetterzeile();
+  var ziel = document.getElementById("ruhe_kurz");
+  var n = KONF.ruhe_kacheln;
+  if (n <= 0 || !DATEN || !DATEN.kacheln) { ziel.innerHTML = ""; return; }
+  var aus = "";
+  var gezeigt = 0;
+  for (var i = 0; i < DATEN.kacheln.length && gezeigt < n; i++) {
+    var k = DATEN.kacheln[i];
+    if (k.kachel === "szene") { continue; }
+    var w = k.werte || {};
+    var wert = ruhe_kurzwert(k, w);
+    if (wert === null) { continue; }
+    aus += '<div class="kk'+(wert.ein?" ein":"")+'">'+
+           '<div class="kt">'+e(k.titel||"")+'</div>'+
+           '<div class="kw">'+e(wert.text)+'</div></div>';
+    gezeigt++;
+  }
+  ziel.innerHTML = aus;
+}
+
+/* Ein Wert je Kachel, in EINER Zeile - je Kachelart AUSGESCHRIEBEN.
+ *
+ * Die erste Fassung hatte fuenf Sonderfaelle und liess alles Uebrige durch
+ * zahl(). Das ging fuer die Haelfte der Arten schief, und zwar sichtbar
+ * falsch statt sichtbar leer:
+ *
+ *     wetter        -> "[object Object]"   (actual ist die Ereignistabelle)
+ *     licht         -> "[778]"             (activeMoods ist ein JSON-Text)
+ *     farbe         -> "hsv(30,60,80)"     (color ist der Rohbefehl)
+ *     alarm         -> "1,0"               statt "ALARM"
+ *     brandmelder   -> "1,0"               statt "ALARM"
+ *     auswahl       -> "2,0"               statt des Ausgangsnamens
+ *     treppenlicht  -> "180,0"             ohne Einheit
+ *
+ * Ein ausgeloester Brandmelder als "1,0" - an genau der Stelle, die aus drei
+ * Metern lesbar sein soll. Dazu prueft ein Zweig auf die Kachelart "melder",
+ * die es gar nicht gibt (sie heisst brandmelder).
+ *
+ * Deshalb steht hier jetzt je Art ein Eintrag, und was fehlt, faellt auf
+ * NICHTS zurueck, nicht auf eine Zahl. Der Reiter Test vergleicht diese
+ * Tabelle mit templates/kacheln.json und meldet jede Art, die weder hier
+ * noch in RUHE_OHNE steht - sonst faellt beim naechsten neuen Bausteintyp
+ * wieder etwas stumm heraus.
+ *
+ * Die Woerter sind dieselben wie auf der Tafel. Zwei Kopien derselben
+ * Formulierung laufen auseinander; das ist der Preis dafuer, dass die
+ * Kachelbauer HTML samt Knoepfen liefern und hier eine nackte Zeile
+ * gebraucht wird. Der Test haelt wenigstens die LISTE zusammen. */
+
+/* Arten, die bewusst KEINEN Kurzwert bekommen - mit Grund. */
+var RUHE_OHNE = {
+  farbe:     "eine Farbe ist keine Zeile",
+  wetter:    "steht schon oben als Wetterzeile",
+  tageszeit: "ein Tagesbalken laesst sich nicht auf einen Wert bringen",
+  generisch: "unbekannter Typ - hier wird nicht geraten",
+  fehlt:     "der Baustein ist weg",
+  szene:     "eine Szene hat keinen Zustand"
+};
+
+var RUHE_KURZ = {
+  schalter:     function(k, w){ var e2 = an(w.active);
+                                return {text: e2 ? "Ein" : "Aus", ein: e2}; },
+  taster:       function(k, w){ var e2 = an(w.active);
+                                return {text: e2 ? "Aktiv" : "Bereit", ein: e2}; },
+  zustand:      function(k, w){ var e2 = an(w.active);
+                                return {text: e2 ? "Ja" : "Nein", ein: e2}; },
+  dimmer:       function(k, w){ var p2 = parseFloat(w.position);
+                                if (isNaN(p2)) { return null; }
+                                return {text: Math.round(p2) + " %", ein: p2 > 0}; },
+  jalousie:     function(k, w){ var p2 = parseFloat(w.position);
+                                if (isNaN(p2)) { return null; }
+                                p2 = Math.round(p2 * 100);
+                                return {text: p2 > 95 ? "geschlossen"
+                                              : (p2 < 5 ? "offen" : p2 + " % zu"),
+                                        ein: p2 < 5}; },
+  tor:          function(k, w){ var p2 = parseFloat(w.position);
+                                if (isNaN(p2)) { return null; }
+                                p2 = Math.round(p2 * 100);
+                                return {text: p2 > 95 ? "offen"
+                                              : (p2 < 5 ? "geschlossen" : p2 + " % offen"),
+                                        ein: p2 > 95}; },
+  treppenlicht: function(k, w){ var r = parseFloat(w.deactivationDelay);
+                                if (isNaN(r)) { return null; }
+                                return {text: r === -1 ? "dauernd an"
+                                              : (r > 0 ? Math.round(r) + " s" : "Aus"),
+                                        ein: r !== 0}; },
+  alarm:        function(k, w){ var st = parseFloat(w.level) || 0;
+                                if (st > 0) { return {text: "ALARM", ein: true}; }
+                                var sch = an(w.armed);
+                                return {text: sch ? "scharf" : "unscharf", ein: sch}; },
+  brandmelder:  function(k, w){ var st = parseFloat(w.level) || 0;
+                                return {text: st > 0 ? "ALARM" : "ruhig", ein: st > 0}; },
+  auswahl:      function(k, w){ var a2 = parseInt(w.activeOutput || 0, 10);
+                                var g = k.ausgaenge || {};
+                                if (!a2) { return {text: k.allesaus || "Aus", ein: false}; }
+                                return {text: g[String(a2)] || ("Nr. " + a2), ein: true}; },
+  lichtszene:   function(k, w){ var j = w.activescene;
+                                if (j == null || j === "") { return null; }
+                                var nm = ruhe_szenenname(w, j);
+                                return {text: nm, ein: String(j) !== "778"}; },
+  licht:        function(k, w){ var nm = ruhe_stimmungen(w);
+                                if (nm === null) { return null; }
+                                return {text: nm, ein: nm !== "Aus"}; },
+  raumregler:   function(k, w){ var t2 = parseFloat(w.tempActual);
+                                if (isNaN(t2)) { return null; }
+                                return {text: zahl(t2) + " \u00b0C", ein: false}; },
+  schieber:     function(k, w){ return ruhe_zahlwert(k, w.value); },
+  wert:         function(k, w){ return ruhe_zahlwert(k, w.value); },
+  zaehler:      function(k, w){ return ruhe_zahlwert(k, w.actual != null ? w.actual : w.total); },
+  text:         function(k, w){ var t2 = w.text != null ? w.text
+                                          : (w.textAndIcon != null ? w.textAndIcon : "");
+                                t2 = String(t2);
+                                if (t2 === "") { return null; }
+                                return {text: t2, ein: false}; }
+};
+
+/* Zahl mit Einheit - der einzige Fall, in dem zahl() richtig ist. */
+function ruhe_zahlwert(k, v){
+  if (v == null || v === "") { return null; }
+  var t = zahl(v);
+  if (t === "\u2013") { return null; }
+  var eh = k.einheit_kurz != null ? k.einheit_kurz : einheit_kurz(k.einheit);
+  return {text: t + (eh ? " " + eh : ""), ein: false};
+}
+
+/* Der Name der laufenden Szene - dieselbe Quelle wie BAUER.lichtszene. */
+function ruhe_szenenname(w, jetzt){
+  var roh = w.sceneList, liste = [];
+  try {
+    if (typeof roh === "string" && roh.charAt(0) === "[") { liste = JSON.parse(roh); }
+    else if (Array.isArray(roh)) { liste = roh; }
+    else if (typeof roh === "string" && roh !== "") {
+      liste = roh.split(",").map(function(x, i){ return {id: i, name: x}; });
+    }
+  } catch(x) { liste = []; }
+  for (var i = 0; i < liste.length; i++) {
+    var s2 = liste[i];
+    if (s2 && String(s2.id != null ? s2.id : i) === String(jetzt)) {
+      return String(s2.name != null ? s2.name : jetzt);
+    }
+  }
+  return String(jetzt) === "778" ? "Aus" : ("Nr. " + jetzt);
+}
+
+/* Die laufenden Stimmungen - dieselbe Quelle wie BAUER.licht. */
+function ruhe_stimmungen(w){
+  var aktiv = [], moods = [];
+  try { aktiv = JSON.parse(w.activeMoods || "[]"); } catch(x) { return null; }
+  try { moods = JSON.parse(w.moodList || "[]"); } catch(x) { moods = []; }
+  if (!Array.isArray(aktiv)) { return null; }
+  var namen = [];
+  for (var i = 0; i < aktiv.length; i++) {
+    var gefunden = null;
+    for (var j = 0; j < moods.length; j++) {
+      if (moods[j] && String(moods[j].id) === String(aktiv[i])) {
+        gefunden = String(moods[j].name); break;
+      }
+    }
+    namen.push(gefunden !== null ? gefunden : ("Nr. " + aktiv[i]));
+  }
+  return namen.length ? namen.join(", ") : "Aus";
+}
+
+/* Ein Wert je Kachel - oder null, dann wird die Kachel uebergangen. */
+function ruhe_kurzwert(k, w){
+  var f = RUHE_KURZ[k.kachel];
+  if (!f) { return null; }
+  try { return f(k, w); } catch(x) { return null; }
+}
+
+/* Steht gerade ein Dialog offen, kommt das Ruhebild NICHT. Der PIN-Dialog
+   liegt auf z 60, das Ruhebild auf z 30 - es legte sich also unsichtbar
+   darunter, blieb aber aktiv, und die Beruehrung auf "Weiter" wurde als
+   "Ruhebild wegnehmen" verbraucht. Der Knopf tat sichtbar nichts, und der
+   wartende Befehl war verloren. */
+function ruhe_dialog_offen(){
+  return !!document.querySelector(".pin");
+}
+
+function ruhe_zeigen(){
+  if (!ruhe_moeglich() || ruhe_an) { return; }
+  if (ruhe_dialog_offen()) { ruhe_frist_neu(); return; }
+  var el = document.getElementById("ruhe");
+  /* Der Dunst macht das Ruhebild dunkler als die Tafel - "unaufdringlich"
+     ist der Sinn der Sache. Er liegt IM Ruhebild, nicht darueber: der
+     Nachtschleier bleibt davon unberuehrt und wirkt zusaetzlich. */
+  el.querySelector(".dunst").style.opacity =
+      String(Math.max(0, Math.min(1, (100 - KONF.ruhe_hell) / 100)));
+  if (KONF.ruhe_bild) {
+    el.style.backgroundImage = 'url("' + BASIS + '&aktion=ruhebild")';
+  }
+  document.getElementById("ruhe_hinweis").textContent = RUHE_HINWEIS;
+  /* ERST aufbauen und einblenden, DANN 'ruhe_an' setzen. Andersherum
+     hinterlaesst eine Ausnahme in ruhe_fuellen() den Zustand "liegt auf" bei
+     unsichtbarer Schicht: die Seitenrotation waere dauerhaft gesperrt und die
+     naechste Beruehrung verbraucht, ohne dass etwas zu sehen war. */
+  try { ruhe_fuellen(); } catch(x) { }
+  el.classList.add("an");
+  el.setAttribute("aria-hidden", "false");
+  ruhe_an = true;
+  if (!ruhe_ticker) { ruhe_ticker = setInterval(ruhe_uhr_stellen, 1000); }
+}
+
+function ruhe_wegnehmen(){
+  if (!ruhe_an) { return; }
+  ruhe_an = false;
+  ruhe_sperre_bis = Date.now() + 700;
+  var el = document.getElementById("ruhe");
+  el.classList.remove("an");
+  el.setAttribute("aria-hidden", "true");
+  if (ruhe_ticker) { clearInterval(ruhe_ticker); ruhe_ticker = null; }
+}
+
+function ruhe_frist_neu(){
+  if (!ruhe_moeglich()) { return; }
+  clearTimeout(ruhe_frist);
+  ruhe_frist = setTimeout(ruhe_zeigen, KONF.ruhe_nach * 1000);
+}
+
+if (ruhe_moeglich()) {
+  /* Ist eine andere Seite eingestellt als die offene, fuehrt die Beruehrung
+     dorthin - das ist die "Navigation zum Standard-Screen" des Vorbilds.
+     Sonst bleibt die Tafel einfach stehen.
+
+     Nur zu einer Seite, die es WIRKLICH GIBT. Die Oberflaeche weist beim
+     Speichern einen unbekannten Schluessel ab, aber die Seite kann danach
+     geloescht worden sein. Gemessen, was dann geschah: die Beruehrung fuehrte
+     auf "Noch kein Dashboard" - und dort wird das Ruhebild gar nicht erst
+     ausgeliefert, das Tablet sass also fest, bis jemand die Adresse von Hand
+     berichtigte. Lieber stehen bleiben als in eine Sackgasse fuehren. */
+  var ruhe_ziel = "";
+  if (KONF.ruhe_seite && KONF.ruhe_seite !== SEITE) {
+    for (var rz = 0; rz < LISTE.length; rz++) {
+      if (LISTE[rz].schluessel === KONF.ruhe_seite) { ruhe_ziel = KONF.ruhe_seite; break; }
+    }
+  }
+  document.addEventListener("pointerdown", function(ev){
+    if (ruhe_an) {
+      /* Die Beruehrung, die das Ruhebild wegnimmt, darf NICHT auch noch
+         etwas schalten. Sie wird hier verbraucht. */
+      ev.preventDefault();
+      ev.stopPropagation();
+      ruhe_wegnehmen();
+      if (ruhe_ziel) {
+        location.href = "?token="+encodeURIComponent(<?= json_encode($ist, JSON_UNESCAPED_UNICODE) ?>)
+                      + "&seite="+encodeURIComponent(ruhe_ziel);
+        return;
+      }
+    }
+    ruhe_frist_neu();
+  }, true);
+  document.addEventListener("keydown", function(){
+    /* Ein Tastendruck loest keinen Klick aus - die Sperre waere hier nur
+       laestig und wird deshalb sofort wieder aufgehoben. */
+    if (ruhe_an) { ruhe_wegnehmen(); ruhe_sperre_bis = 0; }
+    ruhe_frist_neu();
+  }, true);
+  /* Kommt der Bildschirm zurueck, laeuft die Frist neu und die Uhr stimmt
+     sofort - ohne das stuende dort bis zu eine Sekunde lang die alte Zeit,
+     und die Frist waere waehrend der Abwesenheit abgelaufen. */
+  document.addEventListener("visibilitychange", function(){
+    if (document.visibilityState !== "visible") { return; }
+    if (ruhe_an) { ruhe_uhr_stellen(); } else { ruhe_frist_neu(); }
+  });
+  ruhe_frist_neu();
 }
 
 zeichnen();

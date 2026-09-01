@@ -26,6 +26,23 @@ if (!function_exists('db_e')) {
  * 0.9.5 standen zwei verschiedene Zahlen an zwei Stellen. */
 if (!defined('DB_WARTEZEIT_MAX')) { define('DB_WARTEZEIT_MAX', 30); }
 if (!defined('DB_WARTEZEIT_MIN')) { define('DB_WARTEZEIT_MIN', 1); }
+/* Grenzen des Ruhebilds. Sie stehen hier, weil drei Stellen sie brauchen:
+ * der Speicher-Handler der Oberflaeche, die Anzeigeseite und die Hilfe. Eine
+ * Grenze steht genau einmal - sonst laesst das Formular zu, was der Handler
+ * kappt, und niemand sieht es. */
+if (!defined('DB_RUHE_NACH_MAX')) { define('DB_RUHE_NACH_MAX', 3600); }
+/* Unter zehn Sekunden ist das Ruhebild keine Ruhe, sondern eine Sperre:
+ * die Klicksperre nach dem Wegnehmen laeuft 700 ms, und was danach an
+ * Bedienzeit bliebe, waere kuerzer als ein Handgriff. 0 bleibt erlaubt -
+ * das heisst 'aus'. */
+if (!defined('DB_RUHE_NACH_MIN')) { define('DB_RUHE_NACH_MIN', 10); }
+if (!defined('DB_RUHE_KACHELN_MAX')) { define('DB_RUHE_KACHELN_MAX', 12); }
+if (!defined('DB_RUHE_BILD_MAX')) { define('DB_RUHE_BILD_MAX', 4194304); }  // 4 MB
+if (!defined('DB_RUHE_BILD_KANTE')) { define('DB_RUHE_BILD_KANTE', 4096); }  // Punkte je Kante
+/* Die Helligkeit des Ruhebilds - dieselbe Grenze an zwei Stellen war der
+ * Befund, gegen den der Kommentar darueber geschrieben ist. */
+if (!defined('DB_RUHE_HELL_MIN')) { define('DB_RUHE_HELL_MIN', 5); }
+if (!defined('DB_RUHE_HELL_MAX')) { define('DB_RUHE_HELL_MAX', 100); }
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -107,6 +124,12 @@ function db_paths()
     }
     $p['verlauf'] = $p['datadir'] . '/verlauf.json';
     $p['tafel']   = $p['datadir'] . '/tafel.json';
+    // Das Hintergrundbild des Ruhebilds. Es liegt im DATENordner, nicht im
+    // Konfigurationsordner: es ist kein Einstellwert, sondern Beiwerk, und es
+    // darf ein Update ruhig verlieren. Der Name traegt keine Endung - die
+    // steht in der Konfiguration, damit der Inhaltstyp nicht aus dem
+    // Dateinamen geraten werden muss.
+    $p['ruhebild'] = $p['datadir'] . '/ruhebild';
     return $p;
 }
 
@@ -153,6 +176,18 @@ function db_vorgaben()
          * dafuer gibt es die PIN je Seite. Der Reiter Einstellungen sagt
          * das ausdruecklich. */
         'gesichert_schalten' => 0,
+        /* Das Ruhebild - neu in 0.9.13, und ebenfalls ab Werk AUS. Es ist dem
+         * Ambient Mode der Loxone-App nachempfunden (dort ab App und Config
+         * 14.x, nur Querformat). Nachgebaut ist das VERHALTEN; eine
+         * Schnittstelle dafuer gibt es bei Loxone nicht, und das Plugin
+         * spricht auch keine an. */
+        'ruhe_nach'      => 0,    // Sekunden ohne Beruehrung, 0 = aus
+        'ruhe_uhr'       => 1,    // Uhrzeit und Datum gross
+        'ruhe_wetter'    => 1,    // Wetterzeile, wenn ein Wetterdienst da ist
+        'ruhe_kacheln'   => 6,    // Verknuepfungen, 0 bis 12
+        'ruhe_seite'     => '',   // leer = die Seite, die gerade offen ist
+        'ruhe_hell'      => 60,   // Prozent - "unaufdringlich" heisst dunkler
+        'ruhe_bild'      => '',   // Endung des Hintergrundbilds, leer = keines
     );
 }
 
@@ -366,16 +401,39 @@ function db_verlauf()
  * und ein zweiter Uebertragungsweg waere eine zweite Fehlerquelle.
  */
 
-function db_tafel_setzen($feld, $wert)
+/** EIN Tafelbefehl - genau die Felder, die dieser Aufruf nennt.
+ *
+ * Bis 0.9.12 hiess die Funktion db_tafel_setzen() und schrieb ein einzelnes
+ * Feld in die vorhandene Datei. Damit war tafel.json kein Befehl, sondern ein
+ * Sack mit den letzten Werten - und weil die Anzeigeseite auf jede NEUE
+ * laufende Nummer alle Felder erneut anwendet, wirkte jeder frueher gesetzte
+ * Wert bei jedem spaeteren Befehl wieder mit.
+ *
+ * Der Ablauf, der schiefging: abends '&hell=20', am naechsten Tag '&seite=flur'.
+ * Der zweite Aufruf erhoeht nur die Nummer; 'hell' steht weiter auf 20, die
+ * Tafel liest 't.hell >= 0' und legt den Nachtschleier wieder auf. Ein
+ * Befehl, der laut Kopfzeile nur die Seite umschaltet, dunkelte den
+ * Bildschirm ab - und weil die Seite dieselbe blieb, loeste ihn auch kein
+ * Neuaufbau wieder auf. Dasselbe mit '&wach=1', das danach jeden Befehl
+ * begleitete.
+ *
+ * Jetzt gilt: was dieser Aufruf nicht nennt, steht ausdruecklich auf 'nichts
+ * gesagt' (seite '', wach 0, hell -1). Und ein Aufruf, der drei Felder
+ * setzt, erhoeht die Nummer EINMAL, nicht dreimal.
+ */
+function db_tafel_befehl($felder)
 {
     $p = db_paths();
-    $d = db_json_lesen($p['tafel']);
-    $d[$feld] = $wert;
+    $alt = db_json_lesen($p['tafel']);
+    $d = array('seite' => '', 'wach' => 0, 'hell' => -1, 'ruhe' => -1);
+    foreach (array('seite', 'wach', 'hell', 'ruhe') as $f) {
+        if (array_key_exists($f, (array) $felder)) { $d[$f] = $felder[$f]; }
+    }
     $d['ts'] = time();
     // Jede Aenderung bekommt eine laufende Nummer. Die Anzeigeseite fuehrt
     // sie mit und reagiert nur auf eine NEUE - sonst spraenge sie bei jedem
     // Takt erneut auf dieselbe Seite und waere nicht mehr bedienbar.
-    $d['nr'] = (int) (isset($d['nr']) ? $d['nr'] : 0) + 1;
+    $d['nr'] = (int) (isset($alt['nr']) ? $alt['nr'] : 0) + 1;
     return db_json_schreiben($p['tafel'], $d);
 }
 
@@ -387,6 +445,9 @@ function db_tafel_lesen()
         'seite'   => (string) (isset($d['seite']) ? $d['seite'] : ''),
         'wach'    => (int) (isset($d['wach']) ? $d['wach'] : 0),
         'hell'    => (int) (isset($d['hell']) ? $d['hell'] : -1),
+        // -1 heisst "nichts gesagt". Ein Tafelbefehl, der 'ruhe' nicht nennt,
+        // schaltet das Ruhebild weder ein noch aus.
+        'ruhe'    => (int) (isset($d['ruhe']) ? $d['ruhe'] : -1),
         'ts'      => (int) (isset($d['ts']) ? $d['ts'] : 0),
     );
 }
@@ -530,12 +591,19 @@ function db_log($text)
     if (!is_dir($p['logdir'])) {
         @mkdir($p['logdir'], 0775, true);
     }
-    clearstatcache(true, $p['log']);
-    if (is_file($p['log']) && filesize($p['log']) > 512000) {
-        // Rotation: die letzten 400 Zeilen behalten
-        $rest = array_slice(file($p['log'], FILE_IGNORE_NEW_LINES) ?: array(), -400);
-        @file_put_contents($p['log'], implode("\n", $rest) . "\n");
-    }
+    /* NUR ANHAENGEN. Bis 0.9.12 stand hier eine zweite Rotation: bei ueber
+     * 512.000 Byte wurde die Datei mit ihren letzten 400 Zeilen
+     * UEBERSCHRIEBEN. Genau das darf die Oberflaeche nicht - der Dienst
+     * haelt auf dieselbe Datei einen offenen Deskriptor (RotatingFileHandler,
+     * ebenfalls 512.000 Byte). Nach dem Ueberschreiben schreibt er an seinem
+     * ALTEN Byte-Versatz weiter: es entsteht eine Datei mit einem Loch aus
+     * Null-Bytes, und alles, was die Oberflaeche gerade behalten wollte, ist
+     * beim naechsten Schreibvorgang des Dienstes wieder ueberdeckt.
+     *
+     * Es rotiert deshalb genau EINER, und das ist der Dienst. Die Oberflaeche
+     * haengt nur an (O_APPEND, zeilenweise, und ueber db_log_gebremst()
+     * hoechstens einmal je Stunde und Schluessel) - das vertraegt sich mit
+     * einem zweiten Schreiber, ein Ueberschreiben nicht. */
     @file_put_contents($p['log'], '[' . date('Y-m-d H:i:s') . '] ' . $text . "\n", FILE_APPEND);
 }
 
@@ -549,6 +617,42 @@ function db_log_gebremst($schluessel, $text, $sekunden = 3600)
         @file_put_contents($f, (string) time());
         db_log($text);
     }
+}
+
+/** Nimmt der Miniserver TCP-Verbindungen an? Hoechstens einmal je Minute.
+ *
+ * Rueckgabe: array(true|false, Alter des Messwerts in Sekunden).
+ *
+ * Warum gepuffert: der Reiter Test wird bei JEDEM Seitenaufruf serverseitig
+ * mitgebaut, auch wenn der Bediener in den Einstellungen steht - die Reiter
+ * schaltet erst der Browser um. Ein nicht erreichbarer Miniserver kostete
+ * damit gemessene 2,007 s je Klick und je Speichervorgang.
+ *
+ * Der Puffer liegt im Datenordner und uebersteht ein Update ausdruecklich
+ * NICHT - er soll es auch nicht: nach einem Update ist jede alte Messung
+ * wertlos.
+ */
+function db_erreichbarkeit($adresse, $port, $frist = 60)
+{
+    $f = db_paths()['datadir'] . '/.erreichbar';
+    clearstatcache(true, $f);
+    if (is_file($f)) {
+        $d = @json_decode((string) @file_get_contents($f), true);
+        if (is_array($d) && isset($d['ts'], $d['ok'], $d['ziel'])
+                && $d['ziel'] === $adresse . ':' . $port
+                && time() - (int) $d['ts'] < $frist) {
+            return array((bool) $d['ok'], time() - (int) $d['ts']);
+        }
+    }
+    // Eine Sekunde reicht im eigenen Netz. Zwei waren nur die Vorgabe von
+    // frueher und verdoppelten die Wartezeit im Fehlerfall.
+    $auf = @fsockopen($adresse, $port, $en, $es, 1);
+    $ok = false;
+    if ($auf) { fclose($auf); $ok = true; }
+    if (!is_dir(dirname($f))) { @mkdir(dirname($f), 0775, true); }
+    @file_put_contents($f, json_encode(array(
+        'ts' => time(), 'ok' => $ok ? 1 : 0, 'ziel' => $adresse . ':' . $port)));
+    return array($ok, 0);
 }
 
 /* ---------------- Dienst ---------------- */
@@ -630,7 +734,7 @@ function db_befehl_absetzen($befehl, $wartezeit = null)
     // Die Grenze muss zu der im Formular passen. Bis 0.9.5 liess das
     // Formular 1 bis 60 zu und hier wurde bei 20 gekappt - jeder Wert
     // darueber war wirkungslos, ohne dass es irgendwo stand.
-    $wartezeit = max(1, min(DB_WARTEZEIT_MAX, (int) $wartezeit));
+    $wartezeit = max(DB_WARTEZEIT_MIN, min(DB_WARTEZEIT_MAX, (int) $wartezeit));
 
     $ordner = $p['datadir'] . '/befehle';
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
@@ -693,12 +797,20 @@ function db_xml_virtual_in_http($kopf, $cmds)
 {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    // Reihenfolge und Felder GEMESSEN an der massgeblichen Ausfuhr aus Loxone
+    // Config vom 12.08.2026 (VI_Marstek Speicher (LoxBerry-Plugin)_Test.xml).
+    // HintText steht VORN, und als erstes Kindelement folgt <Info>. Beides
+    // fehlte bis 0.9.12: der Nachbau war aus APC-UPS uebernommen, und zwar
+    // der Stand VOR dem Nachtrag vom 20.08.2026.
     $o .= '<VirtualInHttp ';
+    $o .= 'HintText="" ';
     $o .= 'Title="' . db_x($kopf['title']) . '" ';
     $o .= 'Comment="' . db_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . db_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'PollingTime="' . db_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
     $o .= '>' . $crlf;
+    // templateType: 1 = UDP-Eingang, 2 = HTTP-Eingang, 3 = Ausgang.
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
         // Grenzen je Feld, nicht pauschal +/-2147483647. Loxone zieht daraus
         // die Reglergrenzen und die Plausibilitaetspruefung; wer alles offen
@@ -718,7 +830,14 @@ function db_xml_virtual_in_http($kopf, $cmds)
         $o .= 'DestValHigh="1" ';
         $o .= 'DefVal="0" ';
         $o .= 'MinVal="' . $min . '" ';
-        $o .= 'MaxVal="' . $max . '"';
+        $o .= 'MaxVal="' . $max . '" ';
+        // Unit ist mehr als Kosmetik: ohne das Attribut steht am virtuellen
+        // Eingang eine nackte Zahl, und die Einheit findet nur, wer den
+        // Kommentar aufklappt. Config legt sie beim Import als Kindelement
+        // <Display Type="2" Unit="..." StateOnly="true"/> ab.
+        $o .= 'Unit="' . db_x('<v.1>' . (isset($c['einheit']) && $c['einheit'] !== ''
+                                         ? ' ' . $c['einheit'] : '')) . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -735,24 +854,52 @@ function db_xml_virtual_out($kopf, $cmds)
 {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    // Reihenfolge und Felder GEMESSEN an der massgeblichen Ausfuhr aus Loxone
+    // Config vom 12.08.2026 (VO_Rasenmaeher steuern (LoxBerry-Plugin)_Test.xml).
     $o .= '<VirtualOut ';
+    $o .= 'HintText="" ';
     $o .= 'Title="' . db_x($kopf['title']) . '" ';
     $o .= 'Comment="' . db_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . db_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
+    $o .= 'CmdInit="" ';
     $o .= 'CloseAfterSend="false" ';
     $o .= 'CmdSep="' . db_x(isset($kopf['cmdsep']) ? $kopf['cmdsep'] : ';') . '"';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
+        // Volle Reihenfolge: Title, Comment, CmdOnMethod, CmdOffMethod, CmdOn,
+        // CmdOnHTTP, CmdOnPost, CmdOff, CmdOffHTTP, CmdOffPost, CmdAnswer,
+        // Analog, Repeat, RepeatRate [, die vier Analogfelder], HintText.
+        // Bis 0.9.12 fehlten sechs davon, und die beiden Method-Attribute
+        // standen an der falschen Stelle.
+        $analog = !empty($c['analog']);
         $o .= "\t" . '<VirtualOutCmd ';
         $o .= 'Title="' . db_x($c['title']) . '" ';
         $o .= 'Comment="' . db_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
         $o .= 'CmdOnMethod="' . db_x(isset($c['method']) ? $c['method'] : 'GET') . '" ';
-        $o .= 'CmdOn="' . db_x(isset($c['on']) ? $c['on'] : '') . '" ';
         $o .= 'CmdOffMethod="' . db_x(isset($c['method']) ? $c['method'] : 'GET') . '" ';
+        $o .= 'CmdOn="' . db_x(isset($c['on']) ? $c['on'] : '') . '" ';
+        $o .= 'CmdOnHTTP="" ';
+        $o .= 'CmdOnPost="" ';
         $o .= 'CmdOff="' . db_x(isset($c['off']) ? $c['off'] : '') . '" ';
-        $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '" ';
+        $o .= 'CmdOffHTTP="" ';
+        $o .= 'CmdOffPost="" ';
+        $o .= 'CmdAnswer="" ';
+        $o .= 'Analog="' . ($analog ? 'true' : 'false') . '" ';
         $o .= 'Repeat="0" ';
-        $o .= 'RepeatRate="0"';
+        $o .= 'RepeatRate="0" ';
+        if ($analog) {
+            // Ein ANALOGER VirtualOutCmd traegt vier Attribute mehr; der
+            // digitale traegt sie nicht. Gemessen am 20.08.2026 an einer
+            // eigenen Ausfuhr - ein analoger Befehl wird getrennt vom
+            // digitalen gemessen, sie sind nicht dasselbe Element mit einem
+            // anderen Haken.
+            $o .= 'SourceValLow="' . (int) (isset($c['min']) ? $c['min'] : 0) . '" ';
+            $o .= 'DestValLow="' . (int) (isset($c['min']) ? $c['min'] : 0) . '" ';
+            $o .= 'SourceValHigh="' . (int) (isset($c['max']) ? $c['max'] : 100) . '" ';
+            $o .= 'DestValHigh="' . (int) (isset($c['max']) ? $c['max'] : 100) . '" ';
+        }
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualOut>' . $crlf;
@@ -886,6 +1033,109 @@ function db_szene_schritte($k)
     return $aus;
 }
 
+/** Die Kacheln einer Seite in genau der Reihenfolge, in der die Anzeige sie
+ * nummeriert - der EINE Ort, an dem entschieden wird, was die Tafel sieht.
+ *
+ * Bis 0.9.12 stand dieser Filter nur in db_seite_daten(). Die Anzeigeseite
+ * numeriert ihre Kacheln ueber die GEFILTERTE Liste (tafel.php: forEach(k, i),
+ * d.dataset.i = i) und schickt diese Nummer als '&kachel='; der Endpunkt griff
+ * damit aber in die UNGEFILTERTE Rohliste aus seiten.json. Jede unsichtbare
+ * oder fehlerhafte Kachel VOR einer Szene verschob die Nummer um eins - und
+ * weil an der verschobenen Stelle meist wieder eine Szene stand, griff auch
+ * die Abweisung 'KEINE_SZENE' nicht: es lief stillschweigend die FALSCHE
+ * Szene. Gemessen an drei Kacheln (unsichtbarer Schalter, 'Alles aus',
+ * 'Kino'): der Druck auf 'Kino' fuehrte 'Alles aus' aus.
+ *
+ * Deshalb steht die Regel jetzt genau einmal, und beide Seiten lesen sie
+ * hier. Wer sie aendert, aendert sie fuer Anzeige und Endpunkt zugleich.
+ */
+function db_kacheln_sichtbar($seite)
+{
+    $aus = array();
+    if (!is_array($seite)) { return $aus; }
+    foreach ((isset($seite['kacheln']) ? $seite['kacheln'] : array()) as $k) {
+        if (!is_array($k)) { continue; }
+        if (isset($k['sichtbar']) && !$k['sichtbar']) { continue; }
+        $aus[] = $k;
+    }
+    return $aus;
+}
+
+/** Das Wetter fuer die Nutzlast - oder null, wenn es niemand braucht.
+ *
+ * Die Bedingung steht hier genau einmal, damit die beiden Nutzlasten
+ * (aktion=seite und aktion=werte) nicht auseinanderlaufen koennen. Ohne
+ * eingeschaltetes Ruhebild kostet der Aufruf nichts: er sieht nur in die
+ * Konfiguration und kehrt um.
+ */
+function db_wetter_fuer_nutzlast($cfg, $mit_texten = true)
+{
+    if (empty($cfg['ruhe_nach']) || empty($cfg['ruhe_wetter'])) { return null; }
+    $w = db_wetter_jetzt();
+    // Die Klartexte zu den Wetterlagen aendern sich nicht. Sie gehoeren in
+    // die Struktur-Nutzlast (aktion=seite), nicht in jeden Takt - das ist
+    // derselbe Grundsatz, nach dem abbild_bauen() nur Werte schickt und die
+    // Struktur einmal. Die Anzeigeseite behaelt den ersten Stand.
+    if ($w !== null && !$mit_texten) { unset($w['texte']); }
+    return $w;
+}
+
+/** Die aktuelle Wetterlage - unabhaengig davon, welche Seite gerade offen ist.
+ *
+ * Das Ruhebild zeigt Wetter, Uhrzeit und Datum. Die Wetterkachel liegt aber
+ * vielleicht auf einer ganz anderen Seite, und der Wetterdienst steht in der
+ * Strukturdatei ohnehin NICHT unter 'controls', sondern als eigener Abschnitt
+ * [S, weatherServer] - das Plugin baut daraus einen eigenen Eintrag.
+ * Deshalb wird er hier ueber die Kachelart gesucht, nicht ueber die Seite.
+ *
+ * Rueckgabe: null, wenn es keinen Wetterdienst gibt oder noch keine Werte da
+ * sind. Dann zeigt das Ruhebild schlicht keine Wetterzeile - eine erfundene
+ * Angabe waere schlimmer als keine.
+ */
+function db_wetter_jetzt()
+{
+    $struktur = db_struktur();
+    $abbild = db_abbild();
+    $werte = isset($abbild['werte']) && is_array($abbild['werte']) ? $abbild['werte'] : array();
+    foreach ((isset($struktur['bausteine']) && is_array($struktur['bausteine'])
+              ? $struktur['bausteine'] : array()) as $b) {
+        if (!is_array($b) || (string) (isset($b['kachel']) ? $b['kachel'] : '') !== 'wetter') {
+            continue;
+        }
+        /* Das Abbild ist nach BAUSTEIN-UUID geschluesselt und traegt darunter
+         * die Rollennamen ('actual', 'forecast') - so baut es abbild_bauen()
+         * ueber zustands_index(). NICHT nach Zustands-UUID: der Griff ueber
+         * $b['zustaende'] geht ins Leere, und zwar lautlos, weil eine leere
+         * Wetterzeile aussieht wie "noch keine Daten". Genau so stand es hier
+         * im ersten Anlauf, und gefunden hat es erst eine Messung gegen eine
+         * nachgebaute Nutzlast. */
+        $bu = (string) (isset($b['uuid']) ? $b['uuid'] : '');
+        $w = ($bu !== '' && isset($werte[$bu]) && is_array($werte[$bu]))
+             ? $werte[$bu] : array();
+        $jetzt = null;
+        if (isset($w['actual']['eintraege'][0])) {
+            $jetzt = $w['actual']['eintraege'][0];
+        } elseif (isset($w['forecast']['eintraege'][0])) {
+            $jetzt = $w['forecast']['eintraege'][0];
+        }
+        // 'continue', nicht 'return': gibt es mehrere Wetterdienste, darf der
+        // erste ohne Werte die uebrigen nicht verdecken.
+        if (!is_array($jetzt)) { continue; }
+        return array(
+            'temperatur'   => isset($jetzt['temperatur']) ? $jetzt['temperatur'] : null,
+            'gefuehlt'     => isset($jetzt['gefuehlt']) ? $jetzt['gefuehlt'] : null,
+            'feuchte'      => isset($jetzt['feuchte']) ? $jetzt['feuchte'] : null,
+            'wind'         => isset($jetzt['wind']) ? $jetzt['wind'] : null,
+            'art'          => isset($jetzt['art']) ? $jetzt['art'] : null,
+            // Die Klartexte kommen aus der Anlage. Fehlt dort einer, steht die
+            // Zahl da und keine erfundene Beschreibung.
+            'texte'        => isset($struktur['wettertexte']) && is_array($struktur['wettertexte'])
+                              ? $struktur['wettertexte'] : array(),
+        );
+    }
+    return null;
+}
+
 /** Struktur und Werte fuer EINE Seite - genau das, was die Anzeige braucht. */
 function db_seite_daten($schluessel)
 {
@@ -896,9 +1146,7 @@ function db_seite_daten($schluessel)
     $werte = isset($abbild['werte']) && is_array($abbild['werte']) ? $abbild['werte'] : array();
     $verlauf = !empty($cfg['verlauf']) ? db_verlauf() : array();
     $kacheln = array();
-    foreach ((isset($seite['kacheln']) ? $seite['kacheln'] : array()) as $k) {
-        if (!is_array($k)) { continue; }
-        if (isset($k['sichtbar']) && !$k['sichtbar']) { continue; }
+    foreach (db_kacheln_sichtbar($seite) as $k) {
         $uuid = (string) (isset($k['uuid']) ? $k['uuid'] : '');
         // Alle Schluessel mit isset() lesen. Der Zweig 'fehlt' tat das bis
         // 0.9.5 nicht; bei einer handgepflegten seiten.json ohne 'titel' gab
@@ -959,6 +1207,12 @@ function db_seite_daten($schluessel)
             // Brandmelder und wurde bis 0.9.5 von nichts gelesen. Die Kachel
             // faerbt damit ihre schaltenden Knoepfe.
             'warnung'  => (int) (isset($zeile['warnung']) ? $zeile['warnung'] : 0),
+            /* Der Name des Hauptzustands. Die Anzeige braucht ihn fuer das
+             * Ruhebild: dort steht je Kachel EIN Wert, und welcher der
+             * gemeinte ist, weiss allein die Kacheltabelle. Ohne ihn muesste
+             * die Anzeige raten - und ein geratener Wert auf einem Tablet an
+             * der Wand ist schlimmer als gar keiner. */
+            'haupt'    => (string) (isset($b['haupt']) ? $b['haupt'] : ''),
             'werte'    => isset($werte[$uuid]) ? $werte[$uuid] : array(),
         );
         // Grenzen des Bausteins, falls der Miniserver sie mitschickt. Ohne
@@ -1015,6 +1269,7 @@ function db_seite_daten($schluessel)
         'weg'        => (string) (isset($abbild['weg']) ? $abbild['weg'] : ''),
         'alter'      => db_alter(),
         'tafel'      => db_tafel_lesen(),
+        'wetter'     => db_wetter_fuer_nutzlast($cfg),
     );
 }
 
@@ -1029,8 +1284,11 @@ function db_seite_werte($schluessel)
     $verlauf = !empty($cfg['verlauf']) ? db_verlauf() : array();
     $aus = array();
     $kurven = array();
-    foreach ((isset($seite['kacheln']) ? $seite['kacheln'] : array()) as $k) {
-        if (!is_array($k)) { continue; }
+    // Ueber db_kacheln_sichtbar(), damit die Regel wirklich an EINER Stelle
+    // steht. Folgenlos fuer die Nummerierung - diese Nutzlast ist nach UUID
+    // geschluesselt -, aber die Werte unsichtbarer Kacheln wanderten sonst
+    // bei jedem Takt mit.
+    foreach (db_kacheln_sichtbar($seite) as $k) {
         $u = (string) (isset($k['uuid']) ? $k['uuid'] : '');
         if ($u === '') { continue; }
         if (isset($alle[$u])) { $aus[$u] = $alle[$u]; }
@@ -1039,7 +1297,8 @@ function db_seite_werte($schluessel)
     return array('ok' => (int) (isset($abbild['ok']) ? $abbild['ok'] : 0),
                  'weg' => (string) (isset($abbild['weg']) ? $abbild['weg'] : ''),
                  'alter' => db_alter(), 'werte' => $aus,
-                 'verlauf' => $kurven, 'tafel' => db_tafel_lesen());
+                 'verlauf' => $kurven, 'tafel' => db_tafel_lesen(),
+                 'wetter' => db_wetter_fuer_nutzlast($cfg, false));
 }
 
 /** PIN einer Seite pruefen - in gleichbleibender Zeit.
@@ -1107,6 +1366,7 @@ function db_vorlage()
             'min'     => $info[2],
             'max'     => $info[3],
             'analog'  => $info[4],
+            'einheit' => $info[0],
         );
     }
     return array('VI_DASHBOARD_STATUS.xml', db_xml_virtual_in_http(array(
@@ -1159,7 +1419,23 @@ function db_vorlage_out()
         'on'      => $basis . '&hell=<v.0>',
         'off'     => '',
         'analog'  => 1,
+        'min'     => 0,
+        'max'     => 100,
     );
+    /* Das Ruhebild nur anbieten, wenn es auch eingerichtet ist. Ein Befehl in
+     * der Vorlage, den der Endpunkt mit 409 abweist, waere ein Versprechen,
+     * das die Anlage nicht halten kann - und der Anwender sucht den Fehler
+     * dann in Loxone Config. */
+    if (!empty(db_config()['ruhe_nach'])) {
+        $cmds[] = array(
+            'title'   => 'DASHBOARD_RUHEBILD',
+            'comment' => 'Legt das Ruhebild sofort auf (Ein) oder nimmt es weg (Aus). '
+                       . 'Ohne diesen Befehl kommt es von selbst, wenn niemand das '
+                       . 'Tablet beruehrt.',
+            'on'      => $basis . '&ruhe=1',
+            'off'     => $basis . '&ruhe=0',
+        );
+    }
     return array('VQ_DASHBOARD_STEUERUNG.xml', db_xml_virtual_out(array(
         'title'   => 'Dashboard-Designer Steuerung',
         'address' => 'http://' . db_host(),

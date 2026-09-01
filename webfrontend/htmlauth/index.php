@@ -85,8 +85,27 @@ $db_fehler = array();
  * wird geleert, nur der aktive Reiter bleibt stehen, damit der Bediener
  * nach der Abweisung dort steht, wo er war.
  * ---------------------------------------------------------------- */
+/* Eine Anfrage ueber post_max_size kommt bei PHP MIT leerem $_POST und
+ * leerem $_FILES an - der Wachposten faende dann kein Formularmerkmal und
+ * meldete "Die Anfrage trug kein Formularmerkmal und wurde abgewiesen",
+ * also eine Faelschungs-Meldung fuer ein zu grosses Urlaubsfoto. Seit 0.9.13
+ * traegt der Reiter Einstellungen ein Hintergrundbild; bis dahin konnte das
+ * Formular post_max_size gar nicht erreichen.
+ *
+ * Deshalb VOR dem Wachposten: sagt der Server, es sei etwas gekommen, und ist
+ * trotzdem nichts angekommen, dann war die Anfrage zu gross. */
+$db_zugross = false;
+if ((isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST'
+        && !$_POST && !$_FILES
+        && (int) (isset($_SERVER['CONTENT_LENGTH']) ? $_SERVER['CONTENT_LENGTH'] : 0) > 0) {
+    $db_zugross = true;
+}
+
 $db_wache = db_wachposten();
-if ($db_wache !== '') {
+if ($db_zugross) {
+    $db_fehler[] = sprintf(db_t('EINST.FEHLER_ANFRAGE_GROSS'),
+                           db_e((string) @ini_get('post_max_size')));
+} elseif ($db_wache !== '') {
     $db_reiter_merk = isset($_POST['activetab']) && is_string($_POST['activetab'])
         ? (string) $_POST['activetab'] : null;
     $_POST = array();
@@ -153,7 +172,9 @@ if ($db_post && isset($_POST['speichern'])) {
                    'wartezeit' => array(DB_WARTEZEIT_MIN, DB_WARTEZEIT_MAX),
                    'rotation' => array(0, 3600),
                    'nacht_helligkeit' => array(0, 100),
-                   'verlauf_punkte' => array(10, 240)) as $db_f => $db_g) {
+                   'verlauf_punkte' => array(10, 240),
+                   'ruhe_kacheln' => array(0, DB_RUHE_KACHELN_MAX),
+                   'ruhe_hell' => array(DB_RUHE_HELL_MIN, DB_RUHE_HELL_MAX)) as $db_f => $db_g) {
         $db_w = $db_sauber($db_f);
         if (!preg_match('/^[0-9]+$/', $db_w)) {
             $db_fehler[] = sprintf(db_t('EINST.FEHLER_ZAHL'), db_t('EINST.L_' . strtoupper($db_f)));
@@ -184,6 +205,33 @@ if ($db_post && isset($_POST['speichern'])) {
         $db_cfg['nacht_bis'] = $db_nb;
     }
 
+    /* Das Ruhebild: 0 heisst 'aus', sonst mindestens DB_RUHE_NACH_MIN.
+     * Deshalb NICHT in der Schleife oben - die kennt nur einen Bereich, und
+     * '0 oder 10 bis 3600' ist keiner. */
+    $db_rn = $db_sauber('ruhe_nach');
+    if (!preg_match('/^[0-9]+$/', $db_rn)) {
+        $db_fehler[] = sprintf(db_t('EINST.FEHLER_ZAHL'), db_t('EINST.L_RUHE_NACH'));
+    } elseif ((int) $db_rn !== 0
+              && ((int) $db_rn < DB_RUHE_NACH_MIN || (int) $db_rn > DB_RUHE_NACH_MAX)) {
+        $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_NACH'),
+                               DB_RUHE_NACH_MIN, DB_RUHE_NACH_MAX);
+    } else {
+        $db_cfg['ruhe_nach'] = (int) $db_rn;
+    }
+
+    /* Die Seite fuer die Verknuepfungen des Ruhebilds. Leer ist erlaubt und
+     * heisst "die Seite, die gerade offen ist". Ein Schluessel, den es nicht
+     * gibt, wird ABGEWIESEN und nicht stillschweigend geleert - sonst waere
+     * eine geloeschte Seite hier ein stiller Rueckfall. */
+    $db_rs = $db_sauber('ruhe_seite');
+    if ($db_rs === '') {
+        $db_cfg['ruhe_seite'] = '';
+    } elseif (db_seite($db_rs) === null) {
+        $db_fehler[] = db_t('EINST.FEHLER_RUHE_SEITE');
+    } else {
+        $db_cfg['ruhe_seite'] = $db_rs;
+    }
+
     $db_farbe = $db_sauber('farbe');
     if (!in_array($db_farbe, array('dunkel', 'hell'), true)) {
         $db_fehler[] = db_t('EINST.FEHLER_FARBE');
@@ -196,7 +244,7 @@ if ($db_post && isset($_POST['speichern'])) {
     // Absenden eines anderen sie stillschweigend auf 0.
     foreach (array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach',
                    'haptik', 'verlauf', 'sse', 'tafelsteuerung',
-                   'gesichert_schalten') as $db_h) {
+                   'gesichert_schalten', 'ruhe_uhr', 'ruhe_wetter') as $db_h) {
         $db_cfg[$db_h] = isset($_POST[$db_h]) ? 1 : 0;
     }
 
@@ -225,7 +273,116 @@ if ($db_post && isset($_POST['speichern'])) {
     // mit dem sich der Dienst anmeldet, unabhaengig davon, ob das der
     // LoxBerry-Zugang oder ein abweichender ist. Auch hier gilt: ein leeres
     // Feld behaelt das bisherige, sonst loescht jedes Speichern es weg.
-    db_visu_speichern((string) (isset($_POST['visu_pw']) ? $_POST['visu_pw'] : ''));
+    //
+    // Bis 0.9.12 stand dieser Aufruf als einzige Schreibstelle AUSSERHALB der
+    // Klammer. Ein Formular mit einem ungueltigen Takt und einem neuen
+    // Visualisierungs-Passwort wurde am Bildschirm abgewiesen ("Bitte
+    // pruefen: …", kein "Gespeichert") - und hatte das Passwort trotzdem
+    // schon geschrieben. Ein abgewiesenes Formular schreibt gar nichts;
+    // sonst weiss hinterher niemand, was von der Eingabe angekommen ist.
+    if (!$db_fehler) {
+        db_visu_speichern((string) (isset($_POST['visu_pw']) ? $_POST['visu_pw'] : ''));
+    }
+
+    /* Das Hintergrundbild des Ruhebilds.
+     *
+     * Geprueft wird der INHALT mit getimagesize(), nicht die Dateiendung und
+     * auch nicht der Typ, den der Browser mitschickt - beides bestimmt der
+     * Absender. Der Dateiname des Hochladenden wird nirgends uebernommen: die
+     * Datei landet unter einem festen Pfad, und in der Konfiguration steht
+     * allein die Endung, aus der der Endpunkt spaeter den Inhaltstyp bildet.
+     *
+     * '--' entfernt das Bild, ein leeres Feld laesst das vorhandene stehen -
+     * dieselbe Regel wie beim Visualisierungs-Passwort, damit nicht jedes
+     * Speichern der Einstellungen es unbemerkt wegwirft. */
+    /* Der Fehlercode von PHP wird ZUERST gelesen.
+     *
+     * Bis zu einem Zwischenstand von 0.9.13 stieg dieser Block nur ueber
+     * is_uploaded_file() ein. Scheitert der Upload in PHP selbst - etwa weil
+     * die Datei ueber upload_max_filesize liegt -, ist 'tmp_name' leer, der
+     * Zweig lief gar nicht an, und die Seite meldete "Gespeichert.". Es gab
+     * kein Bild, und nichts sagte es dem Bediener. Gemessen mit
+     * upload_max_filesize=100 und einem 147-Byte-Bild: weder Meldung noch
+     * Beanstandung, und die Konfiguration wurde als Erfolg gespeichert.
+     *
+     * UPLOAD_ERR_NO_FILE ist der einzige beabsichtigte Fall ("leeres Feld
+     * laesst das vorhandene stehen") - und genau den konnte der Code von
+     * allen anderen nicht unterscheiden. Das Hausmuster dafuer steht in
+     * BatterieBMS 0.9.15 und Midea2Lox 4.4.0. */
+    $db_bildfehler = '';
+    $db_bildda = false;
+    if (isset($_FILES['ruhe_bild']) && is_array($_FILES['ruhe_bild'])) {
+        $db_code = isset($_FILES['ruhe_bild']['error'])
+                 ? (int) $_FILES['ruhe_bild']['error'] : UPLOAD_ERR_NO_FILE;
+        if ($db_code === UPLOAD_ERR_INI_SIZE || $db_code === UPLOAD_ERR_FORM_SIZE) {
+            $db_bildfehler = sprintf(db_t('EINST.FEHLER_RUHE_BILD_INI'),
+                                     db_e((string) @ini_get('upload_max_filesize')));
+        } elseif ($db_code !== UPLOAD_ERR_OK && $db_code !== UPLOAD_ERR_NO_FILE) {
+            $db_bildfehler = sprintf(db_t('EINST.FEHLER_RUHE_BILD_CODE'), $db_code);
+        } elseif ($db_code === UPLOAD_ERR_OK
+                  && isset($_FILES['ruhe_bild']['tmp_name'])
+                  && @is_uploaded_file($_FILES['ruhe_bild']['tmp_name'])) {
+            $db_bildda = true;
+        }
+    }
+    if ($db_bildfehler !== '') { $db_fehler[] = $db_bildfehler; }
+
+    /* Ein Mangel an ANDERER Stelle im selben Formular verwirft die gewaehlte
+     * Datei - PHP haelt sie nur bis zum Ende der Anfrage, und kein Browser
+     * fuellt das Dateifeld wieder. Der Bediener berichtigt den Takt, sendet
+     * erneut ab und liest "Gespeichert." - ohne Bild und ohne Hinweis, dass
+     * seine Auswahl beim ersten Versuch verlorenging. Deshalb wird das
+     * gesagt: ein abgewiesenes Formular schreibt nichts, aber es verschweigt
+     * auch nichts. */
+    if ($db_fehler && $db_bildda) {
+        $db_fehler[] = db_t('EINST.RUHE_BILD_VERWORFEN');
+    }
+
+    if (!$db_fehler) {
+        $db_bp = db_paths()['ruhebild'];
+        if ((string) (isset($_POST['ruhe_bild_weg']) ? $_POST['ruhe_bild_weg'] : '') === '--') {
+            /* '--' schlaegt eine gleichzeitig gewaehlte Datei - und sagt es. */
+            @unlink($db_bp);
+            $db_cfg['ruhe_bild'] = '';
+            $db_meldungen[] = $db_bildda
+                ? db_t('EINST.RUHE_BILD_WEG_STATT')
+                : db_t('EINST.RUHE_BILD_WEG');
+        } elseif ($db_bildda) {
+            if ((int) $_FILES['ruhe_bild']['size'] > DB_RUHE_BILD_MAX) {
+                $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_GROSS'),
+                                       (int) (DB_RUHE_BILD_MAX / 1048576));
+            } else {
+                $db_masse = @getimagesize($_FILES['ruhe_bild']['tmp_name']);
+                $db_endungen = array(IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png',
+                                     IMAGETYPE_WEBP => 'webp');
+                if (!is_array($db_masse) || !isset($db_masse[2])
+                        || !isset($db_endungen[$db_masse[2]])) {
+                    $db_fehler[] = db_t('EINST.FEHLER_RUHE_BILD_TYP');
+                } elseif ((int) $db_masse[0] > DB_RUHE_BILD_KANTE
+                          || (int) $db_masse[1] > DB_RUHE_BILD_KANTE) {
+                    /* Die Bytegrenze allein reicht nicht: ein gut gepacktes
+                     * PNG mit 25000 Punkten Kantenlaenge bleibt weit unter
+                     * 4 MB, und dekodieren muss es das Tablet, nicht der
+                     * Server. */
+                    $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_KANTE'),
+                                           (int) $db_masse[0], (int) $db_masse[1],
+                                           DB_RUHE_BILD_KANTE);
+                } elseif (!@is_dir(dirname($db_bp)) && !@mkdir(dirname($db_bp), 0775, true)) {
+                    $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_SCHREIBEN'),
+                                           db_e(dirname($db_bp)));
+                } elseif (!@move_uploaded_file($_FILES['ruhe_bild']['tmp_name'], $db_bp)) {
+                    $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_SCHREIBEN'),
+                                           db_e($db_bp));
+                } else {
+                    @chmod($db_bp, 0644);
+                    $db_cfg['ruhe_bild'] = $db_endungen[$db_masse[2]];
+                    $db_meldungen[] = sprintf(db_t('EINST.RUHE_BILD_UEBERNOMMEN'),
+                                              db_e(strtoupper($db_endungen[$db_masse[2]])),
+                                              (int) $db_masse[0], (int) $db_masse[1]);
+                }
+            }
+        }
+    }
 
     if (!$db_fehler) {
         if (db_config_speichern($db_cfg)) { $db_meldungen[] = db_t('EINST.GESPEICHERT'); }
@@ -408,11 +565,22 @@ if ($db_post && isset($_POST['token_neu'])) {
     $db_tab = 'tab-loxone';
 }
 if ($db_post && isset($_POST['log_leeren'])) {
-    @mkdir(dirname($db_p['log']), 0775, true);
-    // In die Logdatei gehoert Klartext, kein HTML.
-    $db_klartext = trim(strip_tags(html_entity_decode(db_t('LOG.GELEERT'), ENT_QUOTES, 'UTF-8')));
-    @file_put_contents($db_p['log'], '[' . date('Y-m-d H:i:s') . '] ' . $db_klartext . "\n");
-    $db_meldungen[] = db_t('LOG.GELEERT');
+    /* Nur bei angehaltenem Dienst. Der Dienst haelt auf diese Datei einen
+     * offenen Deskriptor; wird sie unter ihm weggeschrieben, macht er an
+     * seinem alten Byte-Versatz weiter, und es entsteht eine Datei mit einem
+     * Loch aus Null-Bytes - der geleerte Anfang ist danach nicht leer,
+     * sondern Muell. Bis 0.9.12 leerte der Knopf unbesehen.
+     *
+     * Kein stilles Zurechtbiegen: der Knopf sagt, was fehlt. */
+    if (db_dienst_pid() > 0) {
+        $db_fehler[] = db_t('LOG.LEEREN_LAEUFT');
+    } else {
+        @mkdir(dirname($db_p['log']), 0775, true);
+        // In die Logdatei gehoert Klartext, kein HTML.
+        $db_klartext = trim(strip_tags(html_entity_decode(db_t('LOG.GELEERT'), ENT_QUOTES, 'UTF-8')));
+        @file_put_contents($db_p['log'], '[' . date('Y-m-d H:i:s') . '] ' . $db_klartext . "\n");
+        $db_meldungen[] = db_t('LOG.GELEERT');
+    }
     $db_tab = 'tab-log';
 }
 if ($db_post && isset($_POST['test'])) {
@@ -430,22 +598,6 @@ if ($db_post && isset($_POST['probe'])) {
     else { $db_fehler[] = db_t('TEST.PROBE_FEHL'); }
     $db_tab = 'tab-test';
 }
-
-/* ---------------- Laden ---------------- */
-$db_cfg = db_config();
-$db_token = db_token();
-$db_seiten = db_seiten();
-$db_bausteine = db_bausteine();
-$db_struktur = db_struktur();
-$db_zustand = db_zustand();
-$db_ms = db_miniserver();
-$db_zugang = db_zugang();
-$db_pid = db_dienst_pid();
-$db_alter = db_alter();
-$db_kachelzahl = 0;
-foreach ($db_seiten as $db_s) { $db_kachelzahl += count(isset($db_s['kacheln']) ? $db_s['kacheln'] : array()); }
-
-$db_rahmen = class_exists('LBWeb', false) && method_exists('LBWeb', 'lbheader');
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -494,6 +646,21 @@ if ($db_post && isset($_POST['db_zurueck'])) {
     }
 }
 
+/* ---------------- Laden ---------------- */
+$db_cfg = db_config();
+$db_token = db_token();
+$db_seiten = db_seiten();
+$db_bausteine = db_bausteine();
+$db_struktur = db_struktur();
+$db_zustand = db_zustand();
+$db_ms = db_miniserver();
+$db_zugang = db_zugang();
+$db_pid = db_dienst_pid();
+$db_alter = db_alter();
+$db_kachelzahl = 0;
+foreach ($db_seiten as $db_s) { $db_kachelzahl += count(isset($db_s['kacheln']) ? $db_s['kacheln'] : array()); }
+
+$db_rahmen = class_exists('LBWeb', false) && method_exists('LBWeb', 'lbheader');
 
 if ($db_rahmen) {
     LBWeb::lbheader(db_t('ALLG.TITEL'), 'https://www.loxone.com/enen/kb/api/', 'help.html');
@@ -639,7 +806,10 @@ if ($db_rahmen) {
   </div>
 </form>
 
-<form action="index.php" method="post">
+<?php /* enctype seit 0.9.13: der Reiter traegt jetzt ein Hintergrundbild
+        fuer das Ruhebild. Ohne multipart/form-data kaeme $_FILES leer an -
+        und zwar OHNE Fehlermeldung, was der unangenehmste Fall waere. */ ?>
+<form action="index.php" method="post" enctype="multipart/form-data">
   <?php echo db_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
@@ -771,6 +941,63 @@ if ($db_rahmen) {
   <?= db_e(db_t('EINST.L_TAFELSTEUERUNG')) ?></label>
 <p class="sm-hilfe"><?= db_t('EINST.H_TAFELSTEUERUNG') ?></p>
 
+<h2><?= db_e(db_t('EINST.H_RUHE')) ?></h2>
+<p class="sm-hilfe"><?= db_t('EINST.RUHE_ERKLAERUNG') ?></p>
+<div class="sm-feld">
+  <label for="ruhe_nach"><?= db_e(db_t('EINST.L_RUHE_NACH')) ?></label>
+  <input data-role="none" type="text" name="ruhe_nach" id="ruhe_nach"
+         value="<?= db_e($db_cfg['ruhe_nach']) ?>">
+</div>
+<p class="sm-hilfe"><?= sprintf(db_t('EINST.H_RUHE_NACH'), DB_RUHE_NACH_MIN, DB_RUHE_NACH_MAX) ?></p>
+<label><input data-role="none" type="checkbox" name="ruhe_uhr" value="1"<?= !empty($db_cfg['ruhe_uhr']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_RUHE_UHR')) ?></label>
+<label><input data-role="none" type="checkbox" name="ruhe_wetter" value="1"<?= !empty($db_cfg['ruhe_wetter']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_RUHE_WETTER')) ?></label>
+<p class="sm-hilfe"><?= db_t('EINST.H_RUHE_WETTER') ?></p>
+<div class="sm-feld">
+  <label for="ruhe_kacheln"><?= db_e(db_t('EINST.L_RUHE_KACHELN')) ?></label>
+  <input data-role="none" type="text" name="ruhe_kacheln" id="ruhe_kacheln"
+         value="<?= db_e($db_cfg['ruhe_kacheln']) ?>">
+</div>
+<p class="sm-hilfe"><?= sprintf(db_t('EINST.H_RUHE_KACHELN'), DB_RUHE_KACHELN_MAX) ?></p>
+<div class="sm-feld">
+  <label for="ruhe_seite"><?= db_e(db_t('EINST.L_RUHE_SEITE')) ?></label>
+  <select data-role="none" name="ruhe_seite" id="ruhe_seite">
+    <option value=""><?= db_e(db_t('EINST.L_RUHE_SEITE_KEINE')) ?></option>
+  <?php foreach ($db_seiten as $db_rs2) {
+        $db_rk = (string) (isset($db_rs2['schluessel']) ? $db_rs2['schluessel'] : ''); ?>
+    <option value="<?= db_e($db_rk) ?>"<?= ((string) $db_cfg['ruhe_seite'] === $db_rk) ? ' selected' : '' ?>><?= db_e(isset($db_rs2['name']) ? $db_rs2['name'] : $db_rk) ?></option>
+  <?php } ?>
+  </select>
+</div>
+<p class="sm-hilfe"><?= db_t('EINST.H_RUHE_SEITE') ?></p>
+<div class="sm-feld">
+  <label for="ruhe_hell"><?= db_e(db_t('EINST.L_RUHE_HELL')) ?></label>
+  <input data-role="none" type="text" name="ruhe_hell" id="ruhe_hell"
+         value="<?= db_e($db_cfg['ruhe_hell']) ?>">
+</div>
+<p class="sm-hilfe"><?= sprintf(db_t('EINST.H_RUHE_HELL'), DB_RUHE_HELL_MIN, DB_RUHE_HELL_MAX) ?></p>
+<div class="sm-feld">
+  <label for="ruhe_bild"><?= db_e(db_t('EINST.L_RUHE_BILD')) ?></label>
+  <input data-role="none" type="file" name="ruhe_bild" id="ruhe_bild" accept="image/jpeg,image/png,image/webp">
+</div>
+<p class="sm-hilfe"><?= sprintf(db_t('EINST.H_RUHE_BILD'), (int) (DB_RUHE_BILD_MAX / 1048576), DB_RUHE_BILD_KANTE) ?></p>
+<?php
+$db_bpfad = db_paths()['ruhebild'];
+if ((string) $db_cfg['ruhe_bild'] !== '' && is_file($db_bpfad)) {
+    $db_bm = @getimagesize($db_bpfad);
+    echo '<p class="sm-hilfe">' . db_e(sprintf(db_t('EINST.RUHE_BILD_DA'),
+        strtoupper((string) $db_cfg['ruhe_bild']),
+        (int) (is_array($db_bm) ? $db_bm[0] : 0),
+        (int) (is_array($db_bm) ? $db_bm[1] : 0))) . '</p>';
+    echo '<div class="sm-feld"><label for="ruhe_bild_weg">'
+       . db_e(db_t('EINST.L_RUHE_BILD_WEG')) . '</label>'
+       . '<input data-role="none" type="text" name="ruhe_bild_weg" id="ruhe_bild_weg" value=""></div>';
+} else {
+    echo '<p class="sm-hilfe">' . db_e(db_t('EINST.RUHE_BILD_KEINS')) . '</p>';
+}
+?>
+
 <div class="sm-knopfreihe">
 <button data-role="none" class="sm-btn sm-b-aktion" name="speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -779,16 +1006,23 @@ if ($db_rahmen) {
 <h2><?= db_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= db_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= db_t('EINST.SICH_WARNUNG') ?></div>
+<!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+     exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+     Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+     einen Download, der das Speichern verschluckt.
+
+     Und ZWEI GETRENNTE Knopfreihen: der Hausstandard mischt lesende und
+     schaltende Knoepfe nie in dieselbe Reihe. Bis 0.9.12 standen sie hier
+     nebeneinander - der harmlose Download und das Ueberschreiben der ganzen
+     Konfiguration, gleich gross und gleich weit vom Mauszeiger entfernt. -->
 <div class="sm-knopfreihe">
-  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
-       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
-       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
-       einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
     <?php echo db_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="db_sichern" value="1"><?= db_t('EINST.K_SICHERN') ?></button>
   </form>
+</div>
+<div class="sm-knopfreihe">
   <form action="index.php" method="post" enctype="multipart/form-data">
     <?php echo db_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -809,8 +1043,14 @@ if ($db_rahmen) {
 <form action="index.php" method="post">
   <?php echo db_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-boards">
+  <!-- Zwei Reihen: erst lesen, dann schalten. Der Hausstandard mischt beides
+       nie in dieselbe Reihe - "Struktur holen" fragt nur ab, "Von vorn
+       anfangen" verwirft jede Handarbeit. Bis 0.9.12 standen alle drei
+       nebeneinander. -->
   <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-lesen" name="struktur_holen" value="1"><?= db_e(db_t('BOARD.K_STRUKTUR')) ?></button>
+  </div>
+  <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" name="entwurf" value="ergaenzen"><?= db_e(db_t('BOARD.K_ENTWURF')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" name="entwurf" value="vonvorn"
           onclick="return confirm(<?= db_e(json_encode(strip_tags(html_entity_decode(db_t('BOARD.VONVORN_FRAGE'), ENT_QUOTES, 'UTF-8')))) ?>)"><?= db_e(db_t('BOARD.K_VONVORN')) ?></button>
@@ -858,7 +1098,12 @@ if ($db_rahmen) {
 <div class="sm-hinweis"><?= db_t('BOARD.ADRESSE_HINWEIS') ?></div>
 <?php } ?>
 
-<?php if ($db_ausgabe !== '') { ?>
+<?php /* Der Reiter mit: $db_ausgabe traegt auch die Ausgabe von Selbsttest,
+        Anmelde- und HTTP-Probe aus dem Reiter Test. Ohne diese Bedingung stand
+        das Ergebnis einer Anmeldeprobe zusaetzlich hier unter "Ausgabe" -
+        die Zeile im Reiter Test prueft den Reiter seit jeher mit, diese
+        nicht. */ ?>
+<?php if ($db_ausgabe !== '' && $db_tab === 'tab-boards') { ?>
 <h3><?= db_e(db_t('BOARD.H_AUSGABE')) ?></h3>
 <div class="sm-log"><?= db_e($db_ausgabe) ?></div>
 <?php } ?>
@@ -954,6 +1199,13 @@ if ($db_rahmen) {
 <?php } ?>
 <tr><td class="sm-mono">…&amp;aktion=tafel&amp;wach=1</td><td><?= db_t('LOX.SOUT_WACH') ?></td></tr>
 <tr><td class="sm-mono">…&amp;aktion=tafel&amp;hell=&lt;v.0&gt;</td><td><?= db_t('LOX.SOUT_HELL') ?></td></tr>
+<?php /* Nur zeigen, wenn das Ruhebild eingerichtet ist - der Endpunkt weist
+        den Befehl sonst mit GRUND=RUHE_AUS ab, und eine Zeile, die etwas
+        verspricht, was 409 antwortet, schickt den Anwender nach Loxone
+        Config statt in die Einstellungen. */ ?>
+<?php if (!empty($db_cfg['ruhe_nach'])) { ?>
+<tr><td class="sm-mono">…&amp;aktion=tafel&amp;ruhe=1</td><td><?= db_t('LOX.SOUT_RUHE') ?></td></tr>
+<?php } ?>
 </table>
 </div>
 
@@ -1129,9 +1381,22 @@ if (!$db_zeilen) { ?>
  */
 (function () {
 	var BAUSTEINE = <?= json_encode(array_map(function ($b) {
-		return array('uuid' => $b['uuid'], 'name' => $b['name'], 'kachel' => $b['kachel'],
-		             'loxtyp' => $b['loxtyp'], 'raum' => $b['raumname'], 'kat' => $b['katname'],
-		             'bekannt' => $b['bekannt'],
+		/* ALLE Schluessel mit isset lesen. Bis 0.9.12 standen 'raumname',
+		 * 'katname' und 'bekannt' hier nackt da - bei einer struktur.json,
+		 * die sie nicht traegt (von Hand gepflegt, oder von einer aelteren
+		 * Fassung geschrieben), gibt PHP 8 drei Warnungen aus, und die
+		 * stehen dann MITTEN im <script>-Block vor dem JSON. Der Designer
+		 * bekommt daraufhin gar keine Bausteinliste mehr. Dieselbe Falle wie
+		 * im Zweig 'fehlt' von db_seite_daten(), die dort seit 0.9.6
+		 * zugemacht ist - hier war sie offen geblieben. Gefunden von
+		 * Werkzeuge/rendern.py gegen eine handgeschriebene Struktur. */
+		return array('uuid' => isset($b['uuid']) ? $b['uuid'] : '',
+		             'name' => isset($b['name']) ? $b['name'] : '',
+		             'kachel' => isset($b['kachel']) ? $b['kachel'] : 'generisch',
+		             'loxtyp' => isset($b['loxtyp']) ? $b['loxtyp'] : '',
+		             'raum' => isset($b['raumname']) ? $b['raumname'] : '',
+		             'kat' => isset($b['katname']) ? $b['katname'] : '',
+		             'bekannt' => (int) (isset($b['bekannt']) ? $b['bekannt'] : 0),
 		             // Die erlaubten Befehle wandern mit, damit der
 		             // Schritt-Editor der Szene nur anbietet, was die
 		             // Kacheltabelle fuer genau diesen Typ nennt.
@@ -1165,7 +1430,22 @@ if (!$db_zeilen) { ?>
 	var geaendert = false;
 	var gezogen = null;
 
-	function e(t) { var d = document.createElement('div'); d.textContent = t == null ? '' : String(t); return d.innerHTML; }
+	/* Maskiert fuer Inhalt UND Attribut. Bis 0.9.12 stand hier nur
+	   textContent -> innerHTML; das ist die Serialisierung eines TEXTKNOTENS
+	   und ersetzt & < > - aber NICHT das Anfuehrungszeichen. In einem
+	   value="..." reisst ein Bausteinname wie  Lampe " Kueche  den
+	   Attributwert auf, und was dahinter steht, wird zu weiteren Attributen
+	   (x" onfocus="..."). Genau dieser Weg ist im Designer offen: der Name
+	   kommt ungefiltert aus struktur.json, und das Anfuehrungszeichen wird
+	   erst BEIM SPEICHERN entfernt - betroffen ist also die ganze Zeit, in der
+	   der Designer benutzt wird.
+	   Im Elementinhalt schadet die schaerfere Form nichts: &quot; stellt der
+	   Browser wieder als " dar. */
+	function e(t) {
+		var d = document.createElement('div');
+		d.textContent = t == null ? '' : String(t);
+		return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+	}
 	function schluessel(t) {
 		return String(t || '').toLowerCase()
 			.replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')

@@ -24,15 +24,17 @@
  *   werte    &seite=...    nur die Werte dieser Seite (JSON) - der Takt
  *   strom    &seite=...    dasselbe, aber geschoben (Server-Sent Events)
  *   roh                    das vollstaendige Abbild als JSON
+ *   ruhebild               das Hintergrundbild des Ruhebilds (Binaerdatei)
  *
  * Schaltend:
  *   befehl   &seite=...&uuid=...&befehl=...[&pin=...]
  *   szene    &seite=...&kachel=<Nr>[&pin=...]
  *            seite ist PFLICHT: die PIN haengt an der Seite, von der aus
  *            geschaltet wird - nicht am Baustein.
- *   tafel    &seite=... | &wach=0|1 | &hell=<0..100>
+ *   tafel    &seite=... | &wach=0|1 | &hell=<0..100> | &ruhe=0|1
  *            Nur wenn die Tafelsteuerung eingeschaltet ist. Sie wirkt allein
  *            auf die Anzeige, nie auf ein Geraet - deshalb ohne PIN.
+ *            &ruhe=1 legt das Ruhebild sofort auf, &ruhe=0 nimmt es weg.
  *
  * Der Endpunkt spricht NIE selbst mit dem Miniserver. Er liest den
  * Zwischenspeicher und legt Befehle in einer Warteschlange ab, die der
@@ -95,7 +97,7 @@ if (!hash_equals($db_soll, $db_ist)) {
 }
 
 /* ---------------- Aktion (Weissliste) ---------------- */
-$db_lesend = array('status', 'seiten', 'seite', 'werte', 'strom', 'roh');
+$db_lesend = array('status', 'seiten', 'seite', 'werte', 'strom', 'roh', 'ruhebild');
 $db_schaltend = array('befehl', 'szene', 'tafel');
 $db_aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
 if (!in_array($db_aktion, array_merge($db_lesend, $db_schaltend), true)) {
@@ -132,6 +134,37 @@ function db_json_raus($daten, $code = 200)
 
 if ($db_aktion === 'roh') {
     db_json_raus(db_abbild());
+}
+
+/* Das Hintergrundbild des Ruhebilds.
+ *
+ * Es liegt im Datenordner und wird NICHT ueber den Dateinamen ausgeliefert:
+ * der Pfad steht fest, und der Inhaltstyp kommt aus der Konfiguration, wo ihn
+ * der Hochladevorgang nach einer Pruefung mit getimagesize() eingetragen hat.
+ * Damit gibt es keinen Weg, ueber einen Parameter eine andere Datei oder
+ * einen anderen Typ zu erreichen.
+ *
+ * Als einzige Antwort dieses Endpunkts darf sie zwischengespeichert werden -
+ * ein Wandtablet soll ein unveraendertes Bild nicht alle paar Sekunden neu
+ * laden. 'private' verbietet dabei den Zwischenspeicher unterwegs; das Token
+ * steht in der Adresse. */
+if ($db_aktion === 'ruhebild') {
+    $db_typen = array('jpg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp');
+    $db_endung = (string) (isset($db_cfg['ruhe_bild']) ? $db_cfg['ruhe_bild'] : '');
+    $db_datei = db_paths()['ruhebild'];
+    if ($db_endung === '' || !isset($db_typen[$db_endung]) || !is_file($db_datei)) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        header('Cache-Control: no-store');
+        echo "FEHLER;OK=0;GRUND=KEIN_BILD\n";
+        exit;
+    }
+    header('Content-Type: ' . $db_typen[$db_endung]);
+    header('Content-Length: ' . (string) filesize($db_datei));
+    header('Cache-Control: private, max-age=300');
+    header('X-Content-Type-Options: nosniff');
+    readfile($db_datei);
+    exit;
 }
 
 if ($db_aktion === 'seiten') {
@@ -242,13 +275,18 @@ if ($db_aktion === 'tafel') {
                            'meldung' => 'Die Tafelsteuerung ist im Reiter Einstellungen '
                                       . 'abgeschaltet.'), 403);
     }
+    /* ERST alles pruefen, DANN einmal schreiben. Bis 0.9.12 schrieb jeder
+     * Zweig einzeln: ein Aufruf mit gueltiger Seite und ungueltigem 'hell'
+     * hatte die Seite schon umgeschaltet, bevor er mit 400 abgewiesen wurde -
+     * eine abgewiesene Anfrage, die trotzdem gewirkt hat. */
     $db_getan = array();
+    $db_felder = array();
     if ($db_seite !== '') {
         if (db_seite($db_seite) === null) {
             db_json_raus(array('ok' => 0, 'grund' => 'SEITE_UNBEKANNT',
                                'meldung' => 'Diese Seite gibt es nicht.'), 404);
         }
-        db_tafel_setzen('seite', $db_seite);
+        $db_felder['seite'] = $db_seite;
         $db_getan[] = 'seite=' . $db_seite;
     }
     if (isset($_GET['wach'])) {
@@ -256,7 +294,7 @@ if ($db_aktion === 'tafel') {
             db_json_raus(array('ok' => 0, 'grund' => 'WERT_UNGUELTIG',
                                'meldung' => 'wach ist 0 oder 1.'), 400);
         }
-        db_tafel_setzen('wach', (int) $_GET['wach']);
+        $db_felder['wach'] = (int) $_GET['wach'];
         $db_getan[] = 'wach=' . (int) $_GET['wach'];
     }
     if (isset($_GET['hell'])) {
@@ -265,13 +303,30 @@ if ($db_aktion === 'tafel') {
             db_json_raus(array('ok' => 0, 'grund' => 'WERT_UNGUELTIG',
                                'meldung' => 'hell ist eine Zahl von 0 bis 100.'), 400);
         }
-        db_tafel_setzen('hell', (int) $db_h);
+        $db_felder['hell'] = (int) $db_h;
         $db_getan[] = 'hell=' . (int) $db_h;
+    }
+    if (isset($_GET['ruhe'])) {
+        if (!preg_match('/^[01]$/', (string) $_GET['ruhe'])) {
+            db_json_raus(array('ok' => 0, 'grund' => 'WERT_UNGUELTIG',
+                               'meldung' => 'ruhe ist 0 oder 1.'), 400);
+        }
+        if (empty($db_cfg['ruhe_nach'])) {
+            /* Nicht stillschweigend nichts tun: wer das Ruhebild aus Loxone
+             * schaltet und es ist gar nicht eingerichtet, sucht sonst am
+             * falschen Ende. */
+            db_json_raus(array('ok' => 0, 'grund' => 'RUHE_AUS',
+                               'meldung' => 'Das Ruhebild ist im Reiter Einstellungen '
+                                          . 'abgeschaltet (Ruhebild nach 0 Sekunden).'), 409);
+        }
+        $db_felder['ruhe'] = (int) $_GET['ruhe'];
+        $db_getan[] = 'ruhe=' . (int) $_GET['ruhe'];
     }
     if (!$db_getan) {
         db_json_raus(array('ok' => 0, 'grund' => 'NICHTS_ANGEGEBEN',
-                           'meldung' => 'Erwartet wird seite=, wach= oder hell=.'), 400);
+                           'meldung' => 'Erwartet wird seite=, wach=, hell= oder ruhe=.'), 400);
     }
+    db_tafel_befehl($db_felder);
     db_json_raus(array('ok' => 1, 'meldung' => implode(', ', $db_getan)));
 }
 
@@ -307,6 +362,21 @@ if (!db_pin_stimmt($db_seite, isset($_GET['pin']) ? (string) $_GET['pin'] : ''))
     db_json_raus(array('ok' => 0, 'grund' => 'PIN',
                        'meldung' => 'Die PIN stimmt nicht.'), 403);
 }
+/* Die ROHLISTE - wie bis 0.9.12. Sie bedient 'aktion=befehl', und der sucht
+ * ueber die UUID; ein Index ist dabei nie im Spiel, die Rohliste war dort
+ * also nie falsch.
+ *
+ * Der Szenen-Zweig weiter unten nimmt dagegen die GEFILTERTE Liste, denn er
+ * greift ueber die laufende Nummer - und die vergibt die Anzeigeseite ueber
+ * die gefilterte. Genau dieser Unterschied hat bis 0.9.12 die falsche Szene
+ * ausgeloest.
+ *
+ * In einem Zwischenstand von 0.9.13 stand hier die gefilterte Liste fuer
+ * BEIDE Aktionen. Das behob denselben Fehler, nahm aber nebenbei einen Weg
+ * weg, der nie kaputt war: eine auf 'unsichtbar' gestellte Kachel liess sich
+ * danach auch ueber 'aktion=befehl' nicht mehr schalten - aus Loxone, aus
+ * einem Lesezeichen, aus einem Skript. Eine Berichtigung darf nur den Fehler
+ * beheben, den sie behebt. */
 $db_kacheln = isset($db_s['kacheln']) && is_array($db_s['kacheln']) ? $db_s['kacheln'] : array();
 
 /* ---------------- Szene: mehrere Befehle auf einen Druck ---------------- */
@@ -319,6 +389,9 @@ if ($db_aktion === 'szene') {
                                       . 'auf dieser Seite.'), 400);
     }
     $db_nr = (int) $db_nr;
+    /* Die GEFILTERTE Liste - die Anzeigeseite nummeriert ueber sie. Die
+     * Begruendung steht bei db_kacheln_sichtbar() in db_lib.php. */
+    $db_kacheln = db_kacheln_sichtbar($db_s);
     if (!isset($db_kacheln[$db_nr]) || !is_array($db_kacheln[$db_nr])
             || (string) (isset($db_kacheln[$db_nr]['kachel'])
                          ? $db_kacheln[$db_nr]['kachel'] : '') !== 'szene') {
@@ -391,7 +464,8 @@ if (!preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{16}$
  * ein Weiss. Jeder Farbwechsel lief damit in HTTP 400 - der Baustein stand
  * in der Kacheltabelle, war aber nicht bedienbar.
  *
- * Erlaubt sind jetzt zusaetzlich ( ) , und das Leerzeichen. Weiterhin NICHT
+ * Erlaubt sind jetzt zusaetzlich ( ) und das Komma - fuer hsv(), temp()
+ * und lumitech(). Weiterhin NICHT
  * erlaubt sind & ? # % " ' < > und der Backslash: der Befehl wandert in die
  * Adresse einer Anfrage an den Miniserver, und ein & oder ? dort haenge
  * einen zweiten Parameter an. Die Laenge steigt auf 120 Zeichen, weil
@@ -403,7 +477,7 @@ if (!preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{16}$
  * diesen Bausteintyp nennt. Diese Regel hier haelt nur Zeichen fern, die
  * die Adresse zerlegen wuerden.
  */
-if (!preg_match('#^[A-Za-z0-9_./+:() ,-]{1,120}$#', $db_befehl)) {
+if (!preg_match('#^[A-Za-z0-9_./+:(),-]{1,120}$#', $db_befehl)) {
     db_json_raus(array('ok' => 0, 'grund' => 'BEFEHL_UNGUELTIG',
                        'meldung' => 'Der Befehl enthaelt unerlaubte Zeichen.'), 400);
 }
