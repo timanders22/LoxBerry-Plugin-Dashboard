@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.13 — die Anmeldung ist am Gerät gemessen, die Wirkung der
+> **Fassung 0.9.14 — die Anmeldung ist am Gerät gemessen, die Wirkung der
 > Befehle nicht.** Am 17.08.2026 an einem Miniserver mit Firmware 17.1.7.27
 > nachgemessen: Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung
 > mit gespeichertem Token, die Strukturdatei (638 Bausteine, 3539 Zustände)
@@ -21,6 +21,47 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.14
+
+- **Das Auswahlfeld hatte gar keinen Pfeil.** Die eigene Feldregel dieser
+  Seite setzte `background: #fff` — die Kurzform löscht das
+  Hintergrundbild, mit dem die LoxBerry-Oberfläche den Pfeil zeichnet.
+  Übrig blieb ein Feld, das aussieht wie ein Textfeld; wer nicht
+  hineinklickt, erfährt nicht, dass eine Auswahl dahintersteht. Am
+  05.09.2026 im Browser gegen die Rahmen-CSS des Geräts gemessen (LoxBerry 4.0.0.15)
+  und behoben: die Seite zeichnet den Pfeil jetzt selbst
+  (`Regeln/04`). Sonst ist an dieser Fassung nichts geändert.
+
+### Der Dienst konnte sein Protokoll verlieren, ohne dass es auffiel
+
+`log/plugins` liegt auf einer Ramdisk (`/dev/zram0`). Wird sie geleert — beim
+Neustart, durch LoxBerrys `log_maint`, oder von Hand —, ist die Datei fort. Ein
+`RotatingFileHandler`, der sie beim Start **einmal** geöffnet hat, schreibt
+danach bis zum nächsten Neustart in einen gelöschten Inode: keine
+Fehlermeldung, keine Datei, kein Hinweis. Auch die Rotation greift dann nicht
+mehr.
+
+Diese Fassung benutzt deshalb `WachsameRotation` in `bin/dashboard_dienst.py` — einen
+umlaufenden Handler, der vor jeder Zeile Gerätenummer und Inode vergleicht und
+nötigenfalls neu öffnet. Die Standardbibliothek hat für den einen Fall den
+`WatchedFileHandler` und für den anderen den `RotatingFileHandler`, aber
+nichts, was beides kann; deshalb die eigene Klasse.
+
+Auf dem LoxBerry geeicht, vier Prüfungen und in beide Richtungen: schreiben,
+nach dem Löschen weiterschreiben, Umlauf bei Überlänge, nach dem Umlauf erneut
+löschen. Mit dem alten Handler ist die Zeile nach dem Löschen verloren und
+bleibt es, mit dem neuen steht sie in der wieder angelegten Datei. Auf einem
+Windows-Arbeitsplatz lässt sich das nicht messen — dort kann eine offene Datei
+gar nicht gelöscht werden.
+
+Aufgefallen ist die Bauart am Heimkino-Plugin, dessen Dienst sieben Stunden
+ohne Protokolldatei lief, und am laufenden Gerät belegt: der
+Midea2Lox-Dienst hielt `midea2lox.log (deleted)` offen, während unter
+demselben Namen längst eine neue Datei fortgeschrieben wurde — von außen sah
+das Plugin gesund aus. Elf Linien tragen dieselbe Bauart; alle elf sind am
+06.09.2026 nachgezogen worden.
+
 
 ## Warum ein Dienst dazwischen hängt
 
