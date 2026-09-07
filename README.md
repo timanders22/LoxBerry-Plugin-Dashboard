@@ -4,11 +4,13 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.15 — die Anmeldung ist am Gerät gemessen, die Wirkung der
-> Befehle nicht.** Am 17.08.2026 an einem Miniserver mit Firmware 17.1.7.27
-> nachgemessen: Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung
-> mit gespeichertem Token, die Strukturdatei (638 Bausteine, 3539 Zustände)
-> und der HTTP-Rückfall `jdev/sps/io/<uuid>/state`. Alles Übrige ist gegen
+> **Fassung 0.9.19 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
+> Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
+> gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
+> HTTP-Rückfall `jdev/sps/io/<uuid>/state` und die **Wirkung der
+> Kachel-Befehle** (an einer Steckdose über den Endpunkt geschaltet, nach 1 s
+> im Abbild, Ausgangszustand wiederhergestellt; vier Gegenproben abgewiesen). Alles Übrige ist gegen
 > eine Attrappe gemessen, die streng nach den Loxone-Dokumenten gebaut ist.
 > Deshalb 0.9.13 und nicht 1.0.0. Was ungeprüft bleibt, steht unten unter
 > *Was ungeprüft bleibt* — vollständig und ohne Beschönigung.
@@ -229,6 +231,22 @@ Zeitplan, Verlaufskurve auf den Kacheln, das Ruhebild (siehe unten), und die
 Steuerung der Anzeige durch Loxone (Seitenwechsel, Wecken, Helligkeit,
 Ruhebild) über einen virtuellen Ausgang.
 
+### Der Ambient-Modus
+
+Uhrzeit, Datum und Wetter stehen **dauerhaft** über den Kacheln, das
+Hintergrundbild liegt dahinter — und die Kacheln bleiben stehen und bleiben
+bedienbar. Über einem Bild bekommen sie so viel Deckung, dass sie auch auf
+einem hellen Foto lesbar sind.
+
+Dem **Ambient-Modus** der Loxone-App nachempfunden. Nachgebaut ist das
+*Verhalten*; eine Schnittstelle dafür gibt es bei Loxone nicht, und dieses
+Plugin spricht keine an.
+
+**Nicht zu verwechseln mit dem Ruhebild darunter.** Der Ambient-Modus
+*gestaltet* die Tafel, das Ruhebild tritt an ihre *Stelle* — bei Loxone heißt
+das Bildschirmschoner. Beide sind einzeln schaltbar, beide ab Werk aus, und
+beide benutzen dasselbe Hintergrundbild und dieselbe Wetterquelle.
+
 ### Das Ruhebild
 
 Nach einer einstellbaren Zeit ohne Berührung tritt die Bedienung zurück. Es
@@ -238,17 +256,73 @@ Hintergrundbild. Jede Berührung holt die Tafel zurück, und **diese eine
 Berührung schaltet nichts**: ein Griff im Vorbeigehen soll kein Fehlgriff
 werden.
 
-Es ist dem **Ambient Mode** der Loxone-App nachempfunden. Nachgebaut ist das
-*Verhalten* — der Ambient Mode ist eine Betriebsart der App (ab App und
-Config 14.x, nur Querformat, mindestens 1024×700), keine Schnittstelle. Dieses
-Plugin spricht keine an und benutzt ausschließlich die eigenen Werte.
+Es ist dem **Bildschirmschoner** der Loxone-App nachempfunden — nicht dem
+Ambient-Modus darüber, der die Tafel *gestaltet*, statt an ihre Stelle zu
+treten. Nachgebaut ist das *Verhalten*; beides sind Betriebsarten der App (ab
+App und Config 14.x, nur Querformat, mindestens 1024×700), keine
+Schnittstellen. Dieses Plugin spricht keine an und benutzt ausschließlich die
+eigenen Werte.
 
-Die Wetterzeile erscheint nur, wenn in Loxone ein Wetterdienst eingerichtet
-ist; fehlt der Klartext zu einer Wetterlage in der Anlage, steht die Zahl da
-und keine erfundene Beschreibung. Je Kachel steht **ein** Wert — der
+Die Wetterzeile kommt aus einer von **zwei** Quellen (siehe unten); fehlt der
+Klartext zu einer Wetterlage in der Anlage, steht die Zahl da und keine
+erfundene Beschreibung. Je Kachel steht **ein** Wert — der
 Hauptzustand aus der Kacheltabelle, nicht irgendeiner. Solange das Ruhebild
 aufliegt, blättert die Seitenrotation nicht weiter, und eine Nachtabsenkung
 wirkt zusätzlich.
+
+### Der Eco-Modus
+
+Die dritte Absenkung — und die einzige, die nach der **Berührung** geht statt
+nach der Uhr. Nach einer einstellbaren Zeit ohne Berührung wird die Anzeige
+dunkler, und die **Kacheln bleiben dabei stehen** und bleiben ablesbar. Jede
+Berührung und jeder Tastendruck hebt ihn sofort wieder auf.
+
+Damit hat das Plugin dieselben drei Dinge wie die Loxone-App, und getrennt wie
+dort:
+
+| | Loxone | dieses Plugin |
+|---|---|---|
+| die Tafel **gestalten** | Ambient-Modus | `ambient` |
+| an ihre **Stelle** treten | Bildschirmschoner | Ruhebild (`ruhe_nach`) |
+| sie **absenken**, Kacheln bleiben | Eco-Modus | `eco_nach` |
+
+Alle drei sind einzeln schaltbar und ab Werk aus, und alle drei können
+nebeneinander laufen. Trifft der Eco-Modus mit der **Nachtabsenkung**
+zusammen, gilt der **dunklere** von beiden — beide sagen „jetzt soll es dunkel
+sein", und die schärfere Aussage gewinnt. Ein **Helligkeitsbefehl aus Loxone**
+ist etwas anderes, nämlich eine Ansage, und steht über beiden.
+
+Steht die Helligkeit auf 0, wird der Bildschirm schwarz; die erste Berührung
+weckt ihn dann, **ohne etwas zu schalten** — dasselbe Versprechen wie beim
+Ruhebild.
+
+### Die Wetterzeile: zwei Quellen, nie gemischt
+
+Die Zeile unter der Uhr — im Ambient-Modus wie im Ruhebild — kann aus zwei
+Quellen kommen:
+
+1. **Loxones eigener Wetterdienst** (Ereignistabelle Kennung 7). Das ist die
+   Vorgabe. Hat die Anlage keinen, bleibt die Zeile leer.
+2. **Drei selbst gewählte Bausteine** — Lage, Temperatur und eine dritte
+   Angabe. Wer eine eigene Station betreibt (Ecowitt, Weather4Loxone, ein
+   Fühler am Haus), hat deren Werte längst als gewöhnliche Bausteine in
+   Loxone. Das Plugin liest sie ohnehin schon: **kein MQTT, keine zweite
+   Schnittstelle.**
+
+**Sobald einer der drei gesetzt ist, gilt ausschließlich diese Auswahl.**
+Gemischt stünden zwei Messungen nebeneinander in einer Zeile, ohne dass
+jemand sieht, welche woher kommt — eine Temperatur vom Dach neben einer aus
+der Wolke.
+
+Zur Auswahl stehen alle Bausteine, die eine **Zahl oder einen Text** tragen;
+eine Jalousie ist keine Wetterangabe. Ein Baustein, den es nicht mehr gibt,
+wird beim Speichern **abgewiesen** statt stillschweigend geleert — sonst wäre
+eine gelöschte Wahl ein stiller Rückfall auf die andere Quelle.
+
+Unter der Auswahl steht, **wie die Zeile im Augenblick aussähe**. Das ist
+nicht Zierde: an einer echten Anlage gemessen liefert Weather4Loxone seinen
+Baustein `Wetter aktuell` leer, während `Wetter Heute samt Wettertyp` den
+Text trägt. Wer das erst am Tablet merkt, sucht lange.
 
 ## Sicherheit
 
@@ -272,11 +346,11 @@ wirkt zusätzlich.
 
 ## Was ungeprüft bleibt
 
-Ob die Token-Anmeldung auf Ihrer Firmware durchgeht, ob die Kachel-Befehle am
-Gerät die erwartete Wirkung haben und wie flüssig sich das Dashboard bei Ihrer
-Anzahl Bausteine anfühlt. Für die ersten beiden Fragen gibt es im Reiter
-*Test* je einen Knopf, der sie an Ihrer Anlage **misst** statt sie zu
-vermuten.
+Ob die Token-Anmeldung auf **Ihrer** Firmware durchgeht und wie flüssig sich
+das Dashboard bei Ihrer Anzahl Bausteine anfühlt. Anmeldung und Kachel-Befehle
+sind an *einer* Anlage gemessen (07.09.2026, 17.2.8.28) — das ist keine
+Zusage für jede. Für beide Fragen gibt es im Reiter *Test* je einen Knopf, der
+sie an Ihrer Anlage **misst** statt sie zu vermuten.
 
 Namentlich ungeprüft und deshalb hier genannt:
 

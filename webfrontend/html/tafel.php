@@ -73,6 +73,15 @@ $konf = array(
     /* Nur die Tatsache, dass eines hinterlegt ist - der Dateiname geht die
      * Anzeigeseite nichts an, sie holt es ueber aktion=ruhebild. */
     'ruhe_bild'    => ((string) $cfg['ruhe_bild'] !== '' && is_file(db_paths()['ruhebild'])) ? 1 : 0,
+    /* Der Ambient-Modus: Uhr, Datum und Wetter dauerhaft ueber den Kacheln,
+     * das Hintergrundbild dahinter. Die Kacheln bleiben stehen und bleiben
+     * bedienbar - das ist der Unterschied zum Ruhebild. */
+    'ambient'      => !empty($cfg['ambient']) ? 1 : 0,
+    /* Der Eco-Modus: Absenkung nach Untaetigkeit, die Kacheln bleiben stehen.
+     * 0 heisst nie - dann ruehrt die Anzeigeseite den Schleier gar nicht an. */
+    'eco_nach'     => (int) $cfg['eco_nach'] > 0
+                      ? max(DB_ECO_NACH_MIN, min(DB_ECO_NACH_MAX, (int) $cfg['eco_nach'])) : 0,
+    'eco_hell'     => max(DB_ECO_HELL_MIN, min(DB_ECO_HELL_MAX, (int) $cfg['eco_hell'])),
 );
 $seitenliste = array();
 foreach ($seiten as $s) {
@@ -101,6 +110,10 @@ foreach ($seiten as $s) {
   --rand:<?= $dunkel ? '#2e3540' : '#dde3ea' ?>;
   --an:#6dac20; --anweich:<?= $dunkel ? '#2c4114' : '#e8f3d8' ?>;
   --aus:<?= $dunkel ? '#4a5361' : '#aab4c0' ?>;
+  /* Kachelfarbe ueber einem Hintergrundbild: dieselbe Farbe, aber deckend
+     genug zum Lesen. rgba statt einer zweiten Farbwahl - so bleibt es bei
+     EINER Farbentscheidung weiter oben. */
+  --kachelamb:<?= $dunkel ? 'rgba(30,35,43,.82)' : 'rgba(255,255,255,.86)' ?>;
   --warn:#e08a24; --fehl:#d0453c;
   --r:16px;
 }
@@ -132,6 +145,29 @@ body.gestoert #stoerband{display:block}
 /* Nachtabsenkung. Ein eigener Schleier statt CSS-filter auf dem Koerper:
    filter erzeugt einen neuen Bezugsrahmen, und die fest stehenden Elemente
    (PIN-Fenster, Stoerband) sprangen dadurch an die falsche Stelle. */
+/* ---------- Ambient-Modus ----------
+   Die Tafel selbst, gestaltet. Der Kopf traegt Uhrzeit, Datum und Wetter,
+   dahinter liegt das Hintergrundbild; die Kacheln bleiben stehen und bleiben
+   bedienbar. Nachempfunden dem Ambient-Modus der Loxone-App - nachgebaut ist
+   das Verhalten, eine Schnittstelle dafuer gibt es nicht.
+
+   Ueber dem Bild bekommen die Kacheln etwas Deckung, sonst ist auf einem
+   hellen Foto nichts zu lesen. Ohne Bild bleibt alles wie bisher. */
+body.ambient{background-size:cover;background-position:center;background-attachment:fixed}
+body.ambient .k{background:var(--kachelamb);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+body.ambient header h1{text-shadow:0 1px 3px rgba(0,0,0,.35)}
+#ambientkopf{display:none;padding:min(4vh,34px) min(5vw,44px) min(2vh,14px)}
+body.ambient #ambientkopf.an{display:block}
+#ambientkopf .datum{font-size:min(3vw,22px);opacity:.75;letter-spacing:.01em}
+#ambientkopf .uhr{font-size:min(13vw,116px);font-weight:250;line-height:.98;
+  letter-spacing:-.02em;font-variant-numeric:tabular-nums;margin-top:.06em}
+#ambientkopf .wetter{font-size:min(3vw,22px);opacity:.82;margin-top:.5em;
+  display:flex;flex-wrap:wrap;gap:0 1.1em;align-items:baseline}
+#ambientkopf .wetter b{font-weight:600;font-size:1.35em}
+/* Hochkant ist der grosse Kopf zu teuer - er wird kleiner, verschwindet aber
+   nicht: Uhrzeit ist das, wofuer ein Wandtablet im Flur da ist. */
+@media (orientation:portrait){ #ambientkopf .uhr{font-size:min(18vw,90px)} }
+
 /* ---------- Ruhebild ----------
    Es liegt UNTER dem Nachtschleier (z-index 40): eine Nachtabsenkung gilt
    auch fuer das Ruhebild. Und ueber allem anderen, damit kein Knopf der
@@ -255,6 +291,12 @@ input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px
   </nav>
   <?php } ?>
 </header>
+
+<div id="ambientkopf" aria-hidden="true">
+  <div class="datum" id="amb_datum"></div>
+  <div class="uhr" id="amb_uhr">--:--</div>
+  <div class="wetter" id="amb_wetter"></div>
+</div>
 
 <div class="zeile">
   <span class="punkt" id="punkt"></span>
@@ -858,9 +900,33 @@ BAUER.fehlt = function(k, w){
 };
 
 /* ---------- Zeichnen ---------- */
+/* Aus der Loxone-Formatangabe die reine Einheit machen.
+ *
+ * Loxone schreibt das Format eines Analogwerts als printf-Angabe: "%.1f kWh",
+ * "%.0f Liter", "%.1f %%". Auf der Kachel steht die Zahl schon formatiert
+ * daneben - hier wird nur der Rest gebraucht.
+ *
+ * Am Geraet gemessen (07.09.2026, 196 Kacheln mit Einheit an einer echten
+ * Anlage) hatte die erste Fassung zwei Luecken:
+ *
+ *   "%.1f %%"  ->  "%%"      falsch, 8 Kacheln: auf dem Tablet stand
+ *                            "64,0 %%" statt "64,0 %". '%%' ist die
+ *                            printf-Maskierung EINES Prozentzeichens.
+ *   "<v.u>"    ->  "<v.u>"   falsch, 1 Kachel: das ist Loxones Platzhalter
+ *                            fuer die Einheit, kein Text zum Anzeigen.
+ *
+ * Beides fiel nicht auf, weil es keine Formatangabe ohne Einheit betrifft
+ * und die Zeichenkette kurz genug fuer die Laengenschranke unten ist.
+ * Die Schranke faengt nur Ueberlanges ab, nicht Falsches.
+ */
 function einheit_kurz(f){
   if(!f) return "";
-  var m = String(f).replace(/%[\d.]*[a-zA-Z]/,"").replace(/&deg;/g,"°").trim();
+  var m = String(f)
+    .replace(/<v[^>]*>/g, "")          /* Platzhalter <v>, <v.1>, <v.u> */
+    .replace(/%[\d.]*[a-zA-Z]/g, "")   /* Formatangabe %.1f, %.0f, %d   */
+    .replace(/%%/g, "%")               /* maskiertes Prozentzeichen     */
+    .replace(/&deg;/g, "°")
+    .trim();
   return m.length>6?"":m;
 }
 
@@ -1115,11 +1181,20 @@ function stand_zeigen(d){
    sonst spraenge die Seite bei jedem Takt erneut um und waere nicht mehr
    bedienbar. */
 var hand_hell = null;
+/* Zwei sehr verschiedene Dinge stehen in hand_hell: eine ANSAGE aus Loxone
+   und die Fuenf-Minuten-Gnade nach einer Beruehrung. Der Eco-Modus darf die
+   Gnade beenden, die Ansage nicht - also wird vermerkt, woher der Wert kam. */
+var hand_von_beruehrung = false;
 function tafel_befolgen(t){
   if (!t || !t.nr || t.nr <= letzte_tafel_nr) { return; }
   letzte_tafel_nr = t.nr;
-  if (t.hell >= 0) { hand_hell = t.hell; schleier_setzen(); }
-  if (t.wach === 1) { hand_hell = null; wach(); schleier_setzen(); }
+  if (t.hell >= 0) { hand_hell = t.hell; hand_von_beruehrung = false; schleier_setzen(); }
+  /* "wach" heisst wach: das hebt auch den Eco-Modus auf, und seine Frist
+     laeuft von vorn an - sonst kaeme er eine Sekunde spaeter zurueck. */
+  if (t.wach === 1) {
+    hand_hell = null; hand_von_beruehrung = false; wach();
+    eco_wegnehmen(); eco_frist_neu(); schleier_setzen();
+  }
   /* -1 heisst "nichts gesagt" - nur 0 und 1 schalten. Nach dem Wegnehmen
      laeuft die Frist wieder an: sonst waere das Ruhebild nach einem einzigen
      '&ruhe=0' aus Loxone stillgelegt, bis ein Mensch das Tablet beruehrt -
@@ -1149,7 +1224,20 @@ function ist_nacht(){
 function schleier_setzen(){
   var el = document.getElementById("nachtschleier");
   if (!el) { return; }
-  var hell = (hand_hell !== null) ? hand_hell : (ist_nacht() ? KONF.nacht_hell : 100);
+  /* Drei Quellen, und die Reihenfolge ist eine Entscheidung:
+       - Eine Ansage aus Loxone (oder die Gnade nach einer Beruehrung) steht
+         ueber allem. Wer ausdruecklich etwas sagt, wird nicht ueberstimmt.
+       - Sonst gilt der DUNKLERE von Nacht und Eco. Beide sagen "jetzt soll es
+         dunkel sein"; die schaerfere Aussage gewinnt. Der hellere zu nehmen
+         hiesse, die Nacht durch Untaetigkeit aufzuhellen. */
+  var hell;
+  if (hand_hell !== null) {
+    hell = hand_hell;
+  } else {
+    hell = 100;
+    if (ist_nacht()) { hell = Math.min(hell, KONF.nacht_hell); }
+    if (eco_an)      { hell = Math.min(hell, KONF.eco_hell); }
+  }
   el.style.opacity = String(Math.max(0, Math.min(1, (100 - hell) / 100)));
   el.style.pointerEvents = hell <= 0 ? "auto" : "none";
 }
@@ -1158,11 +1246,61 @@ function schleier_setzen(){
 document.addEventListener("pointerdown", function(){
   if (hand_hell === null && !ist_nacht()) { return; }
   hand_hell = 100;
+  hand_von_beruehrung = true;
   schleier_setzen();
   clearTimeout(window._nachtfrist);
-  window._nachtfrist = setTimeout(function(){ hand_hell = null; schleier_setzen(); }, 300000);
+  window._nachtfrist = setTimeout(function(){
+    hand_hell = null; hand_von_beruehrung = false; schleier_setzen();
+  }, 300000);
 }, true);
 setInterval(schleier_setzen, 30000);
+
+/* ---------- Eco-Modus ----------
+
+   Die dritte Absenkung - und die einzige, die nach der BERUEHRUNG geht statt
+   nach der Uhr. Die Loxone-App trennt dieselben drei Dinge: der Ambient-Modus
+   gestaltet die Tafel, der Bildschirmschoner tritt an ihre Stelle, und Eco
+   senkt sie ab, wenn niemand da ist. Die Kacheln bleiben dabei STEHEN und
+   bleiben ablesbar - das ist der Unterschied zum Ruhebild.
+
+   Beide koennen nebeneinander laufen: das Ruhebild liegt unter dem Schleier,
+   ein abgesenktes Ruhebild ist also kein Widerspruch, sondern der Fall
+   "lange niemand da". */
+var eco_an = false, eco_frist = null;
+function eco_moeglich(){ return KONF.eco_nach > 0; }
+function eco_zeigen(){
+  if (!eco_moeglich() || eco_an) { return; }
+  eco_an = true;
+  /* Die Gnade nach einer Beruehrung ist jetzt vorbei. Ohne das haette eine
+     Beruehrung um Mitternacht den Eco-Modus fuer fuenf Minuten stillgelegt -
+     bei einer Eco-Frist von 60 s waere die Gnade die laengere Aussage
+     gewesen, und der Eco-Modus haette nachts nie gegriffen. Eine Ansage aus
+     Loxone bleibt unangetastet. */
+  if (hand_von_beruehrung) { hand_hell = null; hand_von_beruehrung = false; }
+  schleier_setzen();
+}
+function eco_wegnehmen(){
+  if (!eco_an) { return; }
+  eco_an = false;
+  schleier_setzen();
+}
+function eco_frist_neu(){
+  if (!eco_moeglich()) { return; }
+  clearTimeout(eco_frist);
+  eco_frist = setTimeout(eco_zeigen, KONF.eco_nach * 1000);
+}
+if (eco_moeglich()) {
+  /* Eigene Lauscher statt eines Eingriffs in die bestehenden. Das ist hier
+     erlaubt: stopPropagation des Ruhebilds haelt Lauscher auf ANDEREN Knoten
+     auf, nicht die auf demselben - dieser laeuft also auch bei der
+     Beruehrung, die das Ruhebild wegnimmt. */
+  document.addEventListener("pointerdown", function(){ eco_wegnehmen(); eco_frist_neu(); }, true);
+  document.addEventListener("keydown",     function(){ eco_wegnehmen(); eco_frist_neu(); }, true);
+  document.addEventListener("visibilitychange", function(){
+    if (document.visibilityState === "visible") { eco_wegnehmen(); eco_frist_neu(); }
+  });
+  eco_frist_neu();
+}
 
 /* ---------- Seitenrotation ---------- */
 var letzte_beruehrung = 0;
@@ -1210,9 +1348,47 @@ if (KONF.vollbild) {
   }, {once:true});
 }
 
+/* ---------- Ambient-Modus ----------
+
+   Uhrzeit, Datum und Wetter dauerhaft ueber den Kacheln, das Hintergrundbild
+   dahinter. Kein Zeitablauf, kein Zurueckziehen der Bedienung - das
+   unterscheidet ihn vom Ruhebild darunter.
+
+   Die Uhr und die Wetterzeile teilen sich die Bausteine mit dem Ruhebild;
+   zwei Kopien derselben Formatierung liefen auseinander. */
+function ambient_datum(j){
+  try {
+    return j.toLocaleDateString(undefined,
+      {weekday:"long", day:"numeric", month:"long"});
+  } catch(x) { return j.getDate()+"."+(j.getMonth()+1)+"."+j.getFullYear(); }
+}
+
+function ambient_stellen(){
+  if (!KONF.ambient) { return; }
+  var j = new Date();
+  document.getElementById("amb_uhr").textContent =
+      String(j.getHours()).padStart(2,"0") + ":" + String(j.getMinutes()).padStart(2,"0");
+  document.getElementById("amb_datum").textContent = ambient_datum(j);
+  wetterzeile_fuellen(document.getElementById("amb_wetter"));
+}
+
+if (KONF.ambient) {
+  document.body.classList.add("ambient");
+  document.getElementById("ambientkopf").classList.add("an");
+  document.getElementById("ambientkopf").setAttribute("aria-hidden", "false");
+  if (KONF.ruhe_bild) {
+    document.body.style.backgroundImage = 'url("' + BASIS + '&aktion=ruhebild")';
+  }
+  ambient_stellen();
+  setInterval(ambient_stellen, 1000);
+  document.addEventListener("visibilitychange", function(){
+    if (document.visibilityState === "visible") { ambient_stellen(); }
+  });
+}
+
 /* ---------- Ruhebild ----------
 
-   Dem Ambient Mode der Loxone-App nachempfunden: nach einer Weile ohne
+   Dem Bildschirmschoner der Loxone-App nachempfunden: nach einer Weile ohne
    Beruehrung tritt die Bedienung zurueck und es bleibt, was man aus drei
    Metern Entfernung lesen will - Uhrzeit, Datum, Wetter und ein paar Werte.
    Jede Beruehrung holt die Tafel zurueck.
@@ -1257,7 +1433,24 @@ function ruhe_uhr_stellen(){
 
 function ruhe_wetterzeile(){
   var el = document.getElementById("ruhe_wetter");
-  if (!KONF.ruhe_wetter || !WETTER) { el.textContent = ""; return; }
+  if (!KONF.ruhe_wetter) { el.textContent = ""; return; }
+  wetterzeile_fuellen(el);
+}
+
+/* EINE Wetterzeile fuer beide Abnehmer - Ambient-Kopf und Ruhebild. Zwei
+   Kopien derselben Formatierung laufen auseinander, und die Regel, dass eine
+   fehlende Wetterlage als ZAHL dasteht statt als erfundener Text, soll an
+   beiden Stellen gleich gelten. */
+function wetterzeile_fuellen(el){
+  if (!el) { return; }
+  if (!WETTER) { el.textContent = ""; return; }
+  var stuecke = (WETTER.quelle === "bausteine")
+                ? wetterzeile_bausteine() : wetterzeile_dienst();
+  el.innerHTML = stuecke.map(function(x){ return "<span>"+x+"</span>"; }).join("");
+}
+
+/* Loxones eigener Wetterdienst (Ereignistabelle Kennung 7). */
+function wetterzeile_dienst(){
   var t = WETTER.texte || {};
   var nr = WETTER.art;
   /* Fehlt der Klartext in der Anlage, steht die ZAHL da - keine erfundene
@@ -1275,7 +1468,37 @@ function ruhe_wetterzeile(){
   }
   if (WETTER.feuchte != null) { stuecke.push(e(zahl(WETTER.feuchte,0)) + "&nbsp;% rF"); }
   if (WETTER.wind != null) { stuecke.push("Wind " + e(zahl(WETTER.wind)) + "&nbsp;km/h"); }
-  el.innerHTML = stuecke.map(function(x){ return "<span>"+x+"</span>"; }).join("");
+  return stuecke;
+}
+
+/* Selbst gewaehlte Bausteine - eine eigene Wetterstation, Weather4Loxone,
+   ein Fuehler am Haus. Die Reihenfolge ist dieselbe wie beim Wetterdienst
+   darueber (Temperatur fett zuerst, dann die Lage), damit die Zeile nicht je
+   nach Quelle anders aussieht.
+
+   Die Einheit kommt aus der Formatangabe der ANLAGE und geht durch
+   einheit_kurz() - dieselbe Funktion, die auch die Kacheln benutzen, samt
+   der %%-Falle aus 0.9.16. Eine zweite Auswertung waere eine zweite Regel. */
+function wetterzeile_bausteine(){
+  var stuecke = [];
+  if (WETTER.temperatur != null) {
+    stuecke.push("<b>" + e(zahl(WETTER.temperatur)) + "&nbsp;&deg;C</b>");
+  } else if (WETTER.temptext) {
+    /* Ein Textbaustein als Temperaturquelle: sein Text steht da, wie er ist.
+       Weather4Loxone liefert genau das ("19.9 °C - Frisch [19|28]"). */
+    stuecke.push("<b>" + e(WETTER.temptext) + "</b>");
+  }
+  if (WETTER.lage) { stuecke.push(e(WETTER.lage)); }
+  var z = WETTER.zusatz;
+  if (z) {
+    if (z.wert != null) {
+      var eh = einheit_kurz(z.einheit);
+      stuecke.push(e(zahl(z.wert)) + (eh ? "&nbsp;" + e(eh) : ""));
+    } else if (z.text) {
+      stuecke.push(e(z.text));
+    }
+  }
+  return stuecke;
 }
 
 /* Die Verknuepfungen: bis zu zwoelf Kacheln, nur ANSEHEN - keine Knoepfe.

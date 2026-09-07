@@ -159,6 +159,24 @@ VORGABEN = {
     "ruhe_seite": "",        # leer = die Seite, die gerade offen ist
     "ruhe_hell": 60,         # Prozent - "unaufdringlich" heisst dunkler
     "ruhe_bild": "",         # Endung des Hintergrundbilds, leer = keines
+    # Der Ambient-Modus - neu in 0.9.17, ebenfalls ab Werk AUS. Etwas
+    # anderes als das Ruhebild: er gestaltet die Tafel, statt an ihre
+    # Stelle zu treten. Der Dienst benutzt ihn nicht; er steht hier, weil
+    # der Reiter Test die beiden Vorgabetabellen gegeneinander haelt.
+    "ambient": 0,            # Uhr, Datum und Wetter dauerhaft ueber den Kacheln
+    # Der Eco-Modus - neu in 0.9.18, ab Werk AUS. Senkt die Anzeige nach
+    # Untaetigkeit ab und laesst die Kacheln stehen. Der Dienst benutzt ihn
+    # nicht; er steht hier, weil der Reiter Test die beiden Vorgabetabellen
+    # gegeneinander haelt.
+    "eco_nach": 0,           # Sekunden ohne Beruehrung, 0 = nie
+    "eco_hell": 30,          # Prozent, 0 = Bildschirm schwarz
+    # Die Wetterzeile aus eigenen Bausteinen - neu in 0.9.19, ab Werk leer.
+    # Leer heisst: Loxones Wetterdienst. Der Dienst wertet sie nicht aus;
+    # sie stehen hier, weil der Reiter Test beide Vorgabetabellen
+    # gegeneinander haelt.
+    "wetter_lage": "",
+    "wetter_temp": "",
+    "wetter_zusatz": "",
 }
 
 _LOG = logging.getLogger("dashboard")
@@ -1204,15 +1222,17 @@ def selbsttest() -> int:
         print(("[OK]   " if ok else "[FEHL] ") + text)
         fehlt += 0 if ok else 1
     print()
-    print("An EINEM Miniserver gemessen (17.08.2026, Fassung 17.1.7.27):")
+    print("An EINEM Miniserver gemessen (07.09.2026, Fassung 17.2.8.28):")
     print("  - Anmeldung, Hashverfahren des Benutzers SHA1")
     print("  - Wiederanmeldung mit gespeichertem Token")
-    print("  - Strukturdatei: 638 Bausteine, 3539 Zustaende")
+    print("  - Strukturdatei: 666 Bausteine, 3610 Zustaende")
     print("  - 'jdev/sps/io/<uuid>/state' traegt als HTTP-Notnagel")
+    print("  - die Kachel-Befehle wirken: an einer Steckdose ueber den Endpunkt")
+    print("    geschaltet, im Abbild nach 1 s nachgezogen, Ausgangszustand")
+    print("    wiederhergestellt; vier Gegenproben wurden abgewiesen")
     print("  Ob es auf IHRER Anlage ebenso ist, sagen die Knoepfe im Reiter Test.")
     print()
     print("Nicht geprueft, weil dafuer ein echter Miniserver noetig ist:")
-    print("  - ob die Kachel-Befehle am Geraet die erwartete Wirkung haben")
     print("  - ob der Weg fuer gesicherte Bausteine traegt (es ist kein")
     print("    Visualisierungs-Passwort hinterlegt, an dem man es messen koennte)")
     print("  - wie schnell die Anzeige bei Ihrer Anzahl Bausteine nachzieht")

@@ -174,7 +174,8 @@ if ($db_post && isset($_POST['speichern'])) {
                    'nacht_helligkeit' => array(0, 100),
                    'verlauf_punkte' => array(10, 240),
                    'ruhe_kacheln' => array(0, DB_RUHE_KACHELN_MAX),
-                   'ruhe_hell' => array(DB_RUHE_HELL_MIN, DB_RUHE_HELL_MAX)) as $db_f => $db_g) {
+                   'ruhe_hell' => array(DB_RUHE_HELL_MIN, DB_RUHE_HELL_MAX),
+                   'eco_hell' => array(DB_ECO_HELL_MIN, DB_ECO_HELL_MAX)) as $db_f => $db_g) {
         $db_w = $db_sauber($db_f);
         if (!preg_match('/^[0-9]+$/', $db_w)) {
             $db_fehler[] = sprintf(db_t('EINST.FEHLER_ZAHL'), db_t('EINST.L_' . strtoupper($db_f)));
@@ -219,6 +220,39 @@ if ($db_post && isset($_POST['speichern'])) {
         $db_cfg['ruhe_nach'] = (int) $db_rn;
     }
 
+    /* Der Eco-Modus hat dieselbe Form: 0 heisst aus, sonst ein Bereich. Die
+     * Pruefung steht deshalb hier und nicht in der Schleife oben - aus
+     * demselben Grund wie beim Ruhebild. */
+    $db_en = $db_sauber('eco_nach');
+    if (!preg_match('/^[0-9]+$/', $db_en)) {
+        $db_fehler[] = sprintf(db_t('EINST.FEHLER_ZAHL'), db_t('EINST.L_ECO_NACH'));
+    } elseif ((int) $db_en !== 0
+              && ((int) $db_en < DB_ECO_NACH_MIN || (int) $db_en > DB_ECO_NACH_MAX)) {
+        $db_fehler[] = sprintf(db_t('EINST.FEHLER_ECO_NACH'),
+                               DB_ECO_NACH_MIN, DB_ECO_NACH_MAX);
+    } else {
+        $db_cfg['eco_nach'] = (int) $db_en;
+    }
+
+    /* Die drei Bausteine der Wetterzeile. Leer ist erlaubt und heisst
+     * "Loxones Wetterdienst, wie bisher". Eine UUID, die es nicht gibt, wird
+     * ABGEWIESEN und nicht stillschweigend geleert - sonst waere ein
+     * geloeschter Baustein ein stiller Rueckfall auf eine ganz ANDERE
+     * Wetterquelle, und niemand saehe es der Zeile an. Dieselbe Regel wie bei
+     * ruhe_seite. */
+    foreach (array('wetter_lage', 'wetter_temp', 'wetter_zusatz') as $db_f) {
+        $db_w = $db_sauber($db_f);
+        if ($db_w === '') { $db_cfg[$db_f] = ''; continue; }
+        $db_wb = db_baustein($db_w);
+        $db_wk = ($db_wb !== null && isset($db_wb['kachel'])) ? (string) $db_wb['kachel'] : '';
+        if ($db_wb === null || ($db_wk !== 'wert' && $db_wk !== 'text')) {
+            $db_fehler[] = sprintf(db_t('EINST.FEHLER_WETTER_BAUSTEIN'),
+                                   db_t('EINST.L_' . strtoupper($db_f)));
+        } else {
+            $db_cfg[$db_f] = $db_w;
+        }
+    }
+
     /* Die Seite fuer die Verknuepfungen des Ruhebilds. Leer ist erlaubt und
      * heisst "die Seite, die gerade offen ist". Ein Schluessel, den es nicht
      * gibt, wird ABGEWIESEN und nicht stillschweigend geleert - sonst waere
@@ -244,7 +278,8 @@ if ($db_post && isset($_POST['speichern'])) {
     // Absenden eines anderen sie stillschweigend auf 0.
     foreach (array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach',
                    'haptik', 'verlauf', 'sse', 'tafelsteuerung',
-                   'gesichert_schalten', 'ruhe_uhr', 'ruhe_wetter') as $db_h) {
+                   'gesichert_schalten', 'ruhe_uhr', 'ruhe_wetter',
+                   'ambient') as $db_h) {
         $db_cfg[$db_h] = isset($_POST[$db_h]) ? 1 : 0;
     }
 
@@ -959,6 +994,12 @@ if ($db_rahmen) {
   <?= db_e(db_t('EINST.L_TAFELSTEUERUNG')) ?></label>
 <p class="sm-hilfe"><?= db_t('EINST.H_TAFELSTEUERUNG') ?></p>
 
+<h2><?= db_e(db_t('EINST.H_AMBIENT')) ?></h2>
+<p class="sm-hilfe"><?= db_t('EINST.AMBIENT_ERKLAERUNG') ?></p>
+<label><input data-role="none" type="checkbox" name="ambient" value="1"<?= !empty($db_cfg['ambient']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_AMBIENT')) ?></label>
+<p class="sm-hilfe"><?= db_t('EINST.H_AMBIENT_HINWEIS') ?></p>
+
 <h2><?= db_e(db_t('EINST.H_RUHE')) ?></h2>
 <p class="sm-hilfe"><?= db_t('EINST.RUHE_ERKLAERUNG') ?></p>
 <div class="sm-feld">
@@ -1013,6 +1054,108 @@ if ((string) $db_cfg['ruhe_bild'] !== '' && is_file($db_bpfad)) {
        . '<input data-role="none" type="text" name="ruhe_bild_weg" id="ruhe_bild_weg" value=""></div>';
 } else {
     echo '<p class="sm-hilfe">' . db_e(db_t('EINST.RUHE_BILD_KEINS')) . '</p>';
+}
+?>
+
+<h2><?= db_e(db_t('EINST.H_ECO')) ?></h2>
+<p class="sm-hilfe"><?= db_t('EINST.ECO_ERKLAERUNG') ?></p>
+<div class="sm-feld">
+  <label for="eco_nach"><?= db_e(db_t('EINST.L_ECO_NACH')) ?></label>
+  <input data-role="none" type="text" name="eco_nach" id="eco_nach"
+         value="<?= db_e($db_cfg['eco_nach']) ?>">
+</div>
+<p class="sm-hilfe"><?= sprintf(db_t('EINST.H_ECO_NACH'), DB_ECO_NACH_MIN, DB_ECO_NACH_MAX) ?></p>
+<div class="sm-feld">
+  <label for="eco_hell"><?= db_e(db_t('EINST.L_ECO_HELL')) ?></label>
+  <input data-role="none" type="text" name="eco_hell" id="eco_hell"
+         value="<?= db_e($db_cfg['eco_hell']) ?>">
+</div>
+<p class="sm-hilfe"><?= sprintf(db_t('EINST.H_ECO_HELL'), DB_ECO_HELL_MIN, DB_ECO_HELL_MAX) ?></p>
+<p class="sm-hilfe"><?= db_t('EINST.H_ECO_ZUSAMMEN') ?></p>
+
+<h2><?= db_e(db_t('EINST.H_WETTERZEILE')) ?></h2>
+<p class="sm-hilfe"><?= db_t('EINST.WETTERZEILE_ERKLAERUNG') ?></p>
+<?php
+/* Die Auswahlliste: nur Wert- und Textkacheln - eine Wetterzeile zeigt eine
+   Zahl oder einen Text, keine Jalousie. Nach Kategorie gruppiert, weil eine
+   flache Liste mit einigen hundert Eintraegen niemand liest.
+
+   EINMAL gebaut und dreimal benutzt. Drei Kopien derselben Liste laufen
+   auseinander, sobald sich die Regel aendert, welche Bausteine taugen. */
+$db_wliste = array();
+foreach (db_bausteine() as $db_wb) {
+    if (!is_array($db_wb)) { continue; }
+    $db_wk = (string) (isset($db_wb['kachel']) ? $db_wb['kachel'] : '');
+    if ($db_wk !== 'wert' && $db_wk !== 'text') { continue; }
+    $db_wkat = (string) (isset($db_wb['katname']) ? $db_wb['katname'] : '');
+    if ($db_wkat === '') { $db_wkat = db_t('EINST.WETTER_OHNE_KATEGORIE'); }
+    $db_wraum = (string) (isset($db_wb['raumname']) ? $db_wb['raumname'] : '');
+    $db_wliste[$db_wkat][] = array(
+        (string) (isset($db_wb['uuid']) ? $db_wb['uuid'] : ''),
+        (string) (isset($db_wb['name']) ? $db_wb['name'] : '')
+        . ($db_wraum !== '' ? ' (' . $db_wraum . ')' : ''));
+}
+ksort($db_wliste);
+$db_wetterfeld = function ($feld, $beschriftung) use ($db_wliste, $db_cfg) {
+    $ist = (string) (isset($db_cfg[$feld]) ? $db_cfg[$feld] : '');
+    echo '<div class="sm-feld"><label for="' . db_e($feld) . '">'
+       . db_e($beschriftung) . '</label>'
+       . '<select data-role="none" name="' . db_e($feld) . '" id="' . db_e($feld) . '">'
+       . '<option value=""' . ($ist === '' ? ' selected' : '') . '>'
+       . db_e(db_t('EINST.WETTER_KEINER')) . '</option>';
+    foreach ($db_wliste as $kat => $eintraege) {
+        echo '<optgroup label="' . db_e($kat) . '">';
+        foreach ($eintraege as $e) {
+            echo '<option value="' . db_e($e[0]) . '"'
+               . ($ist === $e[0] ? ' selected' : '') . '>' . db_e($e[1]) . '</option>';
+        }
+        echo '</optgroup>';
+    }
+    echo '</select></div>';
+};
+$db_wetterfeld('wetter_lage',   db_t('EINST.L_WETTER_LAGE'));
+$db_wetterfeld('wetter_temp',   db_t('EINST.L_WETTER_TEMP'));
+$db_wetterfeld('wetter_zusatz', db_t('EINST.L_WETTER_ZUSATZ'));
+?>
+<p class="sm-hilfe"><?= db_t('EINST.H_WETTERZEILE_QUELLE') ?></p>
+<?php
+/* Was die gewaehlten Bausteine gerade TRAGEN - nicht, wie die Zeile aussieht.
+ *
+ * Der Unterschied ist wichtig. Ein erster Entwurf zeigte hier die fertige
+ * Zeile - und zeigte sie FALSCH: "20 - kein Regen - 70", waehrend auf der
+ * Tafel "20,0 °C | kein Regen | 70,0 %" steht. Die Formatierung liegt in
+ * zahl() und einheit_kurz() auf der Anzeigeseite; sie hier ein zweites Mal
+ * zu bauen hiesse, dieselbe Regel zweimal zu fuehren, und die zweite laeuft
+ * weg. Eine Vorschau, die etwas anderes verspricht als das Ergebnis, ist
+ * schlimmer als keine.
+ *
+ * Die Frage, die diese Probe wirklich beantwortet, ist die wichtigere:
+ * traegt der gewaehlte Baustein ueberhaupt etwas? An einer echten Anlage
+ * nachgemessen liefert Weather4Loxone seinen Baustein 'Wetter aktuell'
+ * leer, waehrend der Tagesbaustein den Text traegt - wer das erst am Tablet
+ * merkt, sucht lange. */
+if (db_wetter_eigene_gewaehlt($db_cfg)) {
+    $db_wzeilen = array();
+    foreach (array('wetter_lage'   => db_t('EINST.L_WETTER_LAGE'),
+                   'wetter_temp'   => db_t('EINST.L_WETTER_TEMP'),
+                   'wetter_zusatz' => db_t('EINST.L_WETTER_ZUSATZ')) as $db_f => $db_wbez) {
+        $db_wu = (string) (isset($db_cfg[$db_f]) ? $db_cfg[$db_f] : '');
+        if ($db_wu === '') { continue; }
+        $db_ww = db_baustein_wert($db_wu);
+        if ($db_ww === null) {
+            $db_wtext = db_t('EINST.WETTER_PROBE_LEER');
+            $db_wb    = db_baustein($db_wu);
+            $db_wname = ($db_wb !== null && isset($db_wb['name'])) ? (string) $db_wb['name'] : $db_wu;
+        } else {
+            $db_wname = $db_ww['name'];
+            $db_wtext = ($db_ww['text'] !== '') ? $db_ww['text'] : db_t('EINST.WETTER_PROBE_LEER');
+        }
+        $db_wzeilen[] = db_e($db_wbez . ' — ' . $db_wname . ': ' . $db_wtext);
+    }
+    if (count($db_wzeilen)) {
+        echo '<p class="sm-hilfe">' . db_e(db_t('EINST.WETTER_PROBE')) . '<br>'
+           . implode('<br>', $db_wzeilen) . '</p>';
+    }
 }
 ?>
 

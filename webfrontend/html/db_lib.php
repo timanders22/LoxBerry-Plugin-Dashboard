@@ -36,6 +36,12 @@ if (!defined('DB_RUHE_NACH_MAX')) { define('DB_RUHE_NACH_MAX', 3600); }
  * Bedienzeit bliebe, waere kuerzer als ein Handgriff. 0 bleibt erlaubt -
  * das heisst 'aus'. */
 if (!defined('DB_RUHE_NACH_MIN')) { define('DB_RUHE_NACH_MIN', 10); }
+/* Der Eco-Modus. Dieselbe Untergrenze wie beim Ruhebild und aus demselben
+ * Grund: kuerzer waere keine Ruhe, sondern eine Sperre. */
+if (!defined('DB_ECO_NACH_MIN')) { define('DB_ECO_NACH_MIN', 10); }
+if (!defined('DB_ECO_NACH_MAX')) { define('DB_ECO_NACH_MAX', 3600); }
+if (!defined('DB_ECO_HELL_MIN')) { define('DB_ECO_HELL_MIN', 0); }
+if (!defined('DB_ECO_HELL_MAX')) { define('DB_ECO_HELL_MAX', 100); }
 if (!defined('DB_RUHE_KACHELN_MAX')) { define('DB_RUHE_KACHELN_MAX', 12); }
 if (!defined('DB_RUHE_BILD_MAX')) { define('DB_RUHE_BILD_MAX', 4194304); }  // 4 MB
 if (!defined('DB_RUHE_BILD_KANTE')) { define('DB_RUHE_BILD_KANTE', 4096); }  // Punkte je Kante
@@ -188,6 +194,45 @@ function db_vorgaben()
         'ruhe_seite'     => '',   // leer = die Seite, die gerade offen ist
         'ruhe_hell'      => 60,   // Prozent - "unaufdringlich" heisst dunkler
         'ruhe_bild'      => '',   // Endung des Hintergrundbilds, leer = keines
+        /* Der Ambient-Modus - neu in 0.9.17, ebenfalls ab Werk AUS.
+         *
+         * Er ist etwas ANDERES als das Ruhebild, und die Loxone-App trennt
+         * beides genauso: der Ambient-Modus ist die Tafel SELBST, gestaltet -
+         * Uhrzeit, Datum und Wetter stehen dauerhaft ueber den Kacheln, das
+         * Hintergrundbild liegt dahinter, und alles bleibt bedienbar. Das
+         * Ruhebild dagegen tritt an die STELLE der Tafel, wenn niemand sie
+         * beruehrt (bei Loxone heisst das Bildschirmschoner).
+         *
+         * Beide benutzen dasselbe Hintergrundbild ('ruhe_bild') und dieselbe
+         * Wetterquelle - ein zweites Bild waere zwei Wahrheiten. */
+        'ambient'        => 0,    // Uhr, Datum und Wetter dauerhaft ueber den Kacheln
+        /* Der Eco-Modus - neu in 0.9.18, ab Werk AUS.
+         *
+         * Er senkt die Anzeige ab, wenn niemand das Tablet beruehrt - und
+         * laesst dabei die Kacheln STEHEN. Das unterscheidet ihn vom
+         * Ruhebild, das an ihre Stelle tritt, und von der Nachtabsenkung,
+         * die nach der UHR geht statt nach der Beruehrung. Die Loxone-App
+         * trennt die drei genauso.
+         *
+         * Nacht und Eco koennen zusammentreffen; dann gilt der DUNKLERE
+         * von beiden - beide sagen 'jetzt soll es dunkel sein', und die
+         * schaerfere Aussage gewinnt. */
+        'eco_nach'       => 0,    // Sekunden ohne Beruehrung, 0 = nie
+        'eco_hell'       => 30,   // Prozent, 0 = Bildschirm schwarz
+        /* Die Wetterzeile aus eigenen Bausteinen - neu in 0.9.19, ab Werk leer.
+         *
+         * Loxones Wetterdienst ist nicht die einzige Wetterquelle einer Anlage.
+         * Wer eine eigene Station hat (Ecowitt, Weather4Loxone, ein Fuehler am
+         * Haus), hat die Werte laengst als gewoehnliche Bausteine in Loxone -
+         * und die liest dieses Plugin ohnehin schon. Es braucht dafuer KEIN
+         * MQTT und keine zweite Schnittstelle.
+         *
+         * Leer heisst: Loxones Wetterdienst, wie bisher. Sobald HIER etwas
+         * steht, gilt ausschliesslich das - nie beides gemischt, das waeren
+         * zwei Wahrheiten in einer Zeile. */
+        'wetter_lage'    => '',   // Baustein-UUID, Text: "wolkenlos"
+        'wetter_temp'    => '',   // Baustein-UUID, Zahl: Temperatur in °C
+        'wetter_zusatz'  => '',   // Baustein-UUID, frei: Wind, Regen, Feuchte
     );
 }
 
@@ -1070,7 +1115,17 @@ function db_kacheln_sichtbar($seite)
  */
 function db_wetter_fuer_nutzlast($cfg, $mit_texten = true)
 {
-    if (empty($cfg['ruhe_nach']) || empty($cfg['ruhe_wetter'])) { return null; }
+    /* Zwei Abnehmer, eine Bedingung: das Ruhebild (wenn es ueberhaupt kommen
+     * kann UND die Wetterzeile gewuenscht ist) und der Ambient-Kopf. Steht
+     * die Bedingung an zwei Stellen, laeuft sie auseinander - deshalb hier. */
+    $fuer_ruhe    = !empty($cfg['ruhe_nach']) && !empty($cfg['ruhe_wetter']);
+    $fuer_ambient = !empty($cfg['ambient']);
+    if (!$fuer_ruhe && !$fuer_ambient) { return null; }
+    /* Zwei Quellen, NIE gemischt: entweder die selbst gewaehlten Bausteine
+     * oder Loxones Wetterdienst. Gemischt stuenden zwei Messungen
+     * nebeneinander in einer Zeile, ohne dass jemand sieht, welche woher
+     * kommt - eine Temperatur vom Dach neben einer aus der Wolke. */
+    if (db_wetter_eigene_gewaehlt($cfg)) { return db_wetter_aus_bausteinen($cfg); }
     $w = db_wetter_jetzt();
     // Die Klartexte zu den Wetterlagen aendern sich nicht. Sie gehoeren in
     // die Struktur-Nutzlast (aktion=seite), nicht in jeden Takt - das ist
@@ -1078,6 +1133,89 @@ function db_wetter_fuer_nutzlast($cfg, $mit_texten = true)
     // Struktur einmal. Die Anzeigeseite behaelt den ersten Stand.
     if ($w !== null && !$mit_texten) { unset($w['texte']); }
     return $w;
+}
+
+/** Wert und Text EINES Bausteins aus dem Abbild - egal, auf welcher Seite er
+ * liegt oder ob er ueberhaupt auf einer liegt.
+ *
+ * Das Abbild traegt alle Bausteine der Anlage, nicht nur die der offenen
+ * Seite (an der Anlage nachgemessen: 664 Bausteine, 3611 Zustaende). Der
+ * Griff geht ueber die BAUSTEIN-UUID und darunter ueber den Rollennamen -
+ * so baut es abbild_bauen() im Dienst. Der Griff ueber die Zustands-UUID
+ * geht ins Leere, und zwar lautlos; genau daran ist die Wetterkachel in
+ * 0.9.16 schon einmal gescheitert.
+ *
+ * Rueckgabe null, wenn es den Baustein nicht gibt oder noch kein Wert da
+ * ist. Eine leere Zeile ist besser als eine erfundene Angabe.
+ */
+function db_baustein_wert($uuid)
+{
+    $uuid = (string) $uuid;
+    if ($uuid === '') { return null; }
+    $b = db_baustein($uuid);
+    if ($b === null) { return null; }
+    $abbild = db_abbild();
+    $werte = isset($abbild['werte']) && is_array($abbild['werte']) ? $abbild['werte'] : array();
+    if (!isset($werte[$uuid]) || !is_array($werte[$uuid])) { return null; }
+    $w = $werte[$uuid];
+    /* Der Hauptzustand, mit Rueckfall auf den ersten - derselbe Griff wie
+     * _haupt_zustand() im Dienst, und aus demselben Grund an einer Stelle. */
+    $rolle = (string) (isset($b['haupt']) ? $b['haupt'] : '');
+    if ($rolle === '' || !array_key_exists($rolle, $w)) {
+        $vorhanden = array_keys($w);
+        if (!count($vorhanden)) { return null; }
+        $rolle = (string) $vorhanden[0];
+    }
+    $roh = $w[$rolle];
+    // Tabellen (Wetterdienst, Zeitschaltuhr) sind hier nichts zum Anzeigen.
+    if (is_array($roh) || $roh === null) { return null; }
+    return array(
+        'name'    => (string) (isset($b['name']) ? $b['name'] : ''),
+        'wert'    => is_numeric($roh) ? (float) $roh : null,
+        'text'    => is_string($roh) ? $roh : (string) $roh,
+        // Die Formatangabe der ANLAGE. Ausgewertet wird sie auf der
+        // Anzeigeseite mit einheit_kurz() - dort steht die Regel schon, samt
+        // der %%-Falle aus 0.9.16. Zweimal waere einmal zu viel.
+        'einheit' => (string) (isset($b['format']) ? $b['format'] : ''),
+    );
+}
+
+/** Sind eigene Wetter-Bausteine gewaehlt? Steht an EINER Stelle, weil die
+ * Frage an drei Stellen gestellt wird und sonst auseinanderliefe. */
+function db_wetter_eigene_gewaehlt($cfg)
+{
+    foreach (array('wetter_lage', 'wetter_temp', 'wetter_zusatz') as $f) {
+        if ((string) (isset($cfg[$f]) ? $cfg[$f] : '') !== '') { return true; }
+    }
+    return false;
+}
+
+/** Die Wetterzeile aus den selbst gewaehlten Bausteinen.
+ *
+ * Rueckgabe null, wenn KEINER der gewaehlten Bausteine einen Wert liefert -
+ * dann bleibt die Zeile leer, statt eine halbe Wahrheit zu zeigen.
+ */
+function db_wetter_aus_bausteinen($cfg)
+{
+    $lage   = db_baustein_wert(isset($cfg['wetter_lage'])   ? $cfg['wetter_lage']   : '');
+    $temp   = db_baustein_wert(isset($cfg['wetter_temp'])   ? $cfg['wetter_temp']   : '');
+    $zusatz = db_baustein_wert(isset($cfg['wetter_zusatz']) ? $cfg['wetter_zusatz'] : '');
+    if ($lage === null && $temp === null && $zusatz === null) { return null; }
+    return array(
+        'quelle'     => 'bausteine',
+        'lage'       => $lage !== null ? $lage['text'] : null,
+        /* Ist der Temperatur-Baustein ein Textbaustein ("19.9 °C - Frisch"),
+         * steht sein Text da statt einer Zahl. Das kommt an echten Anlagen
+         * vor - nachgemessen an Weather4Loxone, dessen Tagesbausteine Text
+         * liefern und dessen Baustein 'Wetter aktuell' leer ist. */
+        'temperatur' => ($temp !== null) ? $temp['wert'] : null,
+        'temptext'   => ($temp !== null && $temp['wert'] === null) ? $temp['text'] : null,
+        'zusatz'     => ($zusatz !== null) ? array(
+            'wert'    => $zusatz['wert'],
+            'text'    => $zusatz['text'],
+            'einheit' => $zusatz['einheit'],
+        ) : null,
+    );
 }
 
 /** Die aktuelle Wetterlage - unabhaengig davon, welche Seite gerade offen ist.
