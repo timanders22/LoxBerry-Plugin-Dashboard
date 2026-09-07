@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.14 — die Anmeldung ist am Gerät gemessen, die Wirkung der
+> **Fassung 0.9.15 — die Anmeldung ist am Gerät gemessen, die Wirkung der
 > Befehle nicht.** Am 17.08.2026 an einem Miniserver mit Firmware 17.1.7.27
 > nachgemessen: Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung
 > mit gespeichertem Token, die Strukturdatei (638 Bausteine, 3539 Zustände)
