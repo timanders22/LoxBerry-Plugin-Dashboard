@@ -63,9 +63,20 @@ PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
 LIEF_VORHER=0
 [ -f "$BASE/data/plugins/$PFOLDER/soll_laufen" ] && LIEF_VORHER=1
 
+# Die Meldung haengt an LIEF_VORHER, nicht am blossen Aufruf.
+#
+# LIEF_VORHER steht zwei Zeilen darueber und wurde fuer die Meldung nie
+# benutzt: `anhalten()` in dienst.sh gibt auch ohne laufenden Dienst 0
+# zurueck, und die Zeile stand ohnehin unbedingt da. Das Protokoll meldete
+# damit bei jedem Update einen angehaltenen Dienst - auch bei einem, den
+# der Betreiber laengst selbst gestoppt hatte. Gemessen 11.09.2026.
 if [ -x "$DIENST" ]; then
     "$DIENST" stop >/dev/null 2>&1
-    echo "<INFO> Laufender Dienst ueber dienst.sh angehalten (Sollmerker entfernt)."
+    if [ "$LIEF_VORHER" = "1" ]; then
+        echo "<INFO> Laufender Dienst ueber dienst.sh angehalten (Sollmerker entfernt)."
+    else
+        echo "<INFO> Der Dienst lief nicht - es war nichts anzuhalten."
+    fi
 elif [ -f "$PID" ]; then
     rm -f "$BASE/data/plugins/$PFOLDER/soll_laufen"
     P=$(cat "$PID" 2>/dev/null)
@@ -79,9 +90,11 @@ elif [ -f "$PID" ]; then
         if kill -0 "$P" 2>/dev/null && grep -qa "dashboard_dienst.py" "/proc/$P/cmdline" 2>/dev/null; then
             kill -9 "$P" 2>/dev/null || true
         fi
+        # Nur hier gemeldet: eine liegengebliebene PID-Datei allein ist
+        # kein laufender Dienst.
+        echo "<INFO> Laufender Dienst angehalten (Rueckfallebene ohne dienst.sh)."
     fi
     rm -f "$PID"
-    echo "<INFO> Laufender Dienst angehalten (Rueckfallebene ohne dienst.sh)."
 fi
 
 for f in dashboard.json seiten.json zugang.json; do

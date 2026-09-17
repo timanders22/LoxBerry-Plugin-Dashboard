@@ -1,4 +1,4 @@
 #!/bin/sh
 # Dashboard-Designer - Waechter, minuetlich.
-# REPLACELBPBINDIR wird bei der Installation durch den bin-Pfad ersetzt.
+# Den bin-Pfad des Plugins setzt der Installer in der Befehlszeile ein.
 "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1

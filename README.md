@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.19 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.20 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,20 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.20
+
+**Das Installationsprotokoll behauptete, einen Dienst angehalten zu haben, der
+gar nicht lief.** Die Zeile stand unbedingt hinter dem Aufruf von `dienst.sh
+stop`, obwohl `LIEF_VORHER` zwei Zeilen darüber längst ermittelt wird und die
+Frage beantwortet. Jetzt hängt die Meldung daran.
+
+Dasselbe im **Rückfallweg** ohne `dienst.sh`: dort stand sie hinter
+`rm -f "$PID"` und damit außerhalb der Prüfung, ob der Prozess lebte — eine
+liegengebliebene PID-Datei genügte.
+
+Geprüft mit `Werkzeuge/preupgrade_meldung_pruefen.py`: gegen 0.9.20 grün, gegen
+0.9.19 rot. **Am Verhalten ändert sich nichts.**
 
 ## Neu in 0.9.14
 
