@@ -69,6 +69,14 @@ done
 if [ -e "$BASE/data/plugins/$PFOLDER.upgrade_sicherung" ]; then
     rm -rf "$BASE/data/plugins/$PFOLDER.upgrade_sicherung" && ANZAHL=$((ANZAHL + 1))
 fi
+# Die Marke einer abgebrochenen Aktualisierung liegt ebenfalls neben dem
+# Datenordner und geht mit ihm nicht weg. Bliebe sie liegen, sperrte sie Dienst
+# und Oberflaeche einer spaeteren Neuinstallation bis zu einer Stunde lang
+# (Pruefung-Dashboard-0.9.23, Fall C9b).
+if [ -e "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" ]; then
+    rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" \
+        && echo "<INFO> Die Marke einer nicht beendeten Aktualisierung wurde entfernt."
+fi
 
 echo "<OK> $ANZAHL Datei(en)/Ordner mit Konfiguration, Handarbeit und Zugangsdaten entfernt."
 exit 0

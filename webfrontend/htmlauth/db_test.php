@@ -32,6 +32,23 @@ function db_pruefungen()
         $zeilen[] = db_pruefzeile(0, db_t('TEST.F_DIENST'), db_t('TEST.A_DIENST_GESTOPPT'));
     }
 
+    // Die Marke "Aktualisierung laeuft". Zu jeder Regel gehoert das Werkzeug,
+    // das sie findet (CLAUDE.md, 6): eine liegengebliebene Marke haelt den
+    // Dienststart bis zu einer Stunde an, und ohne diese Zeile stuende
+    // nirgends, warum. Erreichbar ist der Reiter nur, solange sie NICHT gilt -
+    // sonst haelt die Seite schon am Eingang an (index.php). Uebrig bleiben
+    // "keine" und "liegt noch da, gilt aber nicht".
+    list($mk_liegt, $mk_gilt, $mk_seit, $mk_pfad) = db_upgrade_marke();
+    if (!$mk_liegt) {
+        $zeilen[] = db_pruefzeile(1, db_t('TEST.F_UPGRADE_MARKE'), db_t('TEST.A_UPGRADE_MARKE_KEINE'));
+    } elseif ($mk_seit < 0) {
+        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_UPGRADE_MARKE'),
+            sprintf(db_t('TEST.A_UPGRADE_MARKE_UNLESBAR'), db_e($mk_pfad)));
+    } else {
+        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_UPGRADE_MARKE'),
+            sprintf(db_t('TEST.A_UPGRADE_MARKE_ALT'), date('d.m.Y H:i:s', $mk_seit), db_e($mk_pfad)));
+    }
+
     $ms = db_miniserver();
     if (!$ms) {
         $zeilen[] = db_pruefzeile(0, db_t('TEST.F_MS'), db_t('TEST.A_KEIN_MS'));

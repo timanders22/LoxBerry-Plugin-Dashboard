@@ -40,6 +40,39 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     exit 1
 fi
 
+# ---------- Zuerst die Marke "Aktualisierung laeuft" ----------
+#
+# Sie steht VOR allem anderen, sobald die Wurzel feststeht, damit sie auch
+# dann liegt, wenn weiter unten etwas schiefgeht. Zwischen diesem Skript und
+# postinstall.sh liegt die Upgrade-Luecke: config/plugins/<ordner>/ und
+# data/plugins/<ordner>/ sind abgeraeumt, die neuen Dateien liegen schon bereit
+# (Regeln/06, am Geraet am 08.09.2026 knapp eine Minute gemessen).
+#
+# Gemessen am 18.09.2026 in WSL (Pruefung-Dashboard-0.9.23):
+#   Fall L1  Der Minutentakt startet in der Luecke nichts - er verlangt
+#            soll_laufen, und das ist mit dem Datenordner weg.
+#   Fall L2  Ein Seitenaufruf der Oberflaeche in der Luecke legte
+#            dashboard.json mit einem NEUEN Aktionstoken an; postinstall.sh
+#            sah darin Inhalt, spielte die Sicherung nicht zurueck und loeschte
+#            sie. Aktionstoken und Einstellungen waren danach fort.
+#   Fall L3  Der Knopf "Dienst starten" startete in der Luecke einen Dienst,
+#            der vor dem Update bewusst angehalten war - er lief danach weiter.
+# Die Marke sperrt beides: bin/dienst.sh startet nicht, und die Oberflaeche
+# zeigt nur einen Hinweis (webfrontend/htmlauth/index.php).
+#
+# Sie liegt NEBEN dem Datenordner - darin loeschte purge_installation sie mit.
+# Inhalt ist die Unixzeit; sie gilt hoechstens eine Stunde.
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+date +%s > "$MARKE" 2>/dev/null
+if [ -s "$MARKE" ]; then
+    echo "<OK> Dienststart und Oberflaeche bis zum Ende der Aktualisierung gesperrt."
+else
+    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - der Dienst"
+    echo "<WARNING> koennte waehrend der Aktualisierung anlaufen, und ein Aufruf der"
+    echo "<WARNING> Oberflaeche in dieser Zeit kann die Einstellungen kosten."
+fi
+
 # Anhalten ueber dienst.sh, nicht mit einem eigenen kill.
 #
 # Der entscheidende Unterschied ist nicht die Geduld, sondern der Sollmerker:

@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.22 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.23 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,45 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.23
+
+**Ein Seitenaufruf während der Aktualisierung kostete Aktionstoken und
+Einstellungen.** Zwischen `preupgrade.sh` und `postinstall.sh` räumt der
+Installer `config/plugins/dashboard/` ab; die neuen Dateien liegen dann schon
+bereit (am Gerät knapp eine Minute gemessen). Wer in dieser Zeit die
+Einstellungsseite öffnete, bekam ein neues Aktionstoken angelegt und in eine
+frische `dashboard.json` gespeichert. `postinstall.sh` sah darin Inhalt, spielte
+die Sicherung nicht zurück und räumte sie weg: das alte Aktionstoken und alle
+Einstellungen waren fort, und jede Adresse, die der Miniserver mit dem alten
+Token aufruft, wurde abgewiesen. Dasselbe beim Speichern der Einstellungen in
+dieser Zeit. In WSL Ubuntu nachgestellt (18.09.2026, `Pruefung-Dashboard-0.9.23`,
+Fälle L2 und L5).
+
+**Der Knopf „Dienst starten" startete während der Aktualisierung einen Dienst,
+der vorher bewusst angehalten war** — und der Minutentakt hielt ihn danach am
+Leben (Fall L3).
+
+Seit dieser Fassung legt `preupgrade.sh` als Erstes die Marke
+`data/plugins/dashboard.upgrade_laeuft` an (neben dem Datenordner, darin
+löschte der Installer sie mit). Solange sie höchstens eine Stunde alt ist,
+startet `bin/dienst.sh` den Dienst nicht — auch ohne lesbare Uhr nicht —, und
+die Einstellungsseite zeigt nur einen Hinweis, liest und schreibt nichts.
+`postinstall.sh` startet einen vorher laufenden Dienst wieder und entfernt die
+Marke erst **danach**: fällt sie vorher, startete der Minutentakt in 27 von 30
+Durchläufen einen zweiten Dienst neben dem eigenen (gemessen mit einem auf
+0,3 s verbreiterten Startfenster; bei normaler Geschwindigkeit 0 von 60 in
+beiden Reihenfolgen). Eine Marke, die älter als eine Stunde, aus der Zukunft
+oder unlesbar ist, gilt nicht — eine abgebrochene Installation legt nichts auf
+Dauer still; der Reiter Test nennt sie dann mit Pfad. Beide Deinstallationsskripte
+räumen sie weg. Die Anzeigeseiten für das Tablet sperren nicht: sie schreiben
+keine Einstellungen (gemessen, Fall L6).
+
+**Kein zweiter Dienst nach dem Update** (in derselben Messung nachgesehen): ein
+Dienst ohne PID-Datei wird schon von `preupgrade.sh` beendet, auch ohne altes
+`dienst.sh`, und einen Dienst, der das Update trotzdem überlebt, findet der
+Wiederanlauf in `postinstall.sh` über `/proc` und startet keinen zweiten
+daneben (Fälle G2a bis G2c).
 
 ## Neu in 0.9.22
 
@@ -477,6 +516,9 @@ Namentlich ungeprüft und deshalb hier genannt:
 - **Der Weg für gesicherte Bausteine** ist aus dem Dokument gebaut und gegen
   eine Attrappe gemessen, die den erwarteten Hash ebenfalls aus dem Dokument
   rechnet — nicht aus diesem Quelltext. Am Gerät geprüft ist er nicht.
+- **Die Marke „Aktualisierung läuft"** (neu in 0.9.23) ist in WSL mit einem
+  nachgestellten Installer-Ablauf gemessen, nicht an einem LoxBerry. Der
+  Benutzerwechsel auf `loxberry` und Apache sind dabei nicht nachgebildet.
 
 ## Grundlage
 

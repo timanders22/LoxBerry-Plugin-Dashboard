@@ -36,6 +36,49 @@ if ($db_p['home'] !== '' && is_file($db_p['home'] . '/libs/phplib/loxberry_syste
     require_once $db_p['home'] . '/libs/phplib/loxberry_web.php';
 }
 
+/* ---------------- Waehrend einer Aktualisierung: nur ein Hinweis ----------
+ *
+ * Das steht VOR dem Wachposten, vor jedem Handler und vor db_token(). In der
+ * Upgrade-Luecke ist config/plugins/<ordner>/ abgeraeumt; wer hier erst liest
+ * und dann sperrt, hat schon geschrieben.
+ *
+ * Gemessen am 18.09.2026 in WSL (Pruefung-Dashboard-0.9.23):
+ *   Fall L2  Ein blosser Seitenaufruf in der Luecke legte ueber db_token()
+ *            (weiter unten, "Laden") dashboard.json mit einem NEUEN
+ *            Aktionstoken an. postinstall.sh sah darin Inhalt, spielte die
+ *            Sicherung nicht zurueck und loeschte sie: Aktionstoken und alle
+ *            Einstellungen waren danach fort - jede Adresse, die der
+ *            Miniserver mit dem alten Token aufruft, wurde abgewiesen.
+ *   Fall L5  "Einstellungen speichern" in der Luecke: derselbe Verlust.
+ *   Fall L3  Der Knopf "Dienst starten" startete einen vor dem Update bewusst
+ *            angehaltenen Dienst, und er lief danach weiter.
+ *
+ * Die unangemeldeten Seiten (webfrontend/html/index.php und tafel.php)
+ * sperren bewusst NICHT: sie schreiben keine Einstellungen (Fall L6, in der
+ * Luecke gemessen), und ohne eingerichtetes Aktionstoken weisen sie Befehle
+ * ohnehin ab.
+ *
+ * Eine Marke, die aelter als eine Stunde oder unlesbar ist, sperrt nicht: eine
+ * abgebrochene Installation darf die Seite nicht fuer immer stilllegen. Der
+ * Reiter Test nennt sie dann (db_test.php). */
+list($db_mk_liegt, $db_mk_gilt) = db_upgrade_marke();
+if ($db_mk_gilt) {
+    $db_rahmen = class_exists('LBWeb', false) && method_exists('LBWeb', 'lbheader');
+    if ($db_rahmen) {
+        LBWeb::lbheader(db_t('ALLG.TITEL'), 'https://www.loxone.com/enen/kb/api/', 'help.html');
+    }
+    echo '<div id="db-upgrade-hinweis" style="max-width:980px;margin:12px auto;'
+       . 'border-radius:8px;padding:10px 14px;background:#fdf3e3;border:1px solid #e0620d;'
+       . 'font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#333"><b>'
+       . db_e(db_t('HINWEIS.UPGRADE_LAEUFT')) . '</b> '
+       . db_e(db_t('HINWEIS.UPGRADE_NICHT_GESPEICHERT'))
+       . '</div>' . "\n";
+    if ($db_rahmen) {
+        LBWeb::lbfooter();
+    }
+    exit;
+}
+
 /* Die Reiterliste steht GENAU EINMAL.
  *
  * Aus diesem Feld entstehen der Pruefausdruck, die Leiste und das

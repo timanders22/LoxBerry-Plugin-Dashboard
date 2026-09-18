@@ -781,6 +781,38 @@ function db_dienst_soll()
     return is_file(db_paths()['datadir'] . '/soll_laufen') ? 1 : 0;
 }
 
+/**
+ * Liegt die Marke "Aktualisierung laeuft", und gilt sie?
+ *
+ * Rueckgabe array(liegt, gilt, seit, pfad). "liegt" und "gilt" getrennt, weil
+ * eine liegengebliebene Marke ein anderer Befund ist als eine laufende
+ * Aktualisierung - die eine sperrt die Seite, die andere nennt der Reiter Test.
+ *
+ * Die Datei liegt NEBEN dem Datenordner (data/plugins/<ordner>.upgrade_laeuft),
+ * weil purge_installation den Ordner beim Upgrade abraeumt. preupgrade.sh legt
+ * sie an, postinstall.sh entfernt sie. Die Regel ist dieselbe wie in
+ * bin/dienst.sh, marke_sperrt(): gilt, solange sie hoechstens 3600 s alt ist;
+ * aelter, aus der Zukunft oder unlesbar gilt sie nicht. Wer eine der beiden
+ * Stellen aendert, aendert beide.
+ *
+ * ctype_digit waere hier falsch: ctype ist eine Erweiterung, die nicht
+ * garantiert geladen ist. Deshalb preg_match.
+ */
+function db_upgrade_marke()
+{
+    $d = db_paths()['datadir'];
+    $f = dirname($d) . '/' . basename($d) . '.upgrade_laeuft';
+    if (!@is_file($f)) {
+        return array(0, 0, -1, $f);
+    }
+    $roh = trim((string) @file_get_contents($f));
+    if (!preg_match('/^[0-9]{1,12}$/', $roh)) {
+        return array(1, 0, -1, $f);
+    }
+    $alter = time() - (int) $roh;
+    return array(1, ($alter >= 0 && $alter <= 3600) ? 1 : 0, (int) $roh, $f);
+}
+
 /** $befehl ist 'start', 'stop' oder 'restart'. Rueckgabe: array(ok, Ausgabe) */
 function db_dienst($befehl)
 {

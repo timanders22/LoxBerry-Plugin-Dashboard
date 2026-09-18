@@ -98,6 +98,11 @@ PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
 PID="$PDATA/dienst.pid"
 SOLL="$PDATA/soll_laufen"
+# Die Marke "Aktualisierung laeuft". Sie liegt NEBEN dem Datenordner, weil
+# purge_installation data/plugins/<ordner>/ beim Upgrade restlos abraeumt
+# (Regeln/06) - im Ordner waere sie genau dann fort, wenn sie gebraucht wird.
+# preupgrade.sh legt sie als Erstes an, postinstall.sh entfernt sie per trap.
+MARKE="$LBHOMEDIR/data/plugins/$PNAME.upgrade_laeuft"
 LOGDATEI="$PLOG/dashboard.log"
 SKRIPT="$PBIN/dashboard_dienst.py"
 # Zweite Schreibweise desselben Skripts fuer den Vergleich weiter unten: wurde
@@ -226,6 +231,36 @@ laeuft() {
     [ -n "$(dienste)" ]
 }
 
+# Laeuft gerade eine Aktualisierung dieses Plugins?
+#
+# Gemessen am 18.09.2026 in WSL (Pruefung-Dashboard-0.9.23, Faelle L3 und C1):
+# ohne diese Frage startete der Knopf "Dienst starten" mitten in der
+# Upgrade-Luecke einen Dienst und legte dabei soll_laufen an. Ein Dienst, der
+# vor dem Update BEWUSST angehalten war, lief danach wieder - und der
+# Minutentakt hielt ihn am Leben.
+#
+# Ausgaenge:
+#   Marke hoechstens 3600 s alt  -> gesperrt (C1, C7)
+#   aelter, aus der Zukunft, leer oder unlesbar -> sie gilt nicht (C2 bis C5;
+#                                   eine abgebrochene Installation darf den
+#                                   Dienst nicht fuer immer stilllegen)
+#   keine lesbare Uhr            -> die Pruefung faellt GESCHLOSSEN aus (C6)
+#   DB_START_TROTZ_MARKE=1       -> Ausnahme fuer postinstall.sh (C10)
+#
+# Die Grenze 3600 s steht ein zweites Mal in webfrontend/html/db_lib.php,
+# db_upgrade_marke(); wer eine aendert, aendert beide.
+marke_sperrt() {
+    [ -f "$MARKE" ] || return 1
+    [ "${DB_START_TROTZ_MARKE:-0}" = "1" ] && return 1
+    JETZT=$(date +%s 2>/dev/null)
+    case "$JETZT" in ''|*[!0-9]*) return 0 ;; esac
+    SEIT=$(cat "$MARKE" 2>/dev/null)
+    case "$SEIT" in ''|*[!0-9]*) return 1 ;; esac
+    ALTER=$((JETZT - SEIT))
+    [ "$ALTER" -lt 0 ] && return 1
+    [ "$ALTER" -le 3600 ]
+}
+
 starten() {
     ordner_anlegen
     LAUFEND=$(dienste)
@@ -236,6 +271,16 @@ starten() {
         # Mustersuche darf hier nie hinein.
         echo "$ERSTE" > "$PID" 2>/dev/null
         echo "laeuft bereits (PID $ERSTE)"
+        return 0
+    fi
+    # Diese Frage steht VOR dem 'touch "$SOLL"' weiter unten. Stuende sie
+    # dahinter, legte der abgewiesene Start den Merker trotzdem an, und der
+    # Waechter startete den Dienst nach dem Update doch (so an Govee 0.9.19
+    # gemessen, dort Fall A6). Rueckgabewert 0: eine laufende Aktualisierung
+    # ist kein Fehlschlag.
+    if marke_sperrt; then
+        echo "Eine Aktualisierung dieses Plugins laeuft - der Dienst wird jetzt nicht gestartet."
+        echo "Lief er vor der Aktualisierung, startet die Installation ihn am Ende selbst wieder."
         return 0
     fi
     # Die Meldung muss sagen, was wirklich fehlt. Bis 0.9.5 stand hier

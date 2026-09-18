@@ -52,6 +52,29 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     exit 1
 fi
 
+# ---------- Die Marke "Aktualisierung laeuft" faellt am Ende dieses Skripts ----------
+#
+# preupgrade.sh legt sie an (dort steht, was sie abwendet). Entfernt wird sie
+# HIER und nicht erst in postupgrade.sh: in dieser Linie ist postinstall.sh das
+# letzte Hakenskript, das etwas tut - es spielt die Einstellungen zurueck und
+# startet den Dienst wieder; postupgrade.sh ist absichtlich leer.
+#
+# Ueber einen trap auf EXIT, nicht am Dateiende: dieses Skript steigt hinter
+# dieser Zeile an fuenf Stellen mit 'exit 1' aus (Ordner, kein Python,
+# Python zu alt, pip, Module). Ohne trap
+# bliebe der Dienst nach einer gescheiterten Installation bis zu einer Stunde
+# gesperrt, ohne dass irgendwo stuende, warum (Regeln/06, Nachtrag 17.09.2026).
+#
+# Der trap laeuft NACH dem Dienststart weiter unten. Das ist Absicht und
+# gemessen (Pruefung-Dashboard-0.9.23, messe_reihenfolge.sh): zwischen dem
+# 'touch soll_laufen' in dienst.sh und dem Anlaufen des Prozesses ist ein
+# Fenster offen, in dem der Minutentakt denselben Dienst ein zweites Mal
+# startet. Solange die Marke liegt, ist es zu; der eigene Start bekommt dafuer
+# die Ausnahme DB_START_TROTZ_MARKE=1 (bin/dienst.sh, marke_sperrt()).
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+db_marke_weg() { rm -f "$MARKE"; }
+trap db_marke_weg EXIT
+
 PBIN="$BASE/bin/plugins/$PFOLDER"
 PDATA="$BASE/data/plugins/$PFOLDER"
 PLOG="$BASE/log/plugins/$PFOLDER"
@@ -318,7 +341,7 @@ if [ -d "$LANG_SICHER" ]; then
     # vermeidet.
     if [ -f "$LANG_SICHER/lief_vorher" ]; then
         if [ -x "$PBIN/dienst.sh" ]; then
-            if "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+            if DB_START_TROTZ_MARKE=1 "$PBIN/dienst.sh" start >/dev/null 2>&1; then
                 echo "<OK> Der Dienst lief vor dem Update und wurde wieder gestartet."
             else
                 echo "<INFO> Der Dienst lief vor dem Update, liess sich aber nicht wieder"
