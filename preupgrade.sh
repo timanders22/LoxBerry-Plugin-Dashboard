@@ -178,11 +178,80 @@ else
     fi
 fi
 
+# ---------- Zweitschrift der Konfiguration ----------
+#
+# Bis 0.9.21 stand hier ein 'cp -p' ohne jede Pruefung. Das ist die Richtung
+# "sichern" der Klasse C (Bestand-2026-09-18/klasse-C) in ihrer schwaechsten
+# Form - schwaecher als das '[ -s ]', nach dem der Bestandslauf gesucht hat;
+# deshalb steht diese Stelle in keiner seiner Listen.
+#
+# Der Schaden: bricht ein Update zwischen preupgrade und postinstall ab, liegt
+# die heile Zweitschrift des vorigen Laufs noch da. Ein zweiter Anlauf kopierte
+# dann die inzwischen abgeschnittene Konfiguration darueber, und der letzte
+# heile Stand war fort - ohne eine Zeile im Protokoll. Gemessen am 18.09.2026
+# (Pruefung-Dashboard-0.9.22, Fall 8).
+#
+# Gibt es noch GAR KEINE Zweitschrift, wird auch eine beschaedigte Datei
+# kopiert: etwas ist besser als nichts, und es geht nichts verloren (Bauart
+# GardenaSmartSystem-1.2.10/preupgrade.sh, json_heil()).
+#
+# Rueckgabe: 0 = traegt Inhalt, 1 = traegt keinen, 2 = nicht pruefbar. Die
+# Funktion steht wortgleich in postinstall.sh - die Hakenskripte laufen
+# einzeln, eine gemeinsame Bibliothek gibt es fuer sie nicht.
+db_inhalt() {      # $1 Datei  $2 Art: dashboard | seiten | zugang
+    [ -s "$1" ] || return 1
+    if command -v php >/dev/null 2>&1; then
+        php -r '
+            $d = json_decode((string) @file_get_contents($argv[1]), true);
+            if (!is_array($d)) { exit(1); }
+            if ($argv[2] === "seiten") {
+                exit(isset($d["seiten"]) && is_array($d["seiten"]) && count($d["seiten"]) > 0 ? 0 : 1);
+            }
+            exit(count($d) > 0 ? 0 : 1);' -- "$1" "$2" 2>/dev/null
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+if sys.argv[2] == "seiten":
+    s = d.get("seiten")
+    sys.exit(0 if isinstance(s, list) and len(s) > 0 else 1)
+sys.exit(0 if len(d) > 0 else 1)' "$1" "$2" 2>/dev/null
+    else
+        return 2
+    fi
+    DB_RC=$?
+    [ "$DB_RC" = 0 ] || [ "$DB_RC" = 1 ] || return 2
+    return "$DB_RC"
+}
+
 for f in dashboard.json seiten.json zugang.json; do
     CF="$BASE/config/plugins/$PFOLDER/$f"
-    if [ -f "$CF" ]; then
-        cp -p "$CF" "$BASE/config/plugins/$PFOLDER.backup.$f"
+    ZWEIT="$BASE/config/plugins/$PFOLDER.backup.$f"
+    [ -f "$CF" ] || continue
+    case "$f" in
+        seiten.json) ART=seiten ;;
+        zugang.json) ART=zugang ;;
+        *)           ART=dashboard ;;
+    esac
+    # Der Rueckgabewert wird SOFORT gemerkt: hinter dem naechsten Test waere
+    # $? der des Tests (CLAUDE.md, "$? hinter einer &&-Kette").
+    db_inhalt "$CF" "$ART"; RC_CF=$?
+    if [ -f "$ZWEIT" ] && [ "$RC_CF" != 0 ]; then
+        echo "<WARNING> $f traegt keinen lesbaren Inhalt. Die vorhandene"
+        echo "<WARNING> Zweitschrift bleibt unveraendert - aus ihr werden die"
+        echo "<WARNING> Einstellungen am Ende der Installation zurueckgeholt:"
+        echo "<WARNING>   $ZWEIT"
+        continue
+    fi
+    if cp -p "$CF" "$ZWEIT"; then
         echo "<INFO> $f gesichert."
+    else
+        echo "<WARNING> Die Zweitschrift von $f liess sich NICHT anlegen."
     fi
 done
 # zugang.json enthaelt Zugangsdaten - die Sicherung ebenso schuetzen.

@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.21 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.22 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,58 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.22
+
+**Eine abgeschnittene Konfiguration wurde nicht zurückgespielt — und die
+Sicherung danach gelöscht.** `postinstall.sh` entschied bis 0.9.21 nach der
+Größe (`[ ! -s ]`, dazu die Vergleiche mit `{}` und `{"seiten":[]}`), ob eine
+Konfigurationsdatei aus der Sicherung zurückgeholt wird, und räumte die
+Sicherung anschließend ohne jede Bedingung weg. Eine abgeschnittene Datei ist
+weder leer noch `{}`: sie galt als vorhanden, wurde nicht ersetzt, und die
+einzige heile Abschrift war danach fort. In WSL Ubuntu gemessen (18.09.2026,
+`Bestand-2026-09-18/klasse-C`, Fall 15, und `Pruefung-Dashboard-0.9.22`,
+Fälle 1 bis 4) — für `dashboard.json`, `seiten.json` (die geordneten Kacheln)
+und `zugang.json` (Benutzer und Kennwort des Miniservers). Jetzt wird nach
+**Inhalt** entschieden: die Datei muss sich lesen lassen, ein Objekt sein und
+etwas enthalten (`seiten.json` mindestens eine Seite). Zurückgespielt wird nur,
+wenn die vorhandene Datei nachweislich nichts trägt und die Sicherung
+nachweislich etwas; weggeräumt wird die Sicherung nur, wenn die Konfiguration
+danach Inhalt trägt. Sonst bleibt sie liegen, und das Installationsprotokoll
+nennt sie mit Pfad.
+
+**Die Sicherung konnte beim zweiten Update-Anlauf überschrieben werden.**
+`preupgrade.sh` kopierte die Konfiguration ohne Prüfung über eine vorhandene
+Sicherung. Bricht ein Update zwischen `preupgrade` und `postinstall` ab, liegt
+die heile Sicherung des ersten Anlaufs noch da; der zweite Anlauf ersetzte sie
+durch die inzwischen beschädigte Datei (gemessen, `Pruefung-Dashboard-0.9.22`,
+Fall 8). Jetzt bleibt eine vorhandene Sicherung unverändert, wenn die
+Konfiguration keinen Inhalt trägt. Gibt es noch gar keine, wird weiterhin
+gesichert, was da ist.
+
+**`dienst.sh` rechnete Wurzel und Ordnernamen aus dem eigenen Ablageort und
+legte das Ergebnis an — bei jedem Aufruf.** Bis 0.9.21 kamen Wurzel und
+Ordnername allein aus dem Verzeichnis, in dem `dienst.sh` liegt; ein gesetztes
+`LBHOMEDIR` wurde überschrieben, und ein `mkdir -p` auf oberster Ebene legte
+den errechneten Daten- und Protokollordner an, auch bei `status`. Gemessen
+(`Pruefung-Dashboard-0.9.22`, Fälle 12 bis 14): ein `status` aus einem
+Prüfordner unter `<LoxBerry-Wurzel>/pruefung/dashboard/bin` legte in der
+**laufenden** Installation `data/plugins/bin` und `log/plugins/bin` an; aus
+einem ausgepackten Archiv mit gesetztem `LBHOMEDIR` galt der laufende Dienst
+der Installation als „gestoppt"; und nach dem Abräumen des Datenordners durch
+den Installer legte schon ein `status` ihn wieder an. Jetzt wird die Wurzel
+zuerst aus `LBHOMEDIR` gelesen und erst danach aufwärts gesucht, der
+Ordnername zuerst aus `LBPPLUGINDIR`. Passen Wurzel und Ordnername nicht
+zusammen, endet der Aufruf mit einer Fehlermeldung, bevor etwas angelegt wird.
+Angelegt wird nur noch beim Starten und wenn der Wächter neu startet.
+
+**`postinstall.sh` von Hand aufgerufen legte Ordner an beliebiger Stelle an.**
+Ohne Argumente fiel das Skript auf „zwei Ebenen über mir" zurück, ohne zu
+prüfen, ob dort eine LoxBerry-Wurzel liegt (gemessen, Fall 16). Es sucht jetzt
+wie `preupgrade.sh` und die beiden Deinstallationsskripte aufwärts nach einem
+Verzeichnis mit `config/plugins` und `data/plugins` und bricht sonst ab, ohne
+etwas anzulegen. Beim Aufruf durch den Installer ändert sich nichts: der
+übergibt die Wurzel.
 
 ## Neu in 0.9.21
 

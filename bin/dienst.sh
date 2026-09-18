@@ -12,15 +12,94 @@
 # dort aufgerufen waere PNAME buchstaeblich "plugins", und PID-Datei,
 # Sollmerker und Protokoll landeten neben statt in ihrem Ordner.
 SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)   # <home>/bin/plugins/<ordner>
-PNAME=$(basename "$SELF")
-LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
+
+# ---------- Wurzel und Ordnername: GELESEN, nicht geraten ----------
+#
+# Bis 0.9.21 stand hier
+#     PNAME=$(basename "$SELF")
+#     LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
+# und gleich darauf ein 'mkdir -p' auf oberster Ebene. Der eigene Ablageort
+# war damit die EINZIGE Quelle: ein gesetztes $LBHOMEDIR wurde ueberschrieben,
+# der Ordnername kam aus dem Verzeichnisnamen, und der geratene Pfad wurde bei
+# JEDEM Aufruf angelegt - auch bei 'status', also bei einem Aufruf, den jeder
+# fuer folgenlos haelt.
+#
+# Gemessen am 18.09.2026 in WSL (Pruefung-Dashboard-0.9.22, Faelle 12 bis 14;
+# dieselbe Bauart im Bestand unter Bestand-2026-09-18/klasse-H, Bauart H1,
+# dort an AnkerSolix 0.9.18 nachgestellt):
+#   - 'dienst.sh status' aus einem Pruefarchiv unter
+#     <Wurzel>/pruefung/dashboard/bin legte in der LAUFENDEN Installation
+#     data/plugins/bin und log/plugins/bin an;
+#   - dieselbe Datei aus einem ausgepackten Archiv rechnete die Wurzel drei
+#     Ebenen ueber sich aus und uebersah das gesetzte $LBHOMEDIR - der
+#     laufende Dienst der Installation galt als "gestoppt";
+#   - nach einem purge_installation legte schon ein 'status' den
+#     Datenordner wieder an; "der Ordner ist da" sagte in der Upgrade-Luecke
+#     damit nichts ueber eine gelungene Ruecksicherung aus.
+#
+# Hausform (Regeln/03 und Regeln/06): Stufe 1 ist die gelesene Umgebung,
+# Stufe 2 die Aufwaertssuche nach einem Verzeichnis, das nachweislich eine
+# Wurzel IST. Eine feste Zahl '..' waere nur die naechste Wette.
+lb_wurzel_taugt() {          # $1 Kandidat
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ]
+}
+lb_wurzel_suchen() {
+    v="$SELF"
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if lb_wurzel_taugt "$v"; then echo "$v"; return 0; fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
+if lb_wurzel_taugt "$LBHOMEDIR"; then
+    :
+else
+    LBHOMEDIR=$(lb_wurzel_suchen)
+fi
+# Der Ordnername ebenso. $LBPPLUGINDIR steht am Geraet zwar nie in der
+# Umgebung (Regeln/03, am 17.09.2026 gemessen) - wer sie setzt, meint sie aber
+# ernst, und sie ist die einzige Quelle, die ein Aufruf von aussen mitgeben
+# kann.
+if [ -n "$LBPPLUGINDIR" ]; then
+    PNAME=$(basename "$LBPPLUGINDIR")
+else
+    PNAME=$(basename "$SELF")
+fi
+
+# Die Gegenprobe steht VOR dem ersten Anlegen, nicht danach: ein Schutz, der
+# erst hinter der Wirkung greift, ist keiner.
+LBH_R=$(readlink -f "$LBHOMEDIR" 2>/dev/null)
+if [ -z "$LBHOMEDIR" ] || [ ! -d "$LBHOMEDIR" ]; then
+    echo "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden."
+    echo "        \$LBHOMEDIR ist nicht gesetzt, und oberhalb von"
+    echo "        $SELF traegt kein Verzeichnis config/plugins und data/plugins."
+    echo "        Es wurde nichts angelegt und nichts gestartet."
+    exit 1
+fi
+if [ "$SELF" != "$LBH_R/bin/plugins/$PNAME" ] \
+   && [ ! -d "$LBHOMEDIR/config/plugins/$PNAME" ]; then
+    echo "FEHLER: '$PNAME' ist unter $LBHOMEDIR kein eingerichtetes Plugin,"
+    echo "        und $SELF ist nicht dessen bin-Ordner."
+    echo "        Der Aufruf kommt offenbar aus einem ausgepackten Archiv oder"
+    echo "        einem Pruefordner. Es wurde nichts angelegt."
+    echo "        Abhilfe: LBHOMEDIR und LBPPLUGINDIR setzen oder dienst.sh"
+    echo "        aus <LoxBerry-Wurzel>/bin/plugins/<ordner> aufrufen."
+    exit 1
+fi
+
+# Gearbeitet wird ab hier ausschliesslich mit der gelesenen Wurzel und dem
+# gelesenen Ordnernamen - auch fuer das Dienstskript und die venv. Sonst
+# verwaltete eine Datei aus dem Archiv den Dienst des Archivs, waehrend der
+# Aufrufer die Installation meinte.
+PBIN="$LBHOMEDIR/bin/plugins/$PNAME"
 PDATA="$LBHOMEDIR/data/plugins/$PNAME"
 PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
 PID="$PDATA/dienst.pid"
 SOLL="$PDATA/soll_laufen"
 LOGDATEI="$PLOG/dashboard.log"
-SKRIPT="$SELF/dashboard_dienst.py"
+SKRIPT="$PBIN/dashboard_dienst.py"
 # Zweite Schreibweise desselben Skripts fuer den Vergleich weiter unten: wurde
 # der Dienst ueber einen anderen Weg auf dieselbe Datei gestartet (Symlink im
 # Pfad, LBHOMEDIR gegen den aufgeloesten Ablageort), steht in seiner
@@ -34,7 +113,7 @@ DIENST_UID=$(id -u loxberry 2>/dev/null || id -u)
 # Welcher Python? Die venv wird bevorzugt, der System-Python ist die
 # Rueckfallebene - postinstall.sh legt die Umgebung inzwischen MIT
 # --system-site-packages an und kommt notfalls auch ganz ohne sie aus.
-PY="$SELF/venv/bin/python3"
+PY="$PBIN/venv/bin/python3"
 PYQUELLE="virtuelle Umgebung"
 if [ ! -x "$PY" ]; then
     PY=$(command -v python3 2>/dev/null)
@@ -64,7 +143,12 @@ if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
     exec su -s /bin/bash loxberry -c "$(printf '%q ' "$0" "$@")"
 fi
 
-mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+# Angelegt wird dort, wo wirklich geschrieben wird - nicht bei jedem Aufruf.
+# Bis 0.9.21 stand hier ein unbedingtes 'mkdir -p "$PDATA" "$PLOG"'; schon ein
+# 'status' legte damit Ordner an, und zwar im geratenen Pfad (siehe oben).
+ordner_anlegen() {
+    mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+}
 
 # Zeitgrenze fuer die einmaligen Betriebsarten. 'timeout' gehoert zu
 # coreutils und ist auf jedem Debian da; fehlt es doch, wird ohne gearbeitet
@@ -143,6 +227,7 @@ laeuft() {
 }
 
 starten() {
+    ordner_anlegen
     LAUFEND=$(dienste)
     if [ -n "$LAUFEND" ]; then
         ERSTE=$(printf '%s\n' "$LAUFEND" | head -n 1)
@@ -159,7 +244,7 @@ starten() {
     # "Plugin neu installieren" nicht weiter.
     if [ -z "$PY" ] || [ ! -x "$PY" ]; then
         echo "FEHLER: Auf diesem System ist kein python3 zu finden - weder unter"
-        echo "        $SELF/venv/bin/python3 noch im Suchpfad."
+        echo "        $PBIN/venv/bin/python3 noch im Suchpfad."
         echo "        Abhilfe:  sudo apt-get install -y python3 python3-venv"
         return 1
     fi
@@ -277,6 +362,9 @@ case "$1" in
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten.
         if [ -f "$SOLL" ] && ! laeuft; then
+            # Erst hier anlegen: der Waechter laeuft minuetlich, und ohne
+            # Sollmerker hat er nichts zu schreiben.
+            ordner_anlegen
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
             starten >> "$LOGDATEI" 2>&1
         fi

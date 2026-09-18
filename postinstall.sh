@@ -18,9 +18,38 @@ ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-dashboard}"
 BASE="${ARGV5:-$LBHOMEDIR}"
+
+# Aufwaerts suchen, bis ein Verzeichnis gefunden ist, das nachweislich eine
+# LoxBerry-Wurzel IST. Bis 0.9.21 stand hier 'cd "$SELF/../.."' ohne jede
+# Pruefung - eine feste Zahl '..' ist nur die naechste Wette. preupgrade.sh,
+# uninstall.sh und uninstall/uninstall tragen die geprueften Stufen seit
+# 0.9.13; dieses Skript war der letzte Ausreisser.
+#
+# Gemessen am 18.09.2026 (Pruefung-Dashboard-0.9.22, Fall 16): von Hand ohne
+# Argumente aus <Wurzel>/pruefung/tief/dashboard aufgerufen, legte das Skript
+# config/plugins/dashboard, data/plugins/dashboard und log/plugins/dashboard
+# unter <Wurzel>/pruefung an - in einem Verzeichnis, das keine Wurzel ist.
+# Dieselbe Klasse wie Bestand-2026-09-18/klasse-H.
+lb_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ]; then
+            echo "$v"; return 0
+        fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+    BASE=$(lb_wurzel_suchen)
+fi
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    echo "<FAIL> Kein LoxBerry-Wurzelverzeichnis gefunden - es wurde NICHTS"
+    echo "<FAIL> angelegt und nichts zurueckgespielt. Der Installer uebergibt"
+    echo "<FAIL> die Wurzel als fuenftes Argument; von Hand aufgerufen braucht"
+    echo "<FAIL> dieses Skript ein gesetztes LBHOMEDIR."
+    exit 1
 fi
 
 PBIN="$BASE/bin/plugins/$PFOLDER"
@@ -46,21 +75,102 @@ chmod 600 "$PCONFIG/zugang.json"
 # seiten.json ist Nutzerinhalt (die geordneten Kacheln): nie ueberschreiben.
 [ -f "$PCONFIG/seiten.json" ] || echo '{"seiten":[]}' > "$PCONFIG/seiten.json"
 
+# ---------- Zurueckspielen: nach INHALT, nicht nach GROESSE ----------
+#
+# Bis 0.9.21 stand hier
+#     if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ] || [ "$INHALT" = '{"seiten":[]}' ]
+# und unmittelbar darauf ein 'rm -f "$BK"' OHNE Bedingung. Eine
+# abgeschnittene Datei ist aber weder leer noch "{}": sie bestand die
+# Pruefung, wurde deshalb NICHT zurueckgespielt - und die einzige heile
+# Abschrift wurde danach geloescht.
+#
+# Gemessen am 18.09.2026 in WSL (Bestand-2026-09-18/klasse-C, Fall 15, und
+# Pruefung-Dashboard-0.9.22, Faelle 1 bis 4): Konfiguration abgeschnitten,
+# Zweitschrift weg, Merktoken nirgends mehr heil. Betroffen waren
+# dashboard.json, seiten.json (die ganze Handarbeit) und zugang.json mit dem
+# Miniserver-Kennwort.
+#
+# Gefragt wird jetzt dasselbe, was die Oberflaeche fragt: laesst sich die
+# Datei lesen, ist es ein Objekt, und steht etwas darin? Bauart wie
+# Intercom-2.2.12/preupgrade.sh (cf_mit_inhalt) und
+# GardenaSmartSystem-1.2.10/preupgrade.sh (json_heil).
+#
+# Rueckgabe: 0 = traegt Inhalt, 1 = traegt keinen, 2 = nicht pruefbar.
+# 'Nicht pruefbar' faellt geschlossen aus (CLAUDE.md, "ein Schutz faellt
+# geschlossen aus"): dann wird weder zurueckgespielt noch weggeraeumt.
+db_inhalt() {      # $1 Datei  $2 Art: dashboard | seiten | zugang
+    [ -s "$1" ] || return 1
+    if command -v php >/dev/null 2>&1; then
+        php -r '
+            $d = json_decode((string) @file_get_contents($argv[1]), true);
+            if (!is_array($d)) { exit(1); }
+            if ($argv[2] === "seiten") {
+                exit(isset($d["seiten"]) && is_array($d["seiten"]) && count($d["seiten"]) > 0 ? 0 : 1);
+            }
+            exit(count($d) > 0 ? 0 : 1);' -- "$1" "$2" 2>/dev/null
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+if sys.argv[2] == "seiten":
+    s = d.get("seiten")
+    sys.exit(0 if isinstance(s, list) and len(s) > 0 else 1)
+sys.exit(0 if len(d) > 0 else 1)' "$1" "$2" 2>/dev/null
+    else
+        return 2
+    fi
+    DB_RC=$?
+    [ "$DB_RC" = 0 ] || [ "$DB_RC" = 1 ] || return 2
+    return "$DB_RC"
+}
+
 for f in dashboard.json seiten.json zugang.json; do
     BK="$BASE/config/plugins/$PFOLDER.backup.$f"
     CF="$PCONFIG/$f"
-    if [ -f "$BK" ]; then
-        INHALT=$(cat "$CF" 2>/dev/null)
-        if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ] || [ "$INHALT" = '{"seiten":[]}' ]; then
-            cp -p "$BK" "$CF" && echo "<OK> $f aus Sicherung wiederhergestellt."
+    [ -f "$BK" ] || continue
+    case "$f" in
+        seiten.json) ART=seiten ;;
+        zugang.json) ART=zugang ;;
+        *)           ART=dashboard ;;
+    esac
+    db_inhalt "$CF" "$ART"; RC_CF=$?
+    db_inhalt "$BK" "$ART"; RC_BK=$?
+    # Zurueckgespielt wird nur, wenn die vorhandene Datei nachweislich nichts
+    # traegt UND die Zweitschrift nachweislich etwas.
+    if [ "$RC_CF" = 1 ] && [ "$RC_BK" = 0 ]; then
+        if cp -p "$BK" "$CF"; then
+            echo "<OK> $f aus Sicherung wiederhergestellt."
+            RC_CF=0
+        else
+            echo "<WARNING> $f liess sich nicht aus der Sicherung zurueckholen."
         fi
-        # Die Sicherung danach wegraeumen. Sie liegt eine Ebene UEBER dem
-        # Pluginordner und ueberlebt deshalb eine Deinstallation. Bis 0.9.5
-        # blieb sie liegen - eine spaetere Neuinstallation holte daraus
-        # stillschweigend die alte Konfiguration samt altem Aktionstoken
-        # zurueck, und dashboard.backup.zugang.json mit dem
-        # Miniserver-Kennwort lag unbegrenzt im Dateisystem.
+    fi
+    # Die Sicherung wegraeumen - aber nur, wenn die Konfiguration danach
+    # nachweislich Inhalt traegt. Sie liegt eine Ebene UEBER dem Pluginordner
+    # und ueberlebt deshalb eine Deinstallation. Bis 0.9.5 blieb sie immer
+    # liegen - eine spaetere Neuinstallation holte daraus stillschweigend die
+    # alte Konfiguration samt altem Aktionstoken zurueck, und
+    # dashboard.backup.zugang.json mit dem Miniserver-Kennwort lag unbegrenzt
+    # im Dateisystem. Deshalb wird sie weiterhin weggeraeumt, nur eben nicht
+    # mehr blind: uninstall.sh und uninstall/uninstall entfernen die
+    # liegengebliebene ohnehin mit.
+    if [ "$RC_CF" = 0 ]; then
         rm -f "$BK"
+    elif [ "$RC_CF" = 2 ] || [ "$RC_BK" = 2 ]; then
+        echo "<WARNING> Der Inhalt von $f liess sich nicht pruefen (fehlt php und python3?)."
+        echo "<WARNING> Es wurde nichts zurueckgespielt, und die Sicherung bleibt liegen:"
+        echo "<WARNING>   $BK"
+    else
+        echo "<WARNING> $f traegt keinen lesbaren Inhalt, und die Sicherung ebenso wenig."
+        echo "<WARNING> Die Sicherung bleibt liegen, damit nicht auch noch die letzte"
+        echo "<WARNING> Abschrift verschwindet:"
+        echo "<WARNING>   $BK"
+        echo "<WARNING> Bitte die Einstellungen nach der Installation ansehen."
     fi
 done
 chmod 600 "$PCONFIG/zugang.json"
