@@ -19,11 +19,18 @@ BASE="${ARGV5:-$LBHOMEDIR}"
 # vier Skripte - und ausgerechnet preupgrade ist das EINZIGE Rettungsfenster:
 # was hier nicht herausgetragen wird, loescht purge_installation gleich
 # darauf. Eine Erfolgsmeldung ohne Wirkung ist hier teurer als anderswo.
+#
+# Drittes Merkmal ist config/system/general.json: ein LoxBerry hat sie immer,
+# ein Rest aus Pruefstaenden nie (Regeln/06). Ohne sie legte dieses Skript in
+# einem fremden Baum mit config/plugins und data/plugins die Marke und die
+# Zweitschriften an und meldete Erfolg (gemessen am 18.09.2026 in WSL,
+# Pruefung-Dashboard-0.9.24, Fall F3).
 lb_wurzel_suchen() {
     v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
     i=0
     while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
-        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ]; then
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
+           && [ -f "$v/config/system/general.json" ]; then
             echo "$v"; return 0
         fi
         v=$(dirname "$v"); i=$((i + 1))

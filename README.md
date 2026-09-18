@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.23 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.24 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,30 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.24
+
+**Die Suche nach der LoxBerry-Wurzel verlangt jetzt `config/system/general.json`.**
+Wird ein Skript des Plugins ohne `LBHOMEDIR` und ohne die Argumente des
+Installers aufgerufen, sucht es die Wurzel vom eigenen Ablageort aufwärts.
+Bis 0.9.23 galt dabei jedes Verzeichnis mit `config/plugins` und
+`data/plugins` (Dienst und Oberfläche: `config/plugins` und `webfrontend`) als
+Wurzel. Solche Ordner liegen auf einem Prüfrechner auch außerhalb eines
+LoxBerry, etwa als Reste früherer Prüfläufe. In WSL Ubuntu nachgestellt
+(18.09.2026, `Pruefung-Dashboard-0.9.24`, Fälle F1 bis F8) — in einem solchen
+Baum ohne `general.json`:
+
+* `bin/dienst.sh start` legte `data/plugins/dashboard` und `log/plugins/dashboard` an, `stop` löschte `soll_laufen`;
+* `preupgrade.sh` legte die Marke und die Zweitschriften an und meldete Erfolg;
+* `postinstall.sh` legte die Plugin-Ordner an;
+* `uninstall/uninstall` und `uninstall.sh` löschten Zweitschrift und `.upgrade_sicherung`;
+* der Dienst und die Oberfläche hielten den Baum für die Wurzel und hätten dort gelesen und geschrieben.
+
+Alle sieben Suchen prüfen jetzt zusätzlich `config/system/general.json` — ein
+LoxBerry hat sie immer. In der installierten Lage (mit `general.json`) finden
+alle sieben die Wurzel weiterhin, auch ohne `LBHOMEDIR` und aus `/` aufgerufen
+(Fälle G1 bis G7). Ein gesetztes `LBHOMEDIR` und die Argumente des Installers
+gelten unverändert (Fälle U1 bis U4). Am Gerät ändert sich damit nichts.
 
 ## Neu in 0.9.23
 

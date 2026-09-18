@@ -40,6 +40,16 @@ SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)   # <home>/bin/plugins/<ord
 # Hausform (Regeln/03 und Regeln/06): Stufe 1 ist die gelesene Umgebung,
 # Stufe 2 die Aufwaertssuche nach einem Verzeichnis, das nachweislich eine
 # Wurzel IST. Eine feste Zahl '..' waere nur die naechste Wette.
+#
+# Die Aufwaertssuche verlangt dazu config/system/general.json: ein LoxBerry
+# hat sie immer, ein Rest aus Pruefstaenden nie (Regeln/06, Abschnitt zur
+# Wurzelsuche ueber config/plugins und data/plugins). Ohne sie hielt die Suche
+# einen fremden Baum mit config/plugins und data/plugins fuer die Wurzel -
+# gemessen am 18.09.2026 in WSL (Pruefung-Dashboard-0.9.24, Faelle F1 und F2):
+# 'start' legte dort data/plugins/dashboard und log/plugins/dashboard an,
+# 'stop' loeschte dessen soll_laufen. Ein gesetztes $LBHOMEDIR wird weiter nur
+# an config/plugins und data/plugins geprueft: es ist gelesen, nicht gesucht
+# (Fall U1).
 lb_wurzel_taugt() {          # $1 Kandidat
     [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ]
 }
@@ -47,7 +57,9 @@ lb_wurzel_suchen() {
     v="$SELF"
     i=0
     while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
-        if lb_wurzel_taugt "$v"; then echo "$v"; return 0; fi
+        if lb_wurzel_taugt "$v" && [ -f "$v/config/system/general.json" ]; then
+            echo "$v"; return 0
+        fi
         v=$(dirname "$v"); i=$((i + 1))
     done
     return 1
@@ -73,7 +85,8 @@ LBH_R=$(readlink -f "$LBHOMEDIR" 2>/dev/null)
 if [ -z "$LBHOMEDIR" ] || [ ! -d "$LBHOMEDIR" ]; then
     echo "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden."
     echo "        \$LBHOMEDIR ist nicht gesetzt, und oberhalb von"
-    echo "        $SELF traegt kein Verzeichnis config/plugins und data/plugins."
+    echo "        $SELF traegt kein Verzeichnis config/plugins, data/plugins"
+    echo "        und config/system/general.json."
     echo "        Es wurde nichts angelegt und nichts gestartet."
     exit 1
 fi

@@ -30,11 +30,17 @@ BASE="${ARGV5:-$LBHOMEDIR}"
 # config/plugins/dashboard, data/plugins/dashboard und log/plugins/dashboard
 # unter <Wurzel>/pruefung an - in einem Verzeichnis, das keine Wurzel ist.
 # Dieselbe Klasse wie Bestand-2026-09-18/klasse-H.
+#
+# Drittes Merkmal ist config/system/general.json: ein LoxBerry hat sie immer,
+# ein Rest aus Pruefstaenden nie (Regeln/06). Ohne sie legte dieses Skript in
+# einem fremden Baum mit config/plugins und data/plugins die Plugin-Ordner an
+# (gemessen am 18.09.2026 in WSL, Pruefung-Dashboard-0.9.24, Fall F4).
 lb_wurzel_suchen() {
     v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
     i=0
     while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
-        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ]; then
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
+           && [ -f "$v/config/system/general.json" ]; then
             echo "$v"; return 0
         fi
         v=$(dirname "$v"); i=$((i + 1))

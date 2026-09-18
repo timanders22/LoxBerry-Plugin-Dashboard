@@ -29,11 +29,18 @@
 # Aufwaerts suchen, bis ein Verzeichnis gefunden ist, das nachweislich eine
 # LoxBerry-Wurzel IST. Bis 0.9.12 stand hier eine feste Zahl '..' - und die
 # ist nur die naechste Wette: je nach Ablageort sind es drei Ebenen oder vier.
+#
+# Drittes Merkmal ist config/system/general.json: ein LoxBerry hat sie immer,
+# ein Rest aus Pruefstaenden nie (Regeln/06). Ohne sie loeschte dieses Skript
+# in einem fremden Baum mit config/plugins und data/plugins die Zweitschriften
+# und die .upgrade_sicherung (gemessen am 18.09.2026 in WSL,
+# Pruefung-Dashboard-0.9.24, Fall F6).
 lb_wurzel_suchen() {
     v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
     i=0
     while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
-        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ]; then
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
+           && [ -f "$v/config/system/general.json" ]; then
             echo "$v"; return 0
         fi
         v=$(dirname "$v"); i=$((i + 1))

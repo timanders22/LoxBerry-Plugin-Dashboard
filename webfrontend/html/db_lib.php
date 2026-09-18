@@ -54,11 +54,17 @@ if (!defined('DB_RUHE_HELL_MAX')) { define('DB_RUHE_HELL_MAX', 100); }
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, webfrontend UND config/system/general.json enthaelt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer ohnehin abfangen muss).
+ *
+ * general.json unterscheidet einen LoxBerry von einem Rest aus Pruefstaenden:
+ * ein LoxBerry hat sie immer, ein solcher Rest nie (Regeln/06). Ohne sie galt
+ * ein fremder Baum mit config/plugins und webfrontend als Wurzel, und
+ * db_paths() las dessen Konfiguration (gemessen am 18.09.2026 in WSL,
+ * Pruefung-Dashboard-0.9.24, Fall F8).
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -68,7 +74,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);

@@ -53,13 +53,20 @@ def lb_wurzel_ermitteln():
     """Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
 
     Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
-    config/plugins UND webfrontend enthaelt. Trifft die uebliche
-    Installation genauso wie eine an einem anderen Ort.
+    config/plugins, webfrontend UND config/system/general.json enthaelt.
+    Trifft die uebliche Installation genauso wie eine an einem anderen Ort.
+
+    general.json unterscheidet einen LoxBerry von einem Rest aus
+    Pruefstaenden: ein LoxBerry hat sie immer, ein solcher Rest nie
+    (Regeln/06). Ohne sie galt ein fremder Baum mit config/plugins und
+    webfrontend als Wurzel (gemessen am 18.09.2026 in WSL,
+    Pruefung-Dashboard-0.9.24, Fall F7).
     """
     d = os.path.dirname(os.path.abspath(__file__))
     for _ in range(8):
         if os.path.isdir(os.path.join(d, "config", "plugins")) \
-                and os.path.isdir(os.path.join(d, "webfrontend")):
+                and os.path.isdir(os.path.join(d, "webfrontend")) \
+                and os.path.isfile(os.path.join(d, "config", "system", "general.json")):
             return d
         eltern = os.path.dirname(d)
         if eltern == d:
