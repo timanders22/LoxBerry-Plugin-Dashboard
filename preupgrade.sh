@@ -52,6 +52,66 @@ fi
 DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
 PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
 
+# ---------- Die eigenen Prozesse erkennen ----------
+#
+# Argumentweise (Regeln/03, "Prozesse argumentweise erkennen"): argv[0] ist ein
+# Python, argv[1] ist genau der eigene Dienstpfad, ein drittes Argument gibt es
+# nicht. Bis 0.9.21 stand im Rueckfallweg unten das erste Signal ganz ohne
+# Pruefung und vor dem harten eine Teilzeichenkettensuche
+# (grep -qa "dashboard_dienst.py"). In WSL gemessen
+# (Pruefung-Dashboard-0.9.21, Fall 8): ein fremder Prozess
+# "tail -f <dienstpfad>", dessen Nummer in der PID-Datei stand, war nach
+# preupgrade.sh tot.
+#
+# Die zweite Schreibweise deckt den Fall ab, dass der Dienst ueber einen
+# anderen Pfad auf dieselbe Datei gestartet wurde (bin/dienst.sh loest seinen
+# Ablageort mit readlink -f auf, hier kommt er aus $5).
+DB_SKRIPT="$BASE/bin/plugins/$PFOLDER/dashboard_dienst.py"
+DB_SKRIPT_R=$(readlink -f "$DB_SKRIPT" 2>/dev/null)
+[ -n "$DB_SKRIPT_R" ] || DB_SKRIPT_R="$DB_SKRIPT"
+DB_UID=$(id -u loxberry 2>/dev/null || id -u)
+
+db_ist_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    {
+        IFS= read -r -d '' db_a0 || return 1
+        IFS= read -r -d '' db_a1 || return 1
+        case "${db_a0##*/}" in python|python3|python3.*) ;; *) return 1 ;; esac
+        if [ "$db_a1" != "$DB_SKRIPT" ]; then
+            [ "$(readlink -f "$db_a1" 2>/dev/null)" = "$DB_SKRIPT_R" ] || return 1
+        fi
+        IFS= read -r -d '' db_a2 && return 1
+        return 0
+    } < "/proc/$1/cmdline"
+}
+
+# Alle eigenen Dienste des eigenen Benutzers - auch die ohne PID-Datei.
+db_dienste() {
+    for db_d in /proc/[0-9]*; do
+        db_ist_dienst "${db_d#/proc/}" || continue
+        [ "$(stat -c %u "$db_d" 2>/dev/null)" = "$DB_UID" ] || continue
+        echo "${db_d#/proc/}"
+    done
+    return 0
+}
+
+# Beendet sie: freundlich, bis zu zehn Sekunden Zeit, dann hart - und vor JEDEM
+# Signal wird neu gesucht, auch vor dem kill -9. Gibt die Nummern aus, die beim
+# ersten Signal gemeint waren.
+db_dienste_beenden() {
+    db_ziel=$(db_dienste)
+    [ -n "$db_ziel" ] || return 0
+    kill $db_ziel 2>/dev/null
+    db_i=0
+    while [ $db_i -lt 10 ] && [ -n "$(db_dienste)" ]; do
+        sleep 1
+        db_i=$((db_i + 1))
+    done
+    db_rest=$(db_dienste)
+    [ -n "$db_rest" ] && kill -9 $db_rest 2>/dev/null
+    echo $db_ziel
+}
+
 # ZUERST merken, ob der Dienst laufen SOLL - danach wird der Merker durch
 # 'dienst.sh stop' geloescht, und was davon uebrig bliebe, raeumt gleich
 # darauf purge_installation mit dem ganzen data/plugins/<x>/ weg.
@@ -77,24 +137,45 @@ if [ -x "$DIENST" ]; then
     else
         echo "<INFO> Der Dienst lief nicht - es war nichts anzuhalten."
     fi
-elif [ -f "$PID" ]; then
+else
+    # Rueckfallebene, falls das Dienstskript fehlt: dieselbe Sorgfalt von Hand.
     rm -f "$BASE/data/plugins/$PFOLDER/soll_laufen"
-    P=$(cat "$PID" 2>/dev/null)
-    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then
-        kill "$P" 2>/dev/null || true
-        i=0
-        while [ $i -lt 15 ] && kill -0 "$P" 2>/dev/null; do
-            sleep 1
-            i=$((i + 1))
-        done
-        if kill -0 "$P" 2>/dev/null && grep -qa "dashboard_dienst.py" "/proc/$P/cmdline" 2>/dev/null; then
-            kill -9 "$P" 2>/dev/null || true
+    if [ -f "$PID" ]; then
+        P=$(cat "$PID" 2>/dev/null)
+        # Geprueft wird VOR dem ersten Signal, nicht erst vor dem harten.
+        # Prozessnummern werden wiederverwendet: liegt eine alte PID-Datei
+        # herum und traegt ihre Zahl inzwischen einen fremden Vorgang, traf
+        # das erste Signal genau den.
+        if [ -n "$P" ] && kill -0 "$P" 2>/dev/null && db_ist_dienst "$P"; then
+            kill "$P" 2>/dev/null || true
+            i=0
+            while [ $i -lt 15 ] && kill -0 "$P" 2>/dev/null && db_ist_dienst "$P"; do
+                sleep 1
+                i=$((i + 1))
+            done
+            # Vor dem harten Signal erneut pruefen - er kann inzwischen weg
+            # und die Nummer neu vergeben sein.
+            if kill -0 "$P" 2>/dev/null && db_ist_dienst "$P"; then
+                kill -9 "$P" 2>/dev/null || true
+            fi
+            # Nur hier gemeldet: eine liegengebliebene PID-Datei allein ist
+            # kein laufender Dienst.
+            echo "<INFO> Laufender Dienst angehalten (Rueckfallebene ohne dienst.sh)."
+        elif [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then
+            echo "<INFO> Die Nummer $P aus der PID-Datei gehoert einem fremden"
+            echo "<INFO> Vorgang - es wurde nichts beendet, die Datei wird entfernt."
         fi
-        # Nur hier gemeldet: eine liegengebliebene PID-Datei allein ist
-        # kein laufender Dienst.
-        echo "<INFO> Laufender Dienst angehalten (Rueckfallebene ohne dienst.sh)."
+        rm -f "$PID"
     fi
-    rm -f "$PID"
+    # Dazu jeder eigene Dienst OHNE PID-Datei. purge_installation raeumt
+    # data/plugins/<ordner>/ bei jedem Upgrade ab (Regeln/06), der Minutentakt
+    # kann in der Luecke einen zweiten starten. In WSL gemessen
+    # (Pruefung-Dashboard-0.9.21, Fall 8): ohne diesen Schritt lief er durch
+    # das ganze Upgrade weiter.
+    WAISEN=$(db_dienste_beenden)
+    if [ -n "$WAISEN" ]; then
+        echo "<INFO> Ein Dienst ohne PID-Datei lief und wurde beendet (PID $WAISEN)."
+    fi
 fi
 
 for f in dashboard.json seiten.json zugang.json; do

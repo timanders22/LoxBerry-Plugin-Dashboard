@@ -703,6 +703,65 @@ function db_erreichbarkeit($adresse, $port, $frist = 60)
 /* ---------------- Dienst ---------------- */
 
 
+/**
+ * Ist die Prozessnummer $pid der Dienst DIESES Plugins?
+ *
+ * Argumentweise (Regeln/03, "Prozesse argumentweise erkennen"), nicht ueber
+ * eine Teilzeichenkette. Bis 0.9.21 stand hier
+ *     strpos($cmd, 'dashboard_dienst.py') !== false
+ * und das hielt jeden Prozess fuer den Dienst, in dessen Befehlszeile der Name
+ * irgendwo vorkommt: einen Editor mit der Datei offen, ein Sicherungsskript,
+ * das den Ordner durchsucht, den Einmallauf der eigenen Oberflaeche. In WSL
+ * gemessen (Pruefung-Dashboard-0.9.21, Fall 9): fuer einen fremden Prozess
+ * "tail -f <dienstpfad>", dessen Nummer in der PID-Datei stand, gab
+ * db_dienst_pid() dessen Nummer zurueck - die Kachel meldete "Dienst laeuft",
+ * und der Knopf "Logdatei leeren" verweigerte sich mit LOG.LEEREN_LAEUFT.
+ *
+ * Ein Treffer hat GENAU zwei Argumente: argv[0] ist ein Python, argv[1] ist
+ * genau der eigene Dienstpfad. bin/dienst.sh startet den Dauerlaeufer an genau
+ * einer Stelle als  <bindir>/venv/bin/python3 <bindir>/dashboard_dienst.py;
+ * die Einmallaeufe (--selbsttest, --einmal, --entwurf, --anmeldeprobe,
+ * --httpprobe, --visuprobe) haben ein drittes Argument und sind kein
+ * laufender Dienst.
+ *
+ * Der zweite Vergleich ueber realpath() deckt den Fall ab, dass der Dienst
+ * ueber einen anderen Pfad auf dieselbe Datei gestartet wurde: bin/dienst.sh
+ * loest seinen Ablageort mit readlink -f auf, db_paths() baut ihn aus
+ * LBHOMEDIR. Ohne ihn meldete die Oberflaeche "gestoppt", waehrend der Dienst
+ * laeuft.
+ */
+function db_ist_dienst($pid)
+{
+    $pid = (int) $pid;
+    if ($pid <= 0) {
+        return false;
+    }
+    $roh = @file_get_contents('/proc/' . $pid . '/cmdline');
+    if (!is_string($roh) || $roh === '') {
+        return false;
+    }
+    // Die Befehlszeile ist eine Folge von Argumenten, jedes mit einem Nullbyte
+    // abgeschlossen; das letzte Stueck nach dem Trennen ist deshalb leer.
+    $teile = explode("\0", $roh);
+    if ($teile[count($teile) - 1] === '') {
+        array_pop($teile);
+    }
+    if (count($teile) !== 2) {
+        return false;
+    }
+    $a0 = basename($teile[0]);
+    if ($a0 !== 'python' && strpos($a0, 'python3') !== 0) {
+        return false;
+    }
+    $soll = db_paths()['bindir'] . '/dashboard_dienst.py';
+    if ($teile[1] === $soll) {
+        return true;
+    }
+    $r1 = @realpath($teile[1]);
+    $r2 = @realpath($soll);
+    return $r1 !== false && $r2 !== false && $r1 === $r2;
+}
+
 function db_dienst_pid()
 {
     $f = db_paths()['datadir'] . '/dienst.pid';
@@ -713,8 +772,8 @@ function db_dienst_pid()
     if ($pid <= 0 || !is_dir('/proc/' . $pid)) {
         return 0;
     }
-    $cmd = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
-    return strpos($cmd, 'dashboard_dienst.py') !== false ? $pid : 0;
+    // Nummernrecycling und fremde Prozesse ausschliessen.
+    return db_ist_dienst($pid) ? $pid : 0;
 }
 
 function db_dienst_soll()

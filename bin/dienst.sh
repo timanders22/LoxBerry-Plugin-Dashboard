@@ -21,6 +21,16 @@ PID="$PDATA/dienst.pid"
 SOLL="$PDATA/soll_laufen"
 LOGDATEI="$PLOG/dashboard.log"
 SKRIPT="$SELF/dashboard_dienst.py"
+# Zweite Schreibweise desselben Skripts fuer den Vergleich weiter unten: wurde
+# der Dienst ueber einen anderen Weg auf dieselbe Datei gestartet (Symlink im
+# Pfad, LBHOMEDIR gegen den aufgeloesten Ablageort), steht in seiner
+# Befehlszeile eine andere Zeichenkette fuer dieselbe Datei. Ein Vergleich, der
+# das uebersieht, meldet "laeuft nicht" und laesst den Dienst stehen.
+SKRIPT_R=$(readlink -f "$SKRIPT" 2>/dev/null)
+[ -n "$SKRIPT_R" ] || SKRIPT_R="$SKRIPT"
+# Der Dienst laeuft als loxberry; wo es den Benutzer nicht gibt, als der
+# eigene. Die Suche ueber /proc sieht nur dessen Prozesse an.
+DIENST_UID=$(id -u loxberry 2>/dev/null || id -u)
 # Welcher Python? Die venv wird bevorzugt, der System-Python ist die
 # Rueckfallebene - postinstall.sh legt die Umgebung inzwischen MIT
 # --system-site-packages an und kommt notfalls auch ganz ohne sie aus.
@@ -65,19 +75,82 @@ else
     ZEITGRENZE=""
 fi
 
+# ---------- Die eigenen Prozesse erkennen ----------
+#
+# Argumentweise, nicht ueber eine Teilzeichenkette (Regeln/03, "Prozesse
+# argumentweise erkennen"). Bis 0.9.21 stand hier
+#     grep -qa "dashboard_dienst.py" "/proc/$P/cmdline"
+# und das trifft JEDE Befehlszeile, in der die Zeichenkette irgendwo vorkommt:
+# einen Editor mit der Datei offen, ein Sicherungsskript, das den Ordner
+# durchsucht, und den Einmallauf der eigenen Oberflaeche. In WSL gemessen
+# (Bestand-2026-09-18/klasse-F-nachmessung, Zeile 8): ein fremder Prozess
+# "tail -f <dienstpfad>", dessen Nummer in der PID-Datei stand, galt als
+# Dienst - "status" meldete "laeuft 9000", und nach "stop" war er tot.
+#
+# Ein Treffer hat GENAU zwei Argumente: argv[0] ist ein Python, argv[1] ist
+# genau der eigene Dienstpfad. Das dritte Argument schliesst die Einmallaeufe
+# aus (--selbsttest, --einmal, --entwurf, --anmeldeprobe, --httpprobe,
+# --visuprobe) - sie laufen als eigener Prozess, sind aber nicht der
+# Dauerlaeufer und duerfen von "stop" nicht getroffen werden. Der Dauerlaeufer
+# wird an genau einer Stelle gestartet, in starten(), als  "$PY" "$SKRIPT".
+#
+# Gelesen wird ohne Hilfsprogramm: "read -d ''" zerlegt die Befehlszeile am
+# Nullbyte. Das spart je Prozess einen Aufruf von tr - der Waechter laeuft
+# minuetlich.
+ist_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    {
+        IFS= read -r -d '' db_a0 || return 1
+        IFS= read -r -d '' db_a1 || return 1
+        case "${db_a0##*/}" in python|python3|python3.*) ;; *) return 1 ;; esac
+        if [ "$db_a1" != "$SKRIPT" ]; then
+            [ "$(readlink -f "$db_a1" 2>/dev/null)" = "$SKRIPT_R" ] || return 1
+        fi
+        IFS= read -r -d '' db_a2 && return 1
+        return 0
+    } < "/proc/$1/cmdline"
+}
+
+# Alle eigenen Dienste, aufsteigend und ohne Dubletten.
+#
+# Zwei Quellen, weil keine allein reicht:
+#   - die Suche ueber /proc findet auch einen Dienst OHNE PID-Datei.
+#     purge_installation raeumt data/plugins/<ordner>/ bei jedem Upgrade ab
+#     (Regeln/06); der Minutentakt kann in der Luecke einen zweiten starten.
+#     In WSL gemessen (Pruefung-Dashboard-0.9.21, Fall 3): "stop" meldete
+#     "angehalten", und danach lief noch ein eigener Dienst.
+#   - die PID-Datei findet auch einen Dienst, der einem anderen Benutzer
+#     gehoert (von Hand als root gestartet) und deshalb durch den
+#     Benutzerfilter faellt.
+dienste() {
+    {
+        for db_d in /proc/[0-9]*; do
+            ist_dienst "${db_d#/proc/}" || continue
+            [ "$(stat -c %u "$db_d" 2>/dev/null)" = "$DIENST_UID" ] || continue
+            echo "${db_d#/proc/}"
+        done
+        db_p=""
+        [ -f "$PID" ] && IFS= read -r db_p < "$PID" 2>/dev/null
+        case "$db_p" in
+            ''|*[!0-9]*) ;;
+            *) ist_dienst "$db_p" && echo "$db_p" ;;
+        esac
+    } | sort -un
+}
+
 laeuft() {
-    [ -f "$PID" ] || return 1
-    P=$(cat "$PID" 2>/dev/null)
-    [ -n "$P" ] || return 1
-    kill -0 "$P" 2>/dev/null || return 1
-    # Nummernrecycling ausschliessen: der Prozess muss unser Skript sein
-    grep -qa "dashboard_dienst.py" "/proc/$P/cmdline" 2>/dev/null || return 1
-    return 0
+    [ -n "$(dienste)" ]
 }
 
 starten() {
-    if laeuft; then
-        echo "laeuft bereits (PID $(cat "$PID"))"
+    LAUFEND=$(dienste)
+    if [ -n "$LAUFEND" ]; then
+        ERSTE=$(printf '%s\n' "$LAUFEND" | head -n 1)
+        # Die PID-Datei nachziehen, wenn sie fehlt oder veraltet ist. Die
+        # Nummer ist argumentweise geprueft - eine ungepruefte Nummer aus einer
+        # Mustersuche darf hier nie hinein.
+        echo "$ERSTE" > "$PID" 2>/dev/null
+        echo "laeuft bereits (PID $ERSTE)"
         return 0
     fi
     # Die Meldung muss sagen, was wirklich fehlt. Bis 0.9.5 stand hier
@@ -125,22 +198,36 @@ starten() {
 
 anhalten() {
     rm -f "$SOLL"
-    if ! laeuft; then
+    # ALLE eigenen Dienste, nicht nur den aus der PID-Datei.
+    ZIEL=$(dienste)
+    if [ -z "$ZIEL" ]; then
         rm -f "$PID"
         echo "laeuft nicht"
         return 0
     fi
-    P=$(cat "$PID")
-    kill "$P" 2>/dev/null
+    kill $ZIEL 2>/dev/null
     for i in 1 2 3 4 5 6 7 8 9 10; do
-        laeuft || break
+        [ -n "$(dienste)" ] || break
         sleep 1
     done
-    if laeuft; then
-        kill -9 "$P" 2>/dev/null
+    # Vor dem harten Signal wird NEU gesucht, nicht die Liste von vorhin
+    # wiederverwendet: zwischen den beiden Signalen kann ein Prozess enden und
+    # seine Nummer neu vergeben werden, und der Minutentakt kann waehrend der
+    # Wartezeit einen zweiten Dienst gestartet haben (in WSL gemessen,
+    # Pruefung-Dashboard-0.9.21, Fall 10).
+    REST=$(dienste)
+    if [ -n "$REST" ]; then
+        kill -9 $REST 2>/dev/null
         sleep 1
     fi
     rm -f "$PID"
+    # "angehalten" ist eine Zusicherung, kein Rueckgabewert: es wird nachgesehen
+    # (CLAUDE.md, "Wirkung pruefen, nicht Rueckgabewert").
+    UEBRIG=$(dienste)
+    if [ -n "$UEBRIG" ]; then
+        echo "FEHLER: Dienst laeuft weiter (PID $(printf '%s' "$UEBRIG" | tr '\n' ' '))"
+        return 1
+    fi
     echo "angehalten"
     return 0
 }
@@ -150,8 +237,12 @@ case "$1" in
     stop)    anhalten ;;
     restart) anhalten; sleep 1; starten ;;
     status)
-        if laeuft; then
-            echo "laeuft $(cat "$PID")"
+        # Gemeldet werden die gefundenen Nummern, nicht der Inhalt der
+        # PID-Datei: liegt dort eine fremde oder veraltete Nummer, waere sie
+        # eine Falschaussage. Laufen zwei, stehen beide da.
+        LAUFEND=$(dienste)
+        if [ -n "$LAUFEND" ]; then
+            echo "laeuft $(printf '%s' "$LAUFEND" | tr '\n' ' ')"
             exit 0
         fi
         echo "gestoppt"

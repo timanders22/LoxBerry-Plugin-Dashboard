@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.20 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.21 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,51 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.21
+
+**Ein fremder Prozess konnte als Dienst gelten — und wurde beendet.** Wer der
+Dienst ist, wurde bis 0.9.20 mit
+`grep -qa "dashboard_dienst.py" /proc/<nummer>/cmdline` entschieden, also über
+eine Teilzeichenkette der ganzen Befehlszeile. Das trifft jeden Prozess, in
+dessen Befehlszeile der Dateiname irgendwo vorkommt: einen Editor mit der
+Datei offen, ein Sicherungsskript, das den Ordner durchsucht, und den
+Einmallauf der eigenen Oberfläche.
+
+In WSL Ubuntu gemessen (18.09.2026,
+`Bestand-2026-09-18/klasse-F-nachmessung/Befundliste-Nachmessung.md`, Zeile 8):
+für den fremden Prozess `tail -f <dienstpfad>`, dessen Nummer in der PID-Datei
+stand, meldete `dienst.sh status` wörtlich `laeuft 9000`, und nach
+`dienst.sh stop` war er tot.
+
+Geändert an drei Stellen:
+
+- **`bin/dienst.sh`** erkennt den eigenen Dienst jetzt argumentweise
+  (Regeln/03): argv[0] ist ein Python, argv[1] ist genau der eigene
+  Dienstpfad (mit `readlink -f`-Gegenprobe), ein drittes Argument gibt es
+  nicht — damit gelten die Einmalläufe `--selbsttest`, `--einmal`,
+  `--entwurf`, `--anmeldeprobe`, `--httpprobe` und `--visuprobe`
+  ausdrücklich **nicht** als Dienst. Gesucht wird über `/proc` mit
+  Benutzerfilter, damit auch ein Dienst **ohne** PID-Datei mitgeht: die liegt
+  im Datenordner, und `purge_installation` räumt den bei jedem Upgrade ab.
+  `stop` beendet **alle** eigenen Treffer, sucht vor **jedem** Signal neu —
+  auch vor dem `kill -9` — und meldet „angehalten" erst nach einer
+  Nachkontrolle; sonst nennt es die übrig gebliebenen Nummern und gibt 1
+  zurück. `status` meldet die gefundenen Nummern statt des Inhalts der
+  PID-Datei.
+- **`preupgrade.sh`** prüft im Rückfallweg ohne `dienst.sh` schon vor dem
+  **ersten** Signal, wem die Nummer gehört (bisher erst vor dem harten), sagt
+  es, wenn die Nummer einem fremden Vorgang gehört, und beendet zusätzlich
+  einen eigenen Dienst ohne PID-Datei.
+- **`webfrontend/html/db_lib.php`** entscheidet in der neuen Funktion
+  `db_ist_dienst()` nach denselben Regeln. Vorher hielt `db_dienst_pid()`
+  jeden Prozess mit passender Teilzeichenkette für den Dienst — die Kachel
+  meldete „Dienst läuft", und der Knopf *Logdatei leeren* verweigerte sich.
+
+Prüfstand: `Pruefung-Dashboard-0.9.21/` — 39 Fälle in zehn Lagen, vorher **20
+Fehlschläge**, nachher **0**. Eichung: sieben Rückbauten, jeder einzeln, jeder
+macht genau die vorhergesagten Zeilen rot. **Am Dienst selbst ändert sich
+nichts.**
 
 ## Neu in 0.9.20
 
