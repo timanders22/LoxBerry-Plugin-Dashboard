@@ -60,6 +60,14 @@ if (!defined('DB_PIN_SPERRE_MAX')) { define('DB_PIN_SPERRE_MAX', 86400); }
 /* C13: dieselbe Abweisung vom selben Absender steht hoechstens einmal je
  * DB_ABWEISUNG_BREMSE Sekunden im Protokoll. */
 if (!defined('DB_ABWEISUNG_BREMSE')) { define('DB_ABWEISUNG_BREMSE', 60); }
+/* S1 (0.9.26): so viele selbst angelegte Sicherungen behaelt der
+ * Sicherungsverlauf; beim naechsten faellt die aelteste weg. */
+if (!defined('DB_SICHERUNGEN_MAX')) { define('DB_SICHERUNGEN_MAX', 20); }
+/* Dieselbe Groessengrenze wie beim Hochladen einer Sicherung. */
+if (!defined('DB_SICHERUNG_MAX_BYTE')) { define('DB_SICHERUNG_MAX_BYTE', 262144); }
+/* S8 (0.9.26): Obergrenze einer ausgelieferten Symboldatei. Ein Symbol von
+ * LoxoneIcons hat wenige Kilobyte; groesser ist keins. */
+if (!defined('DB_SYMBOL_MAX_BYTE')) { define('DB_SYMBOL_MAX_BYTE', 262144); }
 
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
@@ -147,6 +155,10 @@ function db_paths()
         );
     }
     $p['verlauf'] = $p['datadir'] . '/verlauf.json';
+    /* S1 (0.9.26): der Sicherungsverlauf liegt NEBEN dem Konfigurationsordner
+     * (config/plugins/<ordner>.sicherungen/). purge_installation raeumt beim
+     * Update config/plugins/<ordner>/ ab; der Nachbar mit dem Punkt bleibt. */
+    $p['sicherungen'] = $p['configdir'] . '.sicherungen';
     $p['tafel']   = $p['datadir'] . '/tafel.json';
     // Das Hintergrundbild des Ruhebilds. Es liegt im DATENordner, nicht im
     // Konfigurationsordner: es ist kein Einstellwert, sondern Beiwerk, und es
@@ -385,6 +397,10 @@ function db_mit_sperre($sperrdatei, $arbeit)
  * Bis 0.9.24 stand hier "uninstall.sh": die Datei im Wurzelordner ruft der
  * Installer nie auf (plugininstall.pl liest nur uninstall/uninstall, am
  * Geraet am 18.09.2026 gemessen). Sie ist seit 0.9.25 entfernt (I7).
+ *
+ * Der Sicherungsverlauf (0.9.26, weiter unten) ist kein zweites Verfahren
+ * dieser Art: nichts liest ihn von selbst, und zurueckgespielt wird aus ihm
+ * nur auf Knopfdruck - durch dieselbe Pruefung wie eine hochgeladene Datei.
  */
 
 function db_config()
@@ -1782,6 +1798,8 @@ function db_seite_daten($schluessel)
         // das Tablet "keine lesbare Antwort" meldet.
         $titel = (string) (isset($k['titel']) ? $k['titel'] : '');
         $groesse = (string) (isset($k['groesse']) ? $k['groesse'] : '1x1');
+        // S8: das Symbol aus LoxoneIcons, nur wenn die Datei da ist.
+        $db_sym = db_symbol_kachel($k);
 
         // Szene: mehrere Befehle auf einen Druck. Sie haengt an keinem
         // einzelnen Baustein, deshalb VOR der Bausteinsuche.
@@ -1798,6 +1816,7 @@ function db_seite_daten($schluessel)
                 'schritte' => count($schritte), 'beschreibung' => $namen,
                 'werte' => array(), 'befehle' => array(),
                 'nurlesen' => 0, 'gesichert' => 0, 'warnung' => 0,
+                'symbol' => $db_sym,
             );
             continue;
         }
@@ -1809,7 +1828,8 @@ function db_seite_daten($schluessel)
             $kacheln[] = array('uuid' => $uuid, 'titel' => $titel,
                                'kachel' => 'fehlt', 'groesse' => $groesse,
                                'werte' => array(), 'befehle' => array(),
-                               'nurlesen' => 1, 'gesichert' => 0, 'warnung' => 0);
+                               'nurlesen' => 1, 'gesichert' => 0, 'warnung' => 0,
+                               'symbol' => $db_sym);
             continue;
         }
         $zeile = db_typzeile((string) $b['loxtyp']);
@@ -1842,6 +1862,7 @@ function db_seite_daten($schluessel)
              * der Wand ist schlimmer als gar keiner. */
             'haupt'    => (string) (isset($b['haupt']) ? $b['haupt'] : ''),
             'werte'    => isset($werte[$uuid]) ? $werte[$uuid] : array(),
+            'symbol'   => $db_sym,
         );
         // Grenzen des Bausteins, falls der Miniserver sie mitschickt. Ohne
         // sie klemmte die Anzeige jeden Schieberegler auf 0..100 - bei einem
@@ -2455,6 +2476,411 @@ function db_sicherung_einspielen($neu, $teile)
 
 
 /* ==================================================================
+ * SYMBOLE AUS LOXONEICONS (0.9.26, Bauliste S8)
+ * ==================================================================
+ *
+ * Ist das eigene Plugin LoxoneIcons installiert, zeigen Designer und Tafel
+ * dessen SVG-Symbole - NUR LESEND, hier wird dort nichts angelegt.
+ *
+ * Wo sie liegen, steht im Quelltext von LoxoneIcons 2.0.11:
+ * bin/download_icons.sh legt sie unter
+ *   <LoxBerry>/data/plugins/<ordner von LoxoneIcons>/loxone_icons/svg/filled/
+ * ab (daneben svg/outlined, dem sieben Symbole fehlen). Den Ordnernamen nennt
+ * LoxBerry in data/system/plugindatabase.json (Eintrag name=loxoneicons);
+ * bei einem gleichnamigen zweiten Plugin haengt LoxBerry 01, 02 ... an
+ * (Regeln/06), geraten wird er deshalb nicht.
+ *
+ * In seiten.json steht je Kachel nur der Dateiname ('symbol'), gepruft mit
+ * db_symbol_name_gueltig() - im Designer UND beim Zurueckspielen (Weg ueber
+ * db_seiten_pruefen). Ausgeliefert wird ueber den Endpunkt (aktion=symbol)
+ * hinter dem Token, mit einer CSP, die Skripte im SVG verbietet; die Tafel
+ * bindet es als <img> ein, nie inline.
+ * ================================================================== */
+
+/** Ein Dateiname fuer ein Symbol: Muster mit \z (Regeln/05). */
+function db_symbol_name_gueltig($n)
+{
+    return is_string($n) && preg_match('/^[A-Za-z0-9_.\-]{1,100}\.svg\z/', $n) === 1;
+}
+
+/** Der Symbolordner: array(realer Pfad|'', Lage). Lage 'ok', 'kein_plugin'
+ * (LoxoneIcons nicht installiert) oder 'keine_symbole' (installiert, aber
+ * noch keine Symbole geladen). Ergebnis gilt fuer den Aufruf. */
+function db_symbol_ordner()
+{
+    static $erg = null;
+    if ($erg !== null) { return $erg; }
+    $home = db_paths()['home'];
+    if ($home === '') { return $erg = array('', 'kein_plugin'); }
+    $ordner = '';
+    $pdb = db_json_lesen($home . '/data/system/plugindatabase.json');
+    $liste = (isset($pdb['plugins']) && is_array($pdb['plugins'])) ? $pdb['plugins'] : array();
+    foreach ($liste as $e) {
+        if (is_array($e) && isset($e['name'], $e['folder']) && $e['name'] === 'loxoneicons'
+                && is_string($e['folder']) && preg_match('/^[a-z0-9_-]{1,64}\z/', $e['folder'])) {
+            $ordner = $e['folder'];
+            break;
+        }
+    }
+    /* Ohne Eintrag der vorgesehene Ordnername - aber nur mit Beleg, dass dort
+     * wirklich LoxoneIcons liegt: sein Ladeskript (Regeln/06, Rueckfall auf
+     * einen Ordnernamen nur, wenn dort das eigene Merkmal liegt). */
+    if ($ordner === '') { $ordner = 'loxoneicons'; }
+    if (!is_file($home . '/bin/plugins/' . $ordner . '/download_icons.sh')) {
+        return $erg = array('', 'kein_plugin');
+    }
+    $real = @realpath($home . '/data/plugins/' . $ordner . '/loxone_icons/svg/filled');
+    if ($real === false || !is_dir($real)) { return $erg = array('', 'keine_symbole'); }
+    return $erg = array($real, 'ok');
+}
+
+/** Der Pfad einer Symboldatei oder null. Erst das Muster, dann realpath: es
+ * muss eine regulaere Datei GENAU in diesem Ordner sein - kein ../, kein
+ * Verweis hinaus. */
+function db_symbol_pfad($n)
+{
+    if (!db_symbol_name_gueltig($n)) { return null; }
+    list($o) = db_symbol_ordner();
+    if ($o === '') { return null; }
+    $r = @realpath($o . DIRECTORY_SEPARATOR . $n);
+    if ($r === false || !is_file($r) || dirname($r) !== $o) { return null; }
+    return $r;
+}
+
+/** Alle Symbole, nach Namen sortiert. Leer, wenn es keine gibt. */
+function db_symbol_liste()
+{
+    static $aus = null;
+    if ($aus !== null) { return $aus; }
+    $aus = array();
+    list($o) = db_symbol_ordner();
+    if ($o === '') { return $aus; }
+    $namen = @scandir($o);
+    foreach (is_array($namen) ? $namen : array() as $n) {
+        if (db_symbol_pfad($n) !== null) { $aus[] = $n; }
+    }
+    sort($aus, SORT_STRING);
+    return $aus;
+}
+
+/** Das Symbol einer Kachel fuer die Tafel: nur, wenn die Datei da ist. */
+function db_symbol_kachel($k)
+{
+    $s = (is_array($k) && isset($k['symbol'])) ? $k['symbol'] : '';
+    return (is_string($s) && $s !== '' && db_symbol_pfad($s) !== null) ? $s : '';
+}
+
+/* ==================================================================
+ * SICHERUNGSVERLAUF (0.9.26, Bauliste S1-S4)
+ * ==================================================================
+ *
+ * Das Plugin behaelt die letzten DB_SICHERUNGEN_MAX Sicherungen, die es
+ * selbst angelegt hat: beim Knopf "Einstellungen sichern" (Anlass hand) und
+ * automatisch vor jedem Zurueckspielen (Anlass vor_zurueckspielen).
+ *
+ * Ort: config/plugins/<ordner>.sicherungen/ (db_paths()['sicherungen']).
+ * Ein Update laesst ihn stehen; eine Neuinstallation ohne Upgrade-Marke legt
+ * ihn nach .alt (preinstall.sh, Entscheidung 1), uninstall/uninstall
+ * entfernt beide.
+ *
+ * Ordner 0700, Dateien 0600: jede Sicherung traegt Aktionstoken und
+ * Zugangsdaten. Geschrieben wird ueber db_datei_schreiben() - Nebendatei mit
+ * Prozessnummer, Rechte vor dem Inhalt, Laengenpruefung, rename.
+ *
+ * Dateiname JJJJMMTT-hhmmss_<anlass>.json. Faellt eine zweite Sicherung mit
+ * demselben Anlass in dieselbe Sekunde, bekommt sie eine Folgenummer
+ * (JJJJMMTT-hhmmss_hand-2.json); ueberschrieben wird nie.
+ *
+ * Ein Name aus dem Formular gilt nur, wenn er dem Muster folgt UND in der
+ * Liste steht, die dieser Ordner wirklich fuehrt (db_sicherungen_pfad) -
+ * damit fallen '../', absolute Pfade, fremde Dateien und Verweise heraus.
+ * ================================================================== */
+
+/** Ein Name des Verlaufs, zerlegt - oder null. \z statt $ (Regeln/05). */
+function db_sicherungen_name($name)
+{
+    if (!is_string($name) || !preg_match(
+            '/^([0-9]{8})-([0-9]{6})_(hand|vor_zurueckspielen)(?:-([2-9]|[1-9][0-9]))?\.json\z/', $name, $m)) {
+        return null;
+    }
+    return array('stamp' => $m[1] . $m[2], 'anlass' => $m[3],
+                 'nr' => (isset($m[4]) && $m[4] !== '') ? (int) $m[4] : 1);
+}
+
+/** Zeitpunkt eines Eintrags zum Anzeigen (aus dem Namen, nicht aus der
+ * Aenderungszeit - die aendert ein Kopieren). */
+function db_sicherungen_zeit($z)
+{
+    $s = (string) $z['stamp'];
+    return substr($s, 6, 2) . '.' . substr($s, 4, 2) . '.' . substr($s, 0, 4) . ' '
+         . substr($s, 8, 2) . ':' . substr($s, 10, 2) . ':' . substr($s, 12, 2)
+         . ($z['nr'] > 1 ? ' (' . (int) $z['nr'] . ')' : '');
+}
+
+/** Der Anlass zum Anzeigen. */
+function db_sicherungen_anlass($z)
+{
+    return $z['anlass'] === 'hand' ? db_t('EINST.SVL_ANLASS_HAND') : db_t('EINST.SVL_ANLASS_VOR');
+}
+
+/** Alle Eintraege, die juengsten zuerst. Nur regulaere Dateien nach dem
+ * Muster; Verweise, Unterordner, Nebendateien (.tmp.<pid>), die Sperrdatei
+ * und Fremdes zaehlen nicht. Liegt statt des Ordners ein Verweis da, gilt
+ * der Verlauf als leer. */
+function db_sicherungen_liste()
+{
+    $o = db_paths()['sicherungen'];
+    /* MIT dem realpath-Zwischenspeicher: er lebt ueber die Anfrage hinaus im
+     * Prozess (mod_php, php -S). Gemessen unter PHP 7.4 (proben_verlauf.py,
+     * Fall V7c): stand an Stelle des Ordners einmal eine Datei, war die
+     * Liste danach leer, obwohl die Eintraege wieder dalagen. */
+    clearstatcache(true);
+    if (is_link($o) || !is_dir($o)) { return array(); }
+    $aus = array();
+    $namen = @scandir($o);
+    foreach (is_array($namen) ? $namen : array() as $n) {
+        $z = db_sicherungen_name($n);
+        if ($z === null) { continue; }
+        $f = $o . '/' . $n;
+        if (is_link($f) || !is_file($f)) { continue; }
+        $z['name'] = $n;
+        $z['groesse'] = (int) @filesize($f);
+        $z['rechte'] = (int) @fileperms($f) & 0777;
+        $aus[] = $z;
+    }
+    usort($aus, function ($a, $b) {
+        if ($a['stamp'] !== $b['stamp']) { return strcmp($b['stamp'], $a['stamp']); }
+        if ($a['nr'] !== $b['nr']) { return $b['nr'] - $a['nr']; }
+        return strcmp($b['anlass'], $a['anlass']);
+    });
+    return $aus;
+}
+
+/** Den Ordner anlegen bzw. auf 0700 bringen. Rueckgabe '' oder der Grund
+ * (fertiges HTML, Pfade maskiert). */
+function db_sicherungen_ordner_bereit()
+{
+    $o = db_paths()['sicherungen'];
+    clearstatcache(true);
+    if (is_link($o)) {
+        return sprintf(db_t('EINST.SVL_GRUND_VERWEIS'), db_e($o));
+    }
+    if (!is_dir($o)) {
+        // Nicht rekursiv: fehlt schon config/plugins, ist das kein LoxBerry.
+        if (file_exists($o) || !@mkdir($o, 0700)) {
+            clearstatcache(true);
+            if (!is_dir($o)) { return sprintf(db_t('EINST.SVL_GRUND_ORDNER'), db_e($o)); }
+        }
+    }
+    @chmod($o, 0700);
+    if (!is_writable($o)) {
+        return sprintf(db_t('EINST.SVL_GRUND_ORDNER'), db_e($o));
+    }
+    return '';
+}
+
+/**
+ * Eine Sicherung in den Verlauf legen. $js ist der fertige Inhalt - beim
+ * Knopf "Einstellungen sichern" derselbe, der heruntergeladen wird; null
+ * heisst: jetzt bauen (db_sicherung_bauen). Rueckgabe
+ * array(Name|null, Grund (HTML), weggefallene Namen[]).
+ *
+ * Aus einer beschaedigten Datei wird nichts gesichert - die Sicherung waere
+ * eine Sicherung der Vorgaben (dieselbe Regel wie beim Knopf).
+ */
+function db_sicherungen_ablegen($anlass, $js = null)
+{
+    if (!in_array($anlass, array('hand', 'vor_zurueckspielen'), true)) {
+        return array(null, db_t('EINST.SVL_GRUND_KODIEREN'), array());
+    }
+    $p = db_paths();
+    foreach (array('config', 'seiten', 'geheim') as $d) {
+        db_json_lesen_streng($p[$d], $lage);
+        if ($lage === 'kaputt' || $lage === 'unlesbar') {
+            return array(null, sprintf(db_t('EINST.SVL_GRUND_KAPUTT'), db_e($p[$d]), db_e($p[$d] . '.kaputt')),
+                         array());
+        }
+    }
+    if ($js === null) {
+        $js = json_encode(db_sicherung_bauen(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+    if (!is_string($js) || $js === '') {
+        return array(null, db_t('EINST.SVL_GRUND_KODIEREN'), array());
+    }
+    $grund = db_sicherungen_ordner_bereit();
+    if ($grund !== '') { return array(null, $grund, array()); }
+    $o = $p['sicherungen'];
+    return db_mit_sperre($o . '/.sperre', function () use ($o, $anlass, $js) {
+        $basis = date('Ymd-His') . '_' . $anlass;
+        $name = $basis . '.json';
+        $i = 1;
+        while (file_exists($o . '/' . $name) || is_link($o . '/' . $name)) {
+            $i++;
+            if ($i > 99) { return array(null, sprintf(db_t('EINST.SVL_GRUND_SCHREIBEN'), db_e($o . '/' . $name)), array()); }
+            $name = $basis . '-' . $i . '.json';
+        }
+        $f = $o . '/' . $name;
+        if (!db_datei_schreiben($f, $js, 0600)) {
+            return array(null, sprintf(db_t('EINST.SVL_GRUND_SCHREIBEN'), db_e($f)), array());
+        }
+        // Wirkung pruefen, nicht den Rueckgabewert: liegt die Datei ganz da?
+        clearstatcache(true, $f);
+        if (!is_file($f) || (int) @filesize($f) !== strlen($js)) {
+            return array(null, sprintf(db_t('EINST.SVL_GRUND_SCHREIBEN'), db_e($f)), array());
+        }
+        // Kappen: die aeltesten ueber der Grenze fallen weg. Die eben
+        // geschriebene nie - auch nicht, wenn die Uhr zurueckgestellt wurde.
+        $andere = array();
+        foreach (db_sicherungen_liste() as $z) {
+            if ($z['name'] !== $name) { $andere[] = $z; }
+        }
+        $weg = array();
+        while (count($andere) + 1 > DB_SICHERUNGEN_MAX) {
+            $alt = array_pop($andere);
+            if (!@unlink($o . '/' . $alt['name'])) {
+                db_log_gebremst('verlauf_kappen', 'Sicherungsverlauf: ' . $alt['name'] . ' liess sich nicht loeschen.');
+                break;
+            }
+            $weg[] = $alt['name'];
+        }
+        return array($name, '', $weg);
+    });
+}
+
+/** Einen Namen aus dem Formular aufloesen: Pfad oder null. Gilt nur, was dem
+ * Muster folgt UND in der Liste des Ordners steht (S3, Pfadangriffe). */
+function db_sicherungen_pfad($name)
+{
+    if (db_sicherungen_name($name) === null) { return null; }
+    foreach (db_sicherungen_liste() as $z) {
+        if ($z['name'] === $name) { return db_paths()['sicherungen'] . '/' . $name; }
+    }
+    return null;
+}
+
+/** Einen Eintrag lesen. Rueckgabe array(Inhalt|null, Grund (HTML)). */
+function db_sicherungen_lesen($name)
+{
+    $f = db_sicherungen_pfad($name);
+    if ($f === null) {
+        return array(null, sprintf(db_t('EINST.SVL_NAME_UNGUELTIG'), db_sicherungen_name_zeigen($name)));
+    }
+    clearstatcache(true, $f);
+    if ((int) @filesize($f) > DB_SICHERUNG_MAX_BYTE) {
+        return array(null, db_t('EINST.SICH_ZU_GROSS'));
+    }
+    $roh = @file_get_contents($f);
+    if (!is_string($roh)) {
+        return array(null, sprintf(db_t('EINST.SVL_NAME_UNGUELTIG'), db_sicherungen_name_zeigen($name)));
+    }
+    return array($roh, '');
+}
+
+/** Einen Eintrag loeschen. Rueckgabe null (unbekannter Name), true, false. */
+function db_sicherungen_loeschen($name)
+{
+    $f = db_sicherungen_pfad($name);
+    if ($f === null) { return null; }
+    $o = db_paths()['sicherungen'];
+    return db_mit_sperre($o . '/.sperre', function () use ($f) {
+        @unlink($f);
+        clearstatcache(true, $f);
+        return !file_exists($f) && !is_link($f);
+    });
+}
+
+/** Ein Name aus dem Formular fuer eine Meldung: maskiert und gekuerzt; eine
+ * Liste oder ein fehlender Wert wird benannt, nicht umgewandelt. */
+function db_sicherungen_name_zeigen($name)
+{
+    if (!is_string($name)) { return db_e(db_t('EINST.SVL_KEIN_NAME')); }
+    return db_e(db_kuerzen(preg_replace('/[\x00-\x1F\x7F]/', '?', $name), 80));
+}
+
+/**
+ * Eine Sicherung zurueckspielen - S2 und S4. Die hochgeladene Datei und ein
+ * Eintrag des Verlaufs gehen durch DIESELBE Strecke:
+ *   1. db_sicherung_lesen() prueft jeden Wert (Bauart E). Eine abgewiesene
+ *      Datei aendert nichts und legt auch keinen Verlaufseintrag an.
+ *   2. Der Ist-Stand wird in den Verlauf gesichert (Anlass
+ *      vor_zurueckspielen). Scheitert das, wird NICHT zurueckgespielt.
+ *      Ausnahme (Entscheidung 30.09.2026 auf Rueckfrage): ist eine der drei
+ *      Einrichtungsdateien beschaedigt, waere der Eintrag eine Sicherung der
+ *      Werkseinstellungen. Dann wird OHNE Verlaufseintrag zurueckgespielt -
+ *      aber nur, wenn jede beschaedigte Datei als <datei>.kaputt daneben
+ *      liegt (db_kaputt_melden legt sie beim strengen Lesen an; eine
+ *      vorhandene mit gleichem Inhalt bleibt unberuehrt). Eine unlesbare
+ *      Datei hat keine Abschrift und wird deshalb nicht ueberschrieben.
+ *      Jeder andere Grund (Ordner nicht beschreibbar) bleibt eine Abweisung.
+ *   3. db_sicherung_einspielen() schreibt; geht dabei etwas schief, setzt es
+ *      die schon geschriebenen Dateien zurueck.
+ * Rueckgabe array(eingespielt, Meldungen[], Fehler[]) - fertiges HTML.
+ */
+function db_sicherung_zurueckspielen($roh)
+{
+    $meld = array();
+    $fehl = array();
+    list($neu, $mangel, $n, $teile, $hinweise) = db_sicherung_lesen((string) $roh);
+    if ($neu === null) {
+        // ALLE Beanstandungen, nicht nur die erste - und geaendert wird nichts.
+        $fehl[] = db_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $mangel);
+        return array(false, $meld, $fehl);
+    }
+    $p = db_paths();
+    $kaputt = array();
+    foreach (array('config', 'seiten', 'geheim') as $d) {
+        db_json_lesen_streng($p[$d], $lage);
+        if ($lage === 'unlesbar') {
+            $fehl[] = sprintf(db_t('EINST.SVL_VORHER_FEHL'),
+                              sprintf(db_t('EINST.SVL_GRUND_UNLESBAR'), db_e($p[$d])));
+            return array(false, $meld, $fehl);
+        }
+        if ($lage === 'kaputt') {
+            $ab = $p[$d] . '.kaputt';
+            clearstatcache(true, $ab);
+            if (!is_file($ab)) {
+                $fehl[] = sprintf(db_t('EINST.SVL_VORHER_FEHL'),
+                                  sprintf(db_t('EINST.SVL_GRUND_KEINE_ABSCHRIFT'), db_e($p[$d]), db_e($ab)));
+                return array(false, $meld, $fehl);
+            }
+            $kaputt[] = $ab;
+        }
+    }
+    $vorher = null;
+    $weg = array();
+    if (!$kaputt) {
+        list($vorher, $grund, $weg) = db_sicherungen_ablegen('vor_zurueckspielen');
+        if ($vorher === null) {
+            $fehl[] = sprintf(db_t('EINST.SVL_VORHER_FEHL'), $grund);
+            return array(false, $meld, $fehl);
+        }
+    }
+    if (!db_sicherung_einspielen($neu, $teile)) {
+        $fehl[] = db_t('EINST.SICH_SCHREIBFEHLER');
+        if ($vorher !== null) { $fehl[] = sprintf(db_t('EINST.SVL_VORHER'), db_e($vorher)); }
+        return array(false, $meld, $fehl);
+    }
+    $meld[] = sprintf(db_t('EINST.SICH_UEBERNOMMEN'), $n);
+    if (is_array($teile) && isset($teile['seiten'])) {
+        $meld[] = sprintf(db_t('EINST.SICH_SEITEN_UEBERNOMMEN'), count($teile['seiten']));
+    }
+    if (is_array($teile) && isset($teile['zugang'])) {
+        $meld[] = db_t('EINST.SICH_ZUGANG_UEBERNOMMEN');
+    }
+    foreach ($hinweise as $h) { $meld[] = $h; }
+    if ($kaputt) {
+        $meld[] = sprintf(db_t('EINST.SVL_VORHER_KAPUTT'), db_e(implode(', ', $kaputt)));
+    } else {
+        $meld[] = sprintf(db_t('EINST.SVL_VORHER'), db_e($vorher));
+    }
+    if ($weg) {
+        $meld[] = sprintf(db_t('EINST.SVL_GEKUERZT'), db_e(implode(', ', $weg)), DB_SICHERUNGEN_MAX);
+    }
+    return array(true, $meld, $fehl);
+}
+
+
+/* ==================================================================
  * WACHPOSTEN GEGEN FREMDE FORMULARE
  * ==================================================================
  *
@@ -2718,7 +3144,22 @@ function db_seiten_pruefen($roh, $quelle)
                 // bleibt erhalten und wird auf dem Tablet als fehlend gezeigt.
                 $hinweise[] = sprintf(db_t('DESIGN.UNBEKANNT'), db_e($u));
             }
+            /* S8 (0.9.26): das Symbol - nur der Dateiname, dieselbe Regel im
+             * Designer und beim Zurueckspielen. Fehlt der Schluessel (Seiten
+             * aus 0.9.25 und frueher), gilt "kein Symbol". Dass die Datei da
+             * ist, verlangt die Pruefung nicht: auf einem zweiten LoxBerry
+             * kommt LoxoneIcons oft erst nach dem Zurueckspielen. */
+            $sy = array_key_exists('symbol', $kk) ? $kk['symbol'] : '';
+            if ($sy === null) { $sy = ''; }
+            if (!is_string($sy) || ($sy !== '' && !db_symbol_name_gueltig($sy))) {
+                $fehler[] = sprintf(db_t('DESIGN.FEHLER_SYMBOL'), $wo);
+                continue;
+            }
+            if ($sy !== '' && db_symbol_ordner()[1] === 'ok' && db_symbol_pfad($sy) === null) {
+                $hinweise[] = sprintf(db_t('DESIGN.SYMBOL_FEHLT'), $wo, db_e($sy));
+            }
             $neu = array('uuid' => $u, 'titel' => $t, 'kachel' => $art, 'groesse' => $g, 'sichtbar' => $sb);
+            if ($sy !== '') { $neu['symbol'] = $sy; }
             if ($art === 'szene') {
                 $sroh = array_key_exists('schritte', $kk) ? $kk['schritte'] : array();
                 if (!is_array($sroh)) {

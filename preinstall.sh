@@ -17,6 +17,11 @@
 # genau einer <WARNING>; uninstall/uninstall raeumt sie ab. Gemessen vorher
 # (Fall B): 0.9.25 spielte Aktionstoken, Miniserver-Kennwort und -Token und
 # die Seiten einer frueheren Installation ein und startete den Dienst damit.
+#
+# S5 (0.9.26, Sicherungsverlauf): dazu gehoert config/plugins/<ordner>.sicherungen/.
+# Er traegt Aktionstoken und Zugangsdaten einer frueheren Installation und geht
+# bei einer Neuinstallation als Ganzes nach .sicherungen.alt. Beim Update liegt
+# die Marke; dann tut dieses Skript nichts, und der Verlauf bleibt stehen.
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-dashboard}"
@@ -37,7 +42,8 @@ for ZIEL in "$BASE/config/plugins/$PFOLDER.backup.dashboard.json" \
             "$BASE/config/plugins/$PFOLDER.backup.seiten.json" \
             "$BASE/config/plugins/$PFOLDER.backup.zugang.json" \
             "$BASE/config/plugins/$PFOLDER.backup.json" \
-            "$BASE/data/plugins/$PFOLDER.upgrade_sicherung"; do
+            "$BASE/data/plugins/$PFOLDER.upgrade_sicherung" \
+            "$BASE/config/plugins/$PFOLDER.sicherungen"; do
     if [ -e "$ZIEL" ] || [ -L "$ZIEL" ]; then
         rm -rf "${ZIEL:?}.alt" 2>/dev/null
         if mv -f "$ZIEL" "$ZIEL.alt" 2>/dev/null; then
@@ -54,8 +60,12 @@ for A in "$BASE/config/plugins/$PFOLDER.backup.dashboard.json.alt" \
          "$BASE/config/plugins/$PFOLDER.backup.json.alt"; do
     [ -f "$A" ] && [ ! -L "$A" ] && chmod 600 "$A" 2>/dev/null
 done
+# Der beiseitegelegte Sicherungsverlauf: Ordner 0700 (die Dateien darin tragen
+# ihre 0600 schon; mv laesst Rechte stehen).
+V_ALT="$BASE/config/plugins/$PFOLDER.sicherungen.alt"
+[ -d "$V_ALT" ] && [ ! -L "$V_ALT" ] && chmod 700 "$V_ALT" 2>/dev/null
 if [ -n "$BEISEITE" ] || [ -n "$FEST" ]; then
-    T="<WARNING> Neuinstallation: Einstellungen, Seiten und Zugangsdaten einer frueheren Installation werden NICHT eingespielt."
+    T="<WARNING> Neuinstallation: Einstellungen, Seiten, Zugangsdaten und Sicherungsverlauf einer frueheren Installation werden NICHT eingespielt."
     [ -n "$BEISEITE" ] && T="$T Beiseitegelegt:$BEISEITE (die Deinstallation raeumt sie ab)."
     [ -n "$FEST" ] && T="$T Nicht zu verschieben, bitte von Hand entfernen:$FEST"
     echo "$T"

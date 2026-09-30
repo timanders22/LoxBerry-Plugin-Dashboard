@@ -756,6 +756,24 @@ if ($db_post && isset($_POST['db_sichern'])) {
             JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
     if ($db_js !== false) {
+        /* S3 (0.9.26): zusaetzlich zum Download ein Eintrag im
+         * Sicherungsverlauf, mit DEMSELBEN Inhalt. Die Antwort auf diesen POST
+         * ist die Datei selbst; was mit dem Verlauf geschah, reist als
+         * Einmalmeldung zur naechsten Seite. Scheitert der Eintrag, kommt der
+         * Download trotzdem - er ist der Zweck des Knopfes -, und die Seite
+         * sagt es beim naechsten Aufruf, das Protokoll ebenso. */
+        list($db_vn, $db_vg, $db_vweg) = db_sicherungen_ablegen('hand', $db_js);
+        if ($db_vn !== null) {
+            $db_meldungen[] = sprintf(db_t('EINST.SVL_ANGELEGT'), db_e($db_vn));
+            if ($db_vweg) {
+                $db_meldungen[] = sprintf(db_t('EINST.SVL_GEKUERZT'), db_e(implode(', ', $db_vweg)),
+                                          DB_SICHERUNGEN_MAX);
+            }
+        } else {
+            $db_fehler[] = sprintf(db_t('EINST.SVL_ANLEGEN_FEHL'), $db_vg);
+            db_log('Sicherungsverlauf: der Eintrag zu "Einstellungen sichern" liess sich nicht anlegen.');
+        }
+        db_einmal_schreiben(array('meldungen' => $db_meldungen, 'fehler' => $db_fehler, 'ausgabe' => ''));
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="dashboard_einstellungen_'
                . date('Ymd_His') . '.json"');
@@ -778,31 +796,73 @@ if ($db_post && isset($_POST['db_zurueck'])) {
     } elseif ((int) $_FILES['db_sicherung']['size'] > 262144) {
         $db_fehler[] = db_t('EINST.SICH_ZU_GROSS');
     } else {
-        /* C5 (Durchgang 29.09.2026, Bauart E): jeder Wert geprueft, Seiten und
-         * Kacheln durch dieselbe Pruefung wie im Designer, der Zugang wie im
-         * Formular. Eine halb gueltige Datei aendert nichts; geht beim
-         * Schreiben etwas schief, werden die schon geschriebenen Dateien
-         * zurueckgesetzt (db_sicherung_einspielen). */
-        list($db_neu, $db_mangel, $db_n, $db_teile, $db_hinweise) = db_sicherung_lesen(
+        /* C5 (Durchgang 29.09.2026, Bauart E) und S2/S4 (0.9.26): jeder Wert
+         * geprueft, Seiten und Kacheln durch dieselbe Pruefung wie im
+         * Designer, der Zugang wie im Formular. Vor dem Einspielen wird der
+         * Ist-Stand in den Sicherungsverlauf gelegt; scheitert das, wird
+         * nicht zurueckgespielt. Dieselbe Strecke wie beim Zurueckspielen aus
+         * dem Verlauf (db_sicherung_zurueckspielen) - eine zweite gibt es
+         * nicht. Eine halb gueltige Datei aendert nichts. */
+        list($db_ok, $db_m2, $db_f2) = db_sicherung_zurueckspielen(
             (string) @file_get_contents($_FILES['db_sicherung']['tmp_name']));
-        if ($db_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $db_fehler[] = db_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $db_mangel);
-        } elseif (db_sicherung_einspielen($db_neu, $db_teile)) {
-            $db_meldungen[] = sprintf(db_t('EINST.SICH_UEBERNOMMEN'), $db_n);
-            if (is_array($db_teile) && isset($db_teile['seiten'])) {
-                $db_meldungen[] = sprintf(db_t('EINST.SICH_SEITEN_UEBERNOMMEN'), count($db_teile['seiten']));
-            }
-            if (is_array($db_teile) && isset($db_teile['zugang'])) {
-                $db_meldungen[] = db_t('EINST.SICH_ZUGANG_UEBERNOMMEN');
-            }
-            $db_meldungen = array_merge($db_meldungen, $db_hinweise);
-            // O17: nach dem Zurueckspielen wird der Dienst nachgezogen.
-            $db_nachziehen = true;
+        $db_meldungen = array_merge($db_meldungen, $db_m2);
+        $db_fehler = array_merge($db_fehler, $db_f2);
+        // O17: nach dem Zurueckspielen wird der Dienst nachgezogen.
+        if ($db_ok) { $db_nachziehen = true; }
+    }
+    $db_tab = 'tab-settings';
+}
+
+/* ---------------- Sicherungsverlauf (0.9.26, S3) ----------------
+ * Drei Knoepfe je Eintrag. Der Name kommt aus einem versteckten Feld und
+ * gilt nur, wenn er dem Muster folgt UND im Ordner steht
+ * (db_sicherungen_pfad) - '../', absolute Pfade und fremde Dateien fallen
+ * damit heraus. Zurueckspielen und Loeschen verlangen den
+ * Bestaetigungshaken (Regeln/04). Herunterladen liefert die Datei selbst und
+ * endet mit exit wie "Einstellungen sichern"; alles andere endet unten mit
+ * 303, F5 wiederholt also nichts. */
+$db_vname = isset($_POST['db_verlauf_name']) ? $_POST['db_verlauf_name'] : null;
+if ($db_post && isset($_POST['db_verlauf_laden'])) {
+    list($db_vroh, $db_vgrund) = db_sicherungen_lesen($db_vname);
+    if ($db_vroh !== null) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="dashboard_' . $db_vname . '"');
+        echo $db_vroh;
+        exit;
+    }
+    $db_fehler[] = $db_vgrund;
+    $db_tab = 'tab-settings';
+}
+if ($db_post && isset($_POST['db_verlauf_zurueck'])) {
+    if (!isset($_POST['db_verlauf_zurueck_ok']) || $_POST['db_verlauf_zurueck_ok'] !== '1') {
+        $db_fehler[] = db_t('EINST.SVL_BESTAETIGEN_ZURUECK');
+    } else {
+        list($db_vroh, $db_vgrund) = db_sicherungen_lesen($db_vname);
+        if ($db_vroh === null) {
+            $db_fehler[] = $db_vgrund;
         } else {
-            $db_fehler[] = db_t('EINST.SICH_SCHREIBFEHLER');
+            list($db_ok, $db_m2, $db_f2) = db_sicherung_zurueckspielen($db_vroh);
+            if ($db_ok) {
+                array_unshift($db_m2, sprintf(db_t('EINST.SVL_ZURUECK_AUS'), db_e($db_vname)));
+                $db_nachziehen = true;
+            }
+            $db_meldungen = array_merge($db_meldungen, $db_m2);
+            $db_fehler = array_merge($db_fehler, $db_f2);
+        }
+    }
+    $db_tab = 'tab-settings';
+}
+if ($db_post && isset($_POST['db_verlauf_weg'])) {
+    if (!isset($_POST['db_verlauf_weg_ok']) || $_POST['db_verlauf_weg_ok'] !== '1') {
+        $db_fehler[] = db_t('EINST.SVL_BESTAETIGEN_WEG');
+    } else {
+        $db_vw = db_sicherungen_loeschen($db_vname);
+        if ($db_vw === null) {
+            $db_fehler[] = sprintf(db_t('EINST.SVL_NAME_UNGUELTIG'), db_sicherungen_name_zeigen($db_vname));
+        } elseif ($db_vw) {
+            $db_meldungen[] = sprintf(db_t('EINST.SVL_GELOESCHT'), db_e($db_vname));
+        } else {
+            $db_fehler[] = sprintf(db_t('EINST.SVL_LOESCHEN_FEHL'), db_e($db_vname));
         }
     }
     $db_tab = 'tab-settings';
@@ -917,6 +977,12 @@ ob_start();
 .sm-tabelle { border-collapse: collapse; width: 100%; font-size: 0.88em; margin: 10px 0; }
 .sm-tabelle th, .sm-tabelle td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
 .sm-tabelle th { background: #f5f5f5; font-weight: 600; }
+/* Rollbehaelter nach VORLAGE_hausstandard.css.html (dort fuer die Klasse
+   sm-tbl; die Tabellenklasse dieses Plugins heisst sm-tabelle). Neu in
+   0.9.26 fuer die Tabelle des Sicherungsverlaufs, die Eingabefelder traegt
+   (Regeln/04: jede Tabelle mit Eingabefeldern kommt in sm-breit). */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tabelle { margin: 0; min-width: 760px; }
 /* Knoepfe, Knopfreihe und Legende woertlich nach VORLAGE_hausstandard.css.html.
    Bis 0.9.5 hiessen die Klassen hier sm-b statt sm-btn, es gab keine
    sm-knopfreihe, und die Legende malte ihre Punkte mit style="background:..."
@@ -1372,6 +1438,51 @@ if (db_wetter_eigene_gewaehlt($db_cfg)) {
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="db_zurueck" value="1"><?= db_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>
+
+<h3><?= db_e(db_t('EINST.H_SVL')) ?></h3>
+<p class="sm-hilfe"><?= sprintf(db_t('EINST.SVL_ERKLAERUNG'), (int) DB_SICHERUNGEN_MAX,
+    '<span class="sm-mono">' . db_e($db_p['sicherungen']) . '</span>') ?></p>
+<?php
+/* S3 (0.9.26): die Liste des Verlaufs, die juengste zuerst. Je Eintrag drei
+ * eigene Formulare - kein Formular im Formular, jedes mit Merkmal. Die
+ * Tabelle traegt Eingabefelder und steht deshalb in sm-breit. */
+$db_vliste = db_sicherungen_liste();
+if (!$db_vliste) { ?>
+<p class="sm-hilfe"><?= db_e(db_t('EINST.SVL_LEER')) ?></p>
+<?php } else { ?>
+<div class="sm-breit">
+<table class="sm-tabelle">
+<tr><th><?= db_e(db_t('EINST.SVL_T_DATUM')) ?></th><th><?= db_e(db_t('EINST.SVL_T_ANLASS')) ?></th><th><?= db_e(db_t('EINST.SVL_T_GROESSE')) ?></th><th><?= db_e(db_t('EINST.SVL_T_LADEN')) ?></th><th><?= db_e(db_t('EINST.SVL_T_ZURUECK')) ?></th><th><?= db_e(db_t('EINST.SVL_T_WEG')) ?></th></tr>
+<?php foreach ($db_vliste as $db_v) { ?>
+<tr>
+  <td><?= db_e(db_sicherungen_zeit($db_v)) ?></td>
+  <td><?= db_e(db_sicherungen_anlass($db_v)) ?></td>
+  <td><?= db_e(sprintf(db_t('EINST.SVL_GROESSE'), (int) $db_v['groesse'])) ?></td>
+  <td><form action="index.php" method="post">
+    <?php echo db_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="db_verlauf_name" value="<?= db_e($db_v['name']) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="db_verlauf_laden" value="1"><?= db_e(db_t('EINST.K_SVL_LADEN')) ?></button>
+  </form></td>
+  <td><form action="index.php" method="post">
+    <?php echo db_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="db_verlauf_name" value="<?= db_e($db_v['name']) ?>">
+    <label><input data-role="none" type="checkbox" name="db_verlauf_zurueck_ok" value="1"> <?= db_e(db_t('EINST.L_SVL_ZURUECK_OK')) ?></label><br>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="db_verlauf_zurueck" value="1"><?= db_e(db_t('EINST.K_SVL_ZURUECK')) ?></button>
+  </form></td>
+  <td><form action="index.php" method="post">
+    <?php echo db_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="db_verlauf_name" value="<?= db_e($db_v['name']) ?>">
+    <label><input data-role="none" type="checkbox" name="db_verlauf_weg_ok" value="1"> <?= db_e(db_t('EINST.L_SVL_WEG_OK')) ?></label><br>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="db_verlauf_weg" value="1"><?= db_e(db_t('EINST.K_SVL_WEG')) ?></button>
+  </form></td>
+</tr>
+<?php } ?>
+</table>
+</div>
+<?php } ?>
 </div>
 
 <!-- ================= Dashboards ================= -->
@@ -1463,6 +1574,16 @@ if (db_wetter_eigene_gewaehlt($db_cfg)) {
 <?php } else { ?>
 <p class="sm-hilfe"><?= db_t('DESIGN.ERKLAERUNG') ?></p>
 <div class="sm-warnung"><?= db_t('DESIGN.WARNUNG') ?></div>
+<?php
+/* S8 (0.9.26): Symbole aus LoxoneIcons. Fehlt das Plugin oder hat es noch
+ * keine Symbole geladen, steht hier ein Hinweis, und das Feld "Symbol"
+ * entfaellt - alles andere bleibt wie bisher. */
+list($db_sy_ordner, $db_sy_lage) = db_symbol_ordner();
+if ($db_sy_lage !== 'ok' || !db_symbol_liste()) { ?>
+<div class="sm-hinweis"><?= db_t($db_sy_lage === 'kein_plugin' ? 'DESIGN.SYMBOL_KEIN_PLUGIN' : 'DESIGN.SYMBOL_KEINE') ?></div>
+<?php } else { ?>
+<p class="sm-hilfe"><?= sprintf(db_t('DESIGN.SYMBOL_ERKLAERUNG'), count(db_symbol_liste())) ?></p>
+<?php } ?>
 
 <div class="sm-knopfreihe">
   <!-- O16 (Durchgang 29.09.2026): Hinzufuegen ist grau (es aendert nur den
@@ -1759,6 +1880,13 @@ if (!$db_zeilen) { ?>
 	}, $db_seiten)), $db_jf) ?>;
 	var TYPEN = <?= json_encode(db_kacheltypen(), $db_jf) ?>;
 	var GROESSEN = <?= json_encode(array_keys(db_groessen()), $db_jf) ?>;
+	/* S8 (0.9.26): die Symbole von LoxoneIcons (nur Dateinamen) und die
+	   Adresse fuer die Vorschau - der Endpunkt hinter dem Token. Ohne
+	   gueltiges Token gibt es keine Vorschau, die Auswahl bleibt. */
+	var SYMBOLE = <?= json_encode(db_symbol_liste(), $db_jf) ?>;
+	var SYMBOLADRESSE = <?= json_encode(db_token_gueltig($db_token)
+		? '/plugins/' . $db_p['plugin'] . '/index.php?token=' . rawurlencode($db_token) . '&aktion=symbol&name='
+		: '', $db_jf) ?>;
 	var TEXT = <?= json_encode(array(
 		'neue'    => strip_tags(db_t('DESIGN.NEUE_SEITE')),
 		'frage'   => strip_tags(html_entity_decode(db_t('DESIGN.SEITE_WEG_FRAGE'), ENT_QUOTES, 'UTF-8')),
@@ -1774,6 +1902,9 @@ if (!$db_zeilen) { ?>
 		'szene_leer'   => strip_tags(db_t('DESIGN.SZENE_LEER')),
 		'szene_dazu'   => strip_tags(db_t('DESIGN.SZENE_DAZU')),
 		'szene_ohne_befehl' => strip_tags(db_t('DESIGN.SZENE_OHNE_BEFEHL')),
+		'symbol'       => strip_tags(db_t('DESIGN.SYMBOL')),
+		'kein_symbol'  => strip_tags(db_t('DESIGN.KEIN_SYMBOL')),
+		'symbol_suche' => strip_tags(db_t('DESIGN.SYMBOL_SUCHE')),
 	), $db_jf) ?>;
 
 	var bau = document.getElementById('dz-bau');
@@ -1851,6 +1982,35 @@ if (!$db_zeilen) { ?>
 			'</div></div>';
 	}
 
+	/* S8 (0.9.26): das Feld "Symbol" je Kachel. Die Auswahl zeigt "Kein
+	   Symbol", das gewaehlte und bis zu 60 Treffer der Suche nach dem
+	   Dateinamen - bei ueber 500 Symbolen und vielen Kacheln waere eine volle
+	   Liste je Kachel zu schwer. Die Vorschau ist ein <img>, nie inline. */
+	function symbol_optionen(aktuell, such) {
+		var s = String(such || '').toLowerCase();
+		var aus = '<option value="">' + e(TEXT.kein_symbol) + '</option>';
+		if (aktuell) { aus += '<option value="' + e(aktuell) + '" selected>' + e(aktuell) + '</option>'; }
+		var n = 0;
+		for (var i = 0; i < SYMBOLE.length && n < 60; i++) {
+			var x = SYMBOLE[i];
+			if (x === aktuell) { continue; }
+			if (s && x.toLowerCase().indexOf(s) < 0) { continue; }
+			aus += '<option value="' + e(x) + '">' + e(x) + '</option>';
+			n++;
+		}
+		return aus;
+	}
+	function symbol_zeile(k) {
+		if (!SYMBOLE.length) { return ''; }
+		var sy = k.symbol || '';
+		var quelle = (sy && SYMBOLADRESSE) ? ' src="' + e(SYMBOLADRESSE + encodeURIComponent(sy)) + '"' : '';
+		return '<div style="display:flex;gap:5px;margin-top:4px;align-items:center">' +
+			'<img data-symbolbild="1" alt=""' + quelle + ' style="width:22px;height:22px;flex:0 0 22px' + (quelle ? '' : ';visibility:hidden') + '">' +
+			'<input data-role="none" type="text" data-symbolsuche="1" placeholder="' + e(TEXT.symbol_suche) + '" style="width:84px;padding:2px 4px;border:1px solid #ddd;border-radius:4px;font-size:.95em">' +
+			'<select data-role="none" data-feld="symbol" title="' + e(TEXT.symbol) + '" style="flex:1;min-width:90px;font-size:.95em">' + symbol_optionen(sy, '') + '</select>' +
+			'</div>';
+	}
+
 	function zeichnen() {
 		bau.innerHTML = '';
 		var kopf = document.createElement('div');
@@ -1920,7 +2080,7 @@ if (!$db_zeilen) { ?>
 					'</div>' +
 					'<div class="sm-hilfe" style="margin-top:2px">' +
 					  (szene ? e(TEXT.szene_schritt) : e(b ? (b.loxtyp + (b.raum ? ' · ' + b.raum : '')) : '?')) + '</div>' +
-					(szene ? szene_editor(k) : '');
+					(szene ? szene_editor(k) : '') + symbol_zeile(k);
 				liste.appendChild(kk);
 			});
 			kasten.appendChild(liste);
@@ -2055,6 +2215,27 @@ if (!$db_zeilen) { ?>
 					markieren();
 				};
 			});
+			/* S8: Suche und Vorschau des Symbols. Den Wert selbst setzt der
+			   allgemeine Handler oben (data-feld="symbol"). */
+			var symSuche = k.querySelector('[data-symbolsuche]');
+			var symWahl = k.querySelector('select[data-feld="symbol"]');
+			var symBild = k.querySelector('[data-symbolbild]');
+			if (symSuche && symWahl) {
+				symSuche.oninput = function () {
+					var ziel = AUFBAU.seiten[si].kacheln[ki];
+					symWahl.innerHTML = symbol_optionen(ziel.symbol || '', symSuche.value);
+				};
+				symWahl.addEventListener('change', function () {
+					if (!symBild) { return; }
+					if (symWahl.value && SYMBOLADRESSE) {
+						symBild.src = SYMBOLADRESSE + encodeURIComponent(symWahl.value);
+						symBild.style.visibility = '';
+					} else {
+						symBild.removeAttribute('src');
+						symBild.style.visibility = 'hidden';
+					}
+				});
+			}
 			k.addEventListener('dragstart', function (ev) {
 				gezogen = { art: 'kachel', si: si, ki: ki };
 				ev.dataTransfer.effectAllowed = 'move';

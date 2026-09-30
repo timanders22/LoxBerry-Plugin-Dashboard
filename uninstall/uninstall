@@ -12,6 +12,7 @@
 #   config/plugins/<x>.backup.seiten.json    die ganze Handarbeit
 #   config/plugins/<x>.backup.zugang.json    Benutzer und Kennwort
 #   data/plugins/<x>.upgrade_sicherung       der Verlauf waehrend des Updates
+#   config/plugins/<x>.sicherungen/          der Sicherungsverlauf (seit 0.9.26)
 #   <jeweils>.alt                            beiseitegelegt von preinstall.sh
 #                                            und preupgrade.sh (Entscheidung 1)
 #
@@ -96,6 +97,28 @@ fi
 if [ -e "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.alt" ]; then
     rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.alt" && ANZAHL=$((ANZAHL + 1))
 fi
+# S5 (0.9.26): der Sicherungsverlauf liegt als Ordner neben dem
+# Konfigurationsordner und traegt Aktionstoken und Zugangsdaten. Er geht mit,
+# samt der von preinstall.sh beiseitegelegten .alt. Geloescht wird nur bei
+# einem Ordnernamen ohne Schraegstrich und ohne '..'; ein Verweis an seiner
+# Stelle wird als Verweis entfernt, sein Ziel bleibt. Gezaehlt wird, was
+# danach wirklich fehlt.
+case "$UN_FOLDER" in
+    ''|*/*|*..*)
+        echo "<WARNING> Unzulaessiger Ordnername '$UN_FOLDER' - der Sicherungsverlauf wurde nicht entfernt." ;;
+    *)
+        for UN_V in "$UN_BASE/config/plugins/$UN_FOLDER.sicherungen" \
+                    "$UN_BASE/config/plugins/$UN_FOLDER.sicherungen.alt"; do
+            if [ -e "$UN_V" ] || [ -L "$UN_V" ]; then
+                rm -rf "${UN_V:?}" 2>/dev/null
+                if [ -e "$UN_V" ] || [ -L "$UN_V" ]; then
+                    echo "<WARNING> $UN_V liess sich nicht entfernen - bitte von Hand loeschen (Zugangsdaten)."
+                else
+                    ANZAHL=$((ANZAHL + 1))
+                fi
+            fi
+        done ;;
+esac
 # Die Marke einer abgebrochenen Aktualisierung liegt ebenfalls neben dem
 # Datenordner und geht mit ihm nicht weg. Bliebe sie liegen, sperrte sie Dienst
 # und Oberflaeche einer spaeteren Neuinstallation bis zu einer Stunde lang

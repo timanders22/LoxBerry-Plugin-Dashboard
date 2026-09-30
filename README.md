@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.25 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.26 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,24 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.26
+
+**Sicherungsverlauf.** Unter *Einstellungen → Sicherung* behält das Plugin die
+letzten 20 Sicherungen auf dem LoxBerry — neben dem Konfigurationsordner, damit
+sie jedes Update überstehen, mit den Rechten 0600, weil sie Zugangsdaten
+tragen. Jeder Eintrag lässt sich herunterladen, zurückspielen und löschen
+(beides mit Haken). Vor jedem Zurückspielen sichert das Plugin den Ist-Stand
+automatisch in den Verlauf; gelingt das nicht, wird nicht zurückgespielt. Ist
+der Ist-Stand beschädigt, wird trotzdem zurückgespielt: der beschädigte Stand
+liegt dann als `.kaputt` daneben, und die Meldung sagt es. Zurückgespielt wird
+über dieselbe Prüfung wie beim Hochladen einer Datei.
+
+**Symbole aus LoxoneIcons.** Ist das Plugin LoxoneIcons installiert, lassen
+sich seine Symbole im Designer je Kachel wählen, mit Suche und Vorschau. Die
+Tafel zeigt sie als Bild; ein Skript in einer SVG-Datei läuft nicht.
+Ausgeliefert wird nur aus dem Symbolordner und nur mit gültigem Token. Ohne
+LoxoneIcons sagt der Designer es, alles andere bleibt wie bisher.
 
 ## Neu in 0.9.25
 

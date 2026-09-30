@@ -357,6 +357,13 @@ function db_pruefungen()
     } else {
         $zeilen[] = db_pruefzeile(1, db_t('TEST.F_KONFIG'), db_t('TEST.A_KONFIG'));
     }
+    /* S6 (0.9.26): der Sicherungsverlauf - Anzahl, juengster Eintrag und die
+     * Rechte (Ordner 0700, Dateien 0600). Ein leerer Verlauf ist grau, kein
+     * Haken (Klasse 8). */
+    $zeilen[] = db_sicherungen_pruefzeile();
+    /* S8 (0.9.26): Symbole aus LoxoneIcons - Quelle, Anzahl, und ob jede
+     * Kachel mit Symbol ihre Datei findet. */
+    $zeilen[] = db_symbole_pruefzeile();
     // Antwortet der eigene Endpunkt? Ein echter Aufruf, drei Ausgaenge.
     list($st, $text) = db_endpunkt_probe(db_token_soll(db_config()));
     $zeilen[] = db_pruefzeile($st, db_t('TEST.F_ENDPUNKT'), $text);
@@ -365,6 +372,101 @@ function db_pruefungen()
     $zeilen[] = '<!--DB_FORMMERKMAL-->';
 
     return $zeilen;
+}
+
+/** S6 (0.9.26): die Pruefzeile "Sicherungsverlauf".
+ * Haken: Eintraege da, hoechstens DB_SICHERUNGEN_MAX, Ordner 0700 und jede
+ * Datei 0600. Kreuz: zu viele Eintraege, falsche Rechte (mit Namen), ein
+ * Verweis statt des Ordners. Grau: noch nichts da, oder die Rechte sind auf
+ * diesem System nicht messbar (Windows, NTFS). Alle Maengel stehen
+ * zusammen in der Zeile, nicht nur der erste. */
+function db_sicherungen_pruefzeile()
+{
+    $o = db_paths()['sicherungen'];
+    $frage = db_t('TEST.F_SVL');
+    clearstatcache(true);
+    if (is_link($o)) {
+        return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_SVL_VERWEIS'), db_e($o)));
+    }
+    if (!is_dir($o)) {
+        return db_pruefzeile(-1, $frage, sprintf(db_t('TEST.A_SVL_KEIN_ORDNER'), db_e($o)));
+    }
+    $liste = db_sicherungen_liste();
+    // Was sonst im Ordner liegt (ausser Eintraegen und der Sperrdatei), wird
+    // gezaehlt und genannt, aber nicht angefasst.
+    $bekannt = array('.' => 1, '..' => 1, '.sperre' => 1);
+    foreach ($liste as $z) { $bekannt[$z['name']] = 1; }
+    $fremd = 0;
+    $namen = @scandir($o);
+    foreach (is_array($namen) ? $namen : array() as $n) {
+        if (!isset($bekannt[$n])) { $fremd++; }
+    }
+    $zusatz = $fremd ? ' ' . sprintf(db_t('TEST.A_SVL_FREMD'), $fremd) : '';
+    if (!$liste) {
+        return db_pruefzeile(-1, $frage, sprintf(db_t('TEST.A_SVL_LEER'), db_e($o)) . $zusatz);
+    }
+    $j = $liste[0];
+    $jung = db_e(db_sicherungen_zeit($j) . ', ' . db_sicherungen_anlass($j));
+    $maengel = array();
+    if (count($liste) > DB_SICHERUNGEN_MAX) {
+        $maengel[] = sprintf(db_t('TEST.A_SVL_ZUVIEL'), count($liste), DB_SICHERUNGEN_MAX);
+    }
+    if (DIRECTORY_SEPARATOR === '\\') {
+        if ($maengel) {
+            return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_SVL_STAND'), count($liste), DB_SICHERUNGEN_MAX, $jung)
+                                            . ' ' . implode(' ', $maengel) . $zusatz);
+        }
+        return db_pruefzeile(-1, $frage, sprintf(db_t('TEST.A_SVL_RECHTE_NICHT_MESSBAR'),
+                                                 count($liste), DB_SICHERUNGEN_MAX, $jung) . $zusatz);
+    }
+    $falsch = array();
+    $ro = (int) @fileperms($o) & 0777;
+    if ($ro !== 0700) { $falsch[] = basename($o) . '/ ' . sprintf('%04o', $ro); }
+    foreach ($liste as $z) {
+        if ($z['rechte'] !== 0600) { $falsch[] = $z['name'] . ' ' . sprintf('%04o', $z['rechte']); }
+    }
+    if ($falsch) {
+        $maengel[] = sprintf(db_t('TEST.A_SVL_RECHTE'), db_e(implode(', ', $falsch)));
+    }
+    if ($maengel) {
+        return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_SVL_STAND'), count($liste), DB_SICHERUNGEN_MAX, $jung)
+                                        . ' ' . implode(' ', $maengel) . $zusatz);
+    }
+    return db_pruefzeile(1, $frage, sprintf(db_t('TEST.A_SVL'), count($liste), DB_SICHERUNGEN_MAX, $jung) . $zusatz);
+}
+
+/** S8 (0.9.26): Pruefzeile "Symbole aus LoxoneIcons". Haken: Symbole da, und
+ * jede Kachel mit Symbol findet ihre Datei. Kreuz: eine Kachel traegt ein
+ * Symbol, das es nicht (mehr) gibt - die Tafel zeigt dort keines. Grau:
+ * LoxoneIcons fehlt oder hat noch nichts geladen, und keine Kachel braucht
+ * ein Symbol. */
+function db_symbole_pruefzeile()
+{
+    $frage = db_t('TEST.F_SYMBOLE');
+    list($o, $lage) = db_symbol_ordner();
+    $mit = 0;
+    $fehlt = array();
+    foreach (db_seiten() as $s) {
+        foreach ((is_array($s) && isset($s['kacheln']) && is_array($s['kacheln'])) ? $s['kacheln'] : array() as $k) {
+            $sy = (is_array($k) && isset($k['symbol']) && is_string($k['symbol'])) ? $k['symbol'] : '';
+            if ($sy === '') { continue; }
+            $mit++;
+            if (db_symbol_pfad($sy) === null) { $fehlt[$sy] = 1; }
+        }
+    }
+    $liste = db_symbol_liste();
+    if ($lage !== 'ok' || !$liste) {
+        $text = db_t($lage === 'kein_plugin' ? 'TEST.A_SYMBOLE_KEIN_PLUGIN' : 'TEST.A_SYMBOLE_KEINE');
+        if ($mit) {
+            return db_pruefzeile(0, $frage, $text . ' ' . sprintf(db_t('TEST.A_SYMBOLE_OHNE_QUELLE'), $mit));
+        }
+        return db_pruefzeile(-1, $frage, $text);
+    }
+    if ($fehlt) {
+        return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_SYMBOLE_FEHLEN'), count($fehlt),
+                                                db_e(implode(', ', array_keys($fehlt)))));
+    }
+    return db_pruefzeile(1, $frage, sprintf(db_t('TEST.A_SYMBOLE'), count($liste), db_e($o), $mit));
 }
 
 function db_pruefungen_html()

@@ -25,6 +25,7 @@
  *   strom    &seite=...    dasselbe, aber geschoben (Server-Sent Events)
  *   roh                    das vollstaendige Abbild als JSON
  *   ruhebild               das Hintergrundbild des Ruhebilds (Binaerdatei)
+ *   symbol   &name=<datei>.svg   ein Symbol des Plugins LoxoneIcons (SVG)
  *
  * Schaltend:
  *   befehl   &seite=...&uuid=...&befehl=...[&pin=...]
@@ -112,7 +113,7 @@ if (!hash_equals($db_soll, $db_ist)) {
 }
 
 /* ---------------- Aktion (Weissliste) ---------------- */
-$db_lesend = array('status', 'seiten', 'seite', 'werte', 'strom', 'roh', 'ruhebild');
+$db_lesend = array('status', 'seiten', 'seite', 'werte', 'strom', 'roh', 'ruhebild', 'symbol');
 $db_schaltend = array('befehl', 'szene', 'tafel');
 $db_aktion = db_get('aktion');
 if ($db_aktion === null) { $db_aktion = 'status'; }
@@ -190,6 +191,54 @@ if ($db_aktion === 'ruhebild') {
     header('Cache-Control: private, max-age=300');
     header('X-Content-Type-Options: nosniff');
     readfile($db_datei);
+    exit;
+}
+
+/* S8 (0.9.26): ein Symbol des Plugins LoxoneIcons - hinter demselben Token
+ * wie die Tafel.
+ *
+ * Erlaubt ist nur ein Dateiname nach db_symbol_name_gueltig() aus GENAU dem
+ * Symbolordner (realpath, db_symbol_pfad): kein ../, kein Verweis hinaus.
+ * Ausgeliefert mit image/svg+xml, nosniff und einer CSP, die jedes Skript
+ * im SVG verbietet - auch dann, wenn jemand die Adresse direkt oeffnet. Die
+ * Tafel bindet es als <img> ein; dort laeuft ohnehin kein Skript. */
+if ($db_aktion === 'symbol') {
+    $db_sname = db_get('name');
+    $db_sfehl = function ($code, $grund) {
+        http_response_code($code);
+        header('Content-Type: text/plain; charset=utf-8');
+        header('Cache-Control: no-store');
+        header('X-Content-Type-Options: nosniff');
+        db_abweisung('Endpunkt', $grund);
+        echo 'FEHLER;OK=0;GRUND=' . $grund . "\n";
+        exit;
+    };
+    if (!is_string($db_sname) || !db_symbol_name_gueltig($db_sname)) {
+        $db_sfehl(400, 'SYMBOL_NAME');
+    }
+    list($db_so, $db_slage) = db_symbol_ordner();
+    if ($db_so === '') {
+        $db_sfehl(404, $db_slage === 'kein_plugin' ? 'KEIN_LOXONEICONS' : 'KEINE_SYMBOLE');
+    }
+    $db_sp = db_symbol_pfad($db_sname);
+    if ($db_sp === null) {
+        // Liegt unter dem Namen etwas, das nicht in den Ordner gehoert (ein
+        // Verweis hinaus, ein Ordner), ist das eine Abweisung, kein Fehlen.
+        $db_roh = $db_so . DIRECTORY_SEPARATOR . $db_sname;
+        $db_sfehl((is_link($db_roh) || file_exists($db_roh)) ? 403 : 404,
+                  (is_link($db_roh) || file_exists($db_roh)) ? 'SYMBOL_AUSSERHALB' : 'SYMBOL_FEHLT');
+    }
+    clearstatcache(true, $db_sp);
+    $db_sgr = (int) @filesize($db_sp);
+    if ($db_sgr <= 0 || $db_sgr > DB_SYMBOL_MAX_BYTE) {
+        $db_sfehl(403, 'SYMBOL_GROESSE');
+    }
+    header('Content-Type: image/svg+xml');
+    header('Content-Length: ' . (string) $db_sgr);
+    header('X-Content-Type-Options: nosniff');
+    header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'");
+    header('Cache-Control: private, max-age=3600');
+    readfile($db_sp);
     exit;
 }
 

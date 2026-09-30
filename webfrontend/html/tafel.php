@@ -262,6 +262,10 @@ main{display:grid;gap:12px;padding:0 18px 24px;
 .k.alarm{border-color:var(--fehl)}
 .k .t{font-size:.83rem;color:var(--leise);line-height:1.25;margin-bottom:auto;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* S8 (0.9.26): das Symbol aus LoxoneIcons vor dem Titel, als <img> geladen.
+   Die Symbole sind schwarz gezeichnet; auf dunklem Grund werden sie
+   umgekehrt, damit man sie sieht. */
+.k .t .sym{width:1.35em;height:1.35em;vertical-align:-.32em;margin-right:.35em;opacity:.9<?= $dunkel ? ';filter:invert(1)' : '' ?>}
 .k .w{font-size:1.7rem;font-weight:650;letter-spacing:-.02em;line-height:1.1}
 .k .w small{font-size:.9rem;font-weight:500;color:var(--leise);margin-left:2px}
 .k .u{font-size:.78rem;color:var(--leise);margin-top:3px;
@@ -998,6 +1002,20 @@ function zeichnen(){
     if (k.gesichert) { marke = '<span class="marke" title="'+e(T.marke_gesichert)+'">&#128274;</span>'; }
     else if (k.nurlesen) { marke = '<span class="marke" title="'+e(T.marke_nurlesen)+'">&#128065;</span>'; }
     d.innerHTML = '<div class="t">'+e(k.titel)+'</div>'+ marke + r.inhalt;
+    /* S8 (0.9.26): das Symbol als <img>, NIE inline ins DOM - ein SVG mit
+       Skript fuehrt in einem img nichts aus. Die Adresse ist der Endpunkt
+       hinter demselben Token (aktion=symbol). Laedt es nicht, verschwindet
+       es wieder, statt als kaputtes Bild dazustehen. */
+    if (k.symbol) {
+      var sy = document.createElement("img");
+      sy.className = "sym";
+      sy.alt = "";
+      sy.setAttribute("aria-hidden", "true");
+      sy.onerror = function(){ if (this.parentNode) { this.parentNode.removeChild(this); } };
+      sy.src = BASIS + "&aktion=symbol&name=" + encodeURIComponent(k.symbol);
+      var tt = d.querySelector(".t");
+      if (tt) { tt.insertBefore(sy, tt.firstChild); }
+    }
     /* Das Schloss bleibt stehen, auch wenn geschaltet werden darf - man soll
        sehen, dass der Baustein gesichert ist. Gesperrt wird nur, was wirklich
        nicht geht. */
