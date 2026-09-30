@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.27 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.28 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,24 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.28
+
+Verbesserung aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen unter PHP 7.4
+und 8.5 sowie mit einer JavaScript-Laufzeit am Designer-Skript; nicht im Browser
+und nicht am Gerät.
+
+* **Ein abgewiesener Aufbau geht im Designer nicht mehr verloren.** Bis 0.9.27
+  zeigte der Designer nach einer Beanstandung wieder den gespeicherten Stand –
+  alle Änderungen waren weg. Jetzt steht der abgeschickte Aufbau als Entwurf da,
+  die beanstandeten Seiten, Kacheln und Felder sind rot umrandet, und ein
+  Hinweis nennt die Fehler. Gespeichert bleibt der vorige Stand, bis der Entwurf
+  berichtigt und erneut gespeichert ist. Der Verweis „Entwurf verwerfen“ oder ein
+  erneuter Aufruf des Reiters lädt den gespeicherten Stand.
+* Der Entwurf reist nur mit der Einmalmeldung (0600, 120 s), nie im
+  Seitenordner; eine PIN reist nie mit. Über 1 MB oder bei unerwarteter Form gibt
+  es keinen Entwurf, und die Seite sagt es.
 
 ## Neu in 0.9.27
 
@@ -702,6 +720,11 @@ Namentlich ungeprüft und deshalb hier genannt:
 - **Tafeln über MQTT** sind gegen einen nachgebauten Broker auf `127.0.0.1`
   gemessen (MQTT 3.1.1, mit und ohne Retain-Merkmal), nicht gegen den
   Mosquitto eines LoxBerry und nicht mit dem MQTT-Gateway.
+- **Der Entwurf im Designer:** Weist das Plugin einen Aufbau ab, steht er
+  danach als Entwurf im Designer, die beanstandeten Stellen rot umrandet;
+  gespeichert bleibt der vorige Stand, eine PIN reist nie mit. Das Skript des
+  Designers ist dafür mit Node.js an einer nachgebauten Seitenstruktur
+  gemessen, nicht in einem Browser.
 - **Die Marke „Aktualisierung läuft"** (neu in 0.9.23) ist in WSL mit einem
   nachgestellten Installer-Ablauf gemessen, nicht an einem LoxBerry. Der
   Benutzerwechsel auf `loxberry` und Apache sind dabei nicht nachgebildet.

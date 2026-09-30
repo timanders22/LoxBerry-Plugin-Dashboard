@@ -724,6 +724,7 @@ if ($db_post && isset($_POST['seiten_speichern'])) {
 if ($db_post && isset($_POST['designer_speichern'])) {
     $db_roh = isset($_POST['aufbau']) && is_string($_POST['aufbau']) ? $_POST['aufbau'] : '';
     $db_d = json_decode($db_roh, true);
+    $db_orte = array();
     db_json_lesen_streng($db_p['seiten'], $db_lage);
     if ($db_lage === 'kaputt' || $db_lage === 'unlesbar') {
         $db_fehler[] = sprintf(db_t('EINST.KAPUTT_GESPERRT'), db_e($db_p['seiten']));
@@ -737,13 +738,22 @@ if ($db_post && isset($_POST['designer_speichern'])) {
          * 'chalter' und 99 Spalten zu 12, gemeldet als "gespeichert"
          * (gemessen, Befund 7 des Oberflaechen-Pruefers). Die PIN kommt aus
          * der gespeicherten Seite, nie aus dem Formular. */
-        list($db_neu, $db_f2, $db_h2) = db_seiten_pruefen($db_d['seiten'], 'designer');
+        list($db_neu, $db_f2, $db_h2) = db_seiten_pruefen($db_d['seiten'], 'designer', $db_orte);
         $db_fehler = array_merge($db_fehler, $db_f2);
         $db_meldungen = array_merge($db_meldungen, $db_h2);
         if (!$db_fehler && is_array($db_neu)) {
             if (db_seiten_speichern($db_neu)) { $db_meldungen[] = db_t('DESIGN.GESPEICHERT'); }
             else { $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_p['seiten'])); }
         }
+    }
+    /* X2D (Welle E, 30.09.2026): nicht gespeichert - der Aufbau reist als
+     * Entwurf mit der Einmalmeldung zurueck in den Designer, mit den Orten
+     * der Beanstandung; nie eine PIN, nie in den Seitenordner. Bis 0.9.28
+     * zeigte der Designer danach den gespeicherten Stand, und die Arbeit
+     * seit dem letzten Speichern war weg. */
+    if ($db_fehler) {
+        $db_eingaben = db_entwurf_sammeln($db_roh, $db_d, $db_orte);
+        if (!$db_eingaben) { $db_fehler[] = db_t('DESIGN.ENTWURF_NICHT'); }
     }
     $db_tab = 'tab-designer';
 }
@@ -1705,6 +1715,11 @@ if (!$db_vliste) { ?>
 <!-- ================= Designer ================= -->
 <div class="sm-seite<?= $db_tab === 'tab-designer' ? ' sm-active' : '' ?>" id="tab-designer">
 <h2><?= db_e(db_t('DESIGN.H_TITEL')) ?></h2>
+<?php
+/* X2D: der abgewiesene Aufbau aus der Einmalmeldung (nur beim GET direkt
+ * nach der Abweisung; danach ist sie verbraucht). */
+$db_entwurf = (db_eingaben_aktiv('designer') && isset($db_eingaben['entwurf'])) ? $db_eingaben : null;
+?>
 <div class="sm-legende">
   <span><i class="sm-punkt sm-b-technik"></i> <?= db_t('LEGENDE.TECHNIK') ?></span>
   <span><i class="sm-punkt sm-b-aktion"></i> <?= db_t('LEGENDE.AKTION') ?></span>
@@ -1714,6 +1729,9 @@ if (!$db_vliste) { ?>
 <?php } else { ?>
 <p class="sm-hilfe"><?= db_t('DESIGN.ERKLAERUNG') ?></p>
 <div class="sm-warnung"><?= db_t('DESIGN.WARNUNG') ?></div>
+<?php if ($db_entwurf !== null) { ?>
+<div class="sm-warnung" id="dz-entwurf" data-orte="<?= count($db_entwurf['orte']) ?>" style="border:2px solid #c62828"><?= sprintf(db_t('DESIGN.ENTWURF_HINWEIS'), count($db_entwurf['orte'])) ?> <a href="index.php?form=designer" id="dz-entwurf-weg"><?= db_e(db_t('DESIGN.ENTWURF_VERWERFEN')) ?></a></div>
+<?php } ?>
 <?php
 /* S8 (0.9.26): Symbole aus LoxoneIcons. Fehlt das Plugin oder hat es noch
  * keine Symbole geladen, steht hier ein Hinweis, und das Feld "Symbol"
@@ -2043,6 +2061,13 @@ if (!$db_zeilen) { ?>
 		if (is_array($s)) { $s['pin'] = ''; }
 		return $s;
 	}, $db_seiten)), $db_jf) ?>;
+	/* X2D: nach einer Abweisung der abgeschickte Aufbau als Entwurf (PIN
+	   immer leer) und die beanstandeten Stellen als [Seite, Kachel (-1 = die
+	   Seite selbst), Feld]. Sonst null. */
+	var ENTWURF = <?= json_encode($db_entwurf !== null
+		? array('seiten' => $db_entwurf['entwurf']['seiten'], 'orte' => $db_entwurf['orte'])
+		: null, $db_jf) ?>;
+	if (ENTWURF) { AUFBAU = { seiten: ENTWURF.seiten }; }
 	var TYPEN = <?= json_encode(db_kacheltypen(), $db_jf) ?>;
 	var GROESSEN = <?= json_encode(array_keys(db_groessen()), $db_jf) ?>;
 	/* S8 (0.9.26): die Symbole von LoxoneIcons (nur Dateinamen) und die
@@ -2070,6 +2095,7 @@ if (!$db_zeilen) { ?>
 		'symbol'       => strip_tags(db_t('DESIGN.SYMBOL')),
 		'kein_symbol'  => strip_tags(db_t('DESIGN.KEIN_SYMBOL')),
 		'symbol_suche' => strip_tags(db_t('DESIGN.SYMBOL_SUCHE')),
+		'entwurf'      => strip_tags(db_t('DESIGN.ENTWURF_STAND')),
 	), $db_jf) ?>;
 
 	var bau = document.getElementById('dz-bau');
@@ -2077,6 +2103,25 @@ if (!$db_zeilen) { ?>
 	var stand = document.getElementById('dz-stand');
 	var geaendert = false;
 	var gezogen = null;
+
+	/* X2D: die Marken haengen an den Objekten des Entwurfs, nicht an ihrer
+	   Nummer - sie wandern beim Verschieben mit und verschwinden, sobald das
+	   beanstandete Feld geaendert wird. */
+	var MARKE = (typeof Map === 'function') ? new Map() : null;
+	if (ENTWURF && MARKE) {
+		(ENTWURF.orte || []).forEach(function (o) {
+			var s = AUFBAU.seiten[o[0]];
+			if (!s) { return; }
+			var ziel = o[1] < 0 ? s : (s.kacheln || [])[o[1]];
+			if (!ziel) { return; }
+			if (!MARKE.has(ziel)) { MARKE.set(ziel, {}); }
+			MARKE.get(ziel)[o[2]] = 1;
+		});
+	}
+	function marken(o) {
+		var m = MARKE ? MARKE.get(o) : null;
+		return m ? Object.keys(m) : [];
+	}
 
 	/* Maskiert fuer Inhalt UND Attribut. Bis 0.9.12 stand hier nur
 	   textContent -> innerHTML; das ist die Serialisierung eines TEXTKNOTENS
@@ -2203,6 +2248,10 @@ if (!$db_zeilen) { ?>
 		AUFBAU.seiten.forEach(function (s, si) {
 			var kasten = document.createElement('div');
 			kasten.style.cssText = 'border:1px solid #ddd;border-radius:8px;margin:0 0 14px;background:#fff';
+			if (marken(s).length) {
+				kasten.style.border = '2px solid #c62828';
+				kasten.setAttribute('data-beanstandet', marken(s).join(' '));
+			}
 			var titel = document.createElement('div');
 			titel.style.cssText = 'display:flex;gap:8px;align-items:center;padding:8px 10px;background:#f2f7ea;border-bottom:1px solid #ddd;border-radius:8px 8px 0 0';
 			titel.innerHTML = '<b style="flex:1">' + e(s.name) + '</b>' +
@@ -2246,6 +2295,16 @@ if (!$db_zeilen) { ?>
 					'<div class="sm-hilfe" style="margin-top:2px">' +
 					  (szene ? e(TEXT.szene_schritt) : e(b ? (b.loxtyp + (b.raum ? ' · ' + b.raum : '')) : '?')) + '</div>' +
 					(szene ? szene_editor(k) : '') + symbol_zeile(k);
+				var km = marken(k);
+				if (km.length) {
+					kk.style.border = '2px solid #c62828';
+					kk.style.background = '#fff5f5';
+					kk.setAttribute('data-beanstandet', km.join(' '));
+					km.forEach(function (f) {
+						var feld = kk.querySelector('[data-feld="' + f + '"]');
+						if (feld) { feld.style.outline = '2px solid #c62828'; }
+					});
+				}
 				liste.appendChild(kk);
 			});
 			kasten.appendChild(liste);
@@ -2377,6 +2436,12 @@ if (!$db_zeilen) { ?>
 				f.onchange = f.oninput = function () {
 					var ziel = AUFBAU.seiten[si].kacheln[ki];
 					ziel[f.dataset.feld] = (f.type === 'checkbox') ? (f.checked ? 1 : 0) : f.value;
+					var m = MARKE ? MARKE.get(ziel) : null;
+					if (m && m[f.dataset.feld]) {
+						delete m[f.dataset.feld];
+						f.style.outline = '';
+						if (!Object.keys(m).length) { MARKE.delete(ziel); }
+					}
 					markieren();
 				};
 			});
@@ -2444,6 +2509,15 @@ if (!$db_zeilen) { ?>
 		geaendert = false;
 	});
 
+	if (ENTWURF) {
+		/* X2D: der Entwurf ist nicht gespeichert - Stand und Rueckfrage beim
+		   Verlassen wie nach jeder Aenderung. Der Verweis im Hinweis laedt
+		   ausdruecklich den gespeicherten Stand und fragt deshalb nicht. */
+		geaendert = true;
+		stand.textContent = TEXT.entwurf;
+		var entwurfWeg = document.getElementById('dz-entwurf-weg');
+		if (entwurfWeg) { entwurfWeg.addEventListener('click', function () { geaendert = false; }); }
+	}
 	zeichnen();
 })();
 </script>

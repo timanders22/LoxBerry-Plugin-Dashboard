@@ -3288,10 +3288,15 @@ function db_kacheltext($art, $rueckfall)
  * Dienst pruefen jeden Schritt beim Ausloesen ohnehin noch zweimal.
  * Rueckgabe array(Seiten|null, Beanstandungen[], Hinweise[]).
  */
-function db_seiten_pruefen($roh, $quelle)
+function db_seiten_pruefen($roh, $quelle, &$orte = null)
 {
     $fehler = array();
     $hinweise = array();
+    /* X2D (Welle E, 30.09.2026): zu jedem Fehler sein Ort - array(Seite ab 1,
+     * Kachel ab 1 oder 0 fuer die Seite selbst, Feld). Der Designer umrandet
+     * danach im Entwurf genau diese Stellen. Wer nur zwei Argumente gibt,
+     * merkt davon nichts. */
+    $orte = array();
     if (!is_array($roh)) {
         return array(null, array(db_t('DESIGN.FEHLER_JSON')), array());
     }
@@ -3310,15 +3315,18 @@ function db_seiten_pruefen($roh, $quelle)
         $nr++;
         if (!is_array($s)) {
             $fehler[] = sprintf(db_t('DESIGN.FEHLER_FORM'), $nr);
+            $orte[] = array($nr, 0, 'seite');
             continue;
         }
         $k = isset($s['schluessel']) ? $s['schluessel'] : '';
         if (!is_string($k) || !preg_match('/^[a-z0-9-]{1,60}\z/', $k)) {
             $fehler[] = sprintf(db_t('DESIGN.FEHLER_SCHLUESSEL'), $nr);
+            $orte[] = array($nr, 0, 'schluessel');
             continue;
         }
         if (isset($schluessel[$k])) {
             $fehler[] = sprintf(db_t('DESIGN.FEHLER_DOPPELT'), db_e($k));
+            $orte[] = array($nr, 0, 'schluessel');
             continue;
         }
         $schluessel[$k] = 1;
@@ -3326,16 +3334,19 @@ function db_seiten_pruefen($roh, $quelle)
         $name = is_string($name) ? trim($name) : '';
         if ($name === '') {
             $fehler[] = sprintf(db_t('BOARD.FEHLER_NAME'), $nr);
+            $orte[] = array($nr, 0, 'name');
             continue;
         }
         if (db_steuerzeichen($name)) {
             $fehler[] = sprintf(db_t('DESIGN.FEHLER_ZEICHEN'), db_e($k));
+            $orte[] = array($nr, 0, 'name');
             continue;
         }
         $sp = array_key_exists('spalten', $s) ? $s['spalten'] : 6;
         if (is_string($sp) && preg_match('/^[0-9]{1,2}\z/', $sp)) { $sp = (int) $sp; }
         if (!is_int($sp) || $sp < 2 || $sp > 12) {
             $fehler[] = sprintf(db_t('BOARD.FEHLER_SPALTEN'), db_e($name));
+            $orte[] = array($nr, 0, 'spalten');
             continue;
         }
         if ($quelle === 'designer') {
@@ -3349,12 +3360,14 @@ function db_seiten_pruefen($roh, $quelle)
             if (!is_string($pin)
                     || ($pin !== '' && !db_pin_ist_hash($pin) && !preg_match('/^[0-9]{4,10}\z/', $pin))) {
                 $fehler[] = sprintf(db_t('BOARD.FEHLER_PIN'), db_e($name));
+                $orte[] = array($nr, 0, 'pin');
                 continue;
             }
             if ($pin !== '' && !db_pin_ist_hash($pin)) {
                 $h = db_pin_hash($pin);
                 if ($h === false) {
                     $fehler[] = sprintf(db_t('BOARD.FEHLER_PIN'), db_e($name));
+                    $orte[] = array($nr, 0, 'pin');
                     continue;
                 }
                 $pin = $h;
@@ -3363,6 +3376,7 @@ function db_seiten_pruefen($roh, $quelle)
         $kroh = array_key_exists('kacheln', $s) ? $s['kacheln'] : array();
         if (!is_array($kroh)) {
             $fehler[] = sprintf(db_t('DESIGN.FEHLER_FORM'), $nr);
+            $orte[] = array($nr, 0, 'kacheln');
             continue;
         }
         $kacheln = array();
@@ -3372,6 +3386,7 @@ function db_seiten_pruefen($roh, $quelle)
             $wo = sprintf(db_t('DESIGN.KACHEL_ORT'), db_e($name), $kn);
             if (!is_array($kk)) {
                 $fehler[] = sprintf(db_t('DESIGN.FEHLER_KACHEL_FORM'), $wo);
+                $orte[] = array($nr, $kn, 'form');
                 continue;
             }
             $u   = array_key_exists('uuid', $kk) ? $kk['uuid'] : '';
@@ -3382,19 +3397,23 @@ function db_seiten_pruefen($roh, $quelle)
             if (!is_string($u) || strlen($u) > 100 || db_steuerzeichen($u)
                     || !is_string($t) || !is_string($art) || !is_string($g)) {
                 $fehler[] = sprintf(db_t('DESIGN.FEHLER_KACHEL_FORM'), $wo);
+                $orte[] = array($nr, $kn, 'form');
                 continue;
             }
             $t = trim($t);
             if (db_steuerzeichen($t)) {
                 $fehler[] = sprintf(db_t('DESIGN.FEHLER_TITEL'), $wo);
+                $orte[] = array($nr, $kn, 'titel');
                 continue;
             }
             if (!in_array($art, $arten, true)) {
                 $fehler[] = sprintf(db_t('DESIGN.FEHLER_ART'), $wo, db_e($art));
+                $orte[] = array($nr, $kn, 'kachel');
                 continue;
             }
             if (!preg_match('/^[1-6]x[1-3]\z/', $g)) {
                 $fehler[] = sprintf(db_t('DESIGN.FEHLER_GROESSE'), $wo, db_e($g));
+                $orte[] = array($nr, $kn, 'groesse');
                 continue;
             }
             if ($sb === true || $sb === 1 || $sb === '1') {
@@ -3403,6 +3422,7 @@ function db_seiten_pruefen($roh, $quelle)
                 $sb = 0;
             } else {
                 $fehler[] = sprintf(db_t('DESIGN.FEHLER_KACHEL_FORM'), $wo);
+                $orte[] = array($nr, $kn, 'sichtbar');
                 continue;
             }
             if ($art !== 'szene' && $u !== '' && $bausteine && !isset($bekannt[$u])) {
@@ -3419,6 +3439,7 @@ function db_seiten_pruefen($roh, $quelle)
             if ($sy === null) { $sy = ''; }
             if (!is_string($sy) || ($sy !== '' && !db_symbol_name_gueltig($sy))) {
                 $fehler[] = sprintf(db_t('DESIGN.FEHLER_SYMBOL'), $wo);
+                $orte[] = array($nr, $kn, 'symbol');
                 continue;
             }
             if ($sy !== '' && db_symbol_ordner()[1] === 'ok' && db_symbol_pfad($sy) === null) {
@@ -3430,6 +3451,7 @@ function db_seiten_pruefen($roh, $quelle)
                 $sroh = array_key_exists('schritte', $kk) ? $kk['schritte'] : array();
                 if (!is_array($sroh)) {
                     $fehler[] = sprintf(db_t('DESIGN.FEHLER_KACHEL_FORM'), $wo);
+                    $orte[] = array($nr, $kn, 'schritte');
                     continue;
                 }
                 $schritte = array();
@@ -3438,6 +3460,7 @@ function db_seiten_pruefen($roh, $quelle)
                     $sbf = is_array($sch) && isset($sch['befehl']) ? $sch['befehl'] : null;
                     if (!is_string($su) || !is_string($sbf)) {
                         $fehler[] = sprintf(db_t('DESIGN.FEHLER_SCHRITT'), db_e($t), db_t('DESIGN.SCHRITT_FORM'));
+                        $orte[] = array($nr, $kn, 'schritte');
                         continue;
                     }
                     if ($bausteine) {
@@ -3450,6 +3473,7 @@ function db_seiten_pruefen($roh, $quelle)
                     }
                     if (!$sok) {
                         $fehler[] = sprintf(db_t('DESIGN.FEHLER_SCHRITT'), db_e($t), $sgrund);
+                        $orte[] = array($nr, $kn, 'schritte');
                         continue;
                     }
                     $schritte[] = array('uuid' => $su, 'befehl' => $sbf);
@@ -3589,6 +3613,10 @@ function db_eingaben_sammeln($formular, $beanstandet, $zeilen = array())
  * die sie nennt. Alles andere faellt weg. */
 function db_eingaben_pruefen($e)
 {
+    // X2D: der Entwurf des Designers hat seine eigene Form und Pruefung.
+    if (is_array($e) && isset($e['formular']) && $e['formular'] === 'designer') {
+        return db_entwurf_pruefen($e);
+    }
     $liste = db_eingabe_felder();
     if (!is_array($e) || !isset($e['formular']) || !is_string($e['formular'])
         || !isset($liste[$e['formular']])) {
@@ -3626,6 +3654,136 @@ function db_eingaben_pruefen($e)
         }
     }
     return array('formular' => $f, 'werte' => $werte, 'felder' => $felder);
+}
+
+/* ==================================================================
+ * X2D: ein abgewiesener Aufbau des Designers geht nicht verloren
+ * (Welle E, 30.09.2026; Regeln/04 "Nach einer Beanstandung stehen die
+ * eingetippten Werte wieder im Formular", hier fuer ein JSON statt Feldern)
+ * ==================================================================
+ *
+ * Der Designer schickt keine Felder, sondern den ganzen Aufbau ('aufbau').
+ * Bis 0.9.28 zeigte der GET nach einer Abweisung den GESPEICHERTEN Aufbau:
+ * jede Aenderung seit dem letzten Speichern war weg, auch wenn nur ein Titel
+ * einen Tabulator aus einer Tabelle trug. Jetzt reist der abgewiesene Aufbau
+ * als Entwurf mit der Einmalmeldung (0600, Datenordner, 120 s, beim GET
+ * gelesen und geloescht) und steht danach im Designer, die beanstandeten
+ * Stellen rot umrandet (Orte aus db_seiten_pruefen). Gespeichert bleibt der
+ * alte Stand; ein zweiter Aufruf zeigt ihn. Nie im Seitenordner, nie eine
+ * PIN: sie steht im Entwurf immer leer (der Designer speichert sie ohnehin
+ * aus der gespeicherten Seite). Mitgenommen werden nur die Schluessel, die
+ * der Designer selbst schreibt, in der Form, die er darstellen kann. Passt
+ * etwas nicht (von Hand gebaute Anfrage) oder ist der Aufbau groesser als
+ * db_entwurf_grenze(), gibt es keinen Entwurf, und die Seite sagt es
+ * (DESIGN.ENTWURF_NICHT). */
+
+/** Hoechstens so viele Byte Aufbau reisen als Entwurf mit. */
+function db_entwurf_grenze()
+{
+    return 1048576;
+}
+
+/** Der Entwurf in der Form, die das Skript des Designers darstellen kann,
+ * oder null. Nichts wird zurechtgebogen: was nicht passt, macht den ganzen
+ * Entwurf unbrauchbar, statt still zu verschwinden. */
+function db_entwurf_form($d)
+{
+    if (!is_array($d) || !isset($d['seiten']) || !is_array($d['seiten'])) { return null; }
+    $seiten = array();
+    foreach ($d['seiten'] as $s) {
+        if (!is_array($s)) { return null; }
+        $neu = array();
+        foreach (array('schluessel', 'name') as $f) {
+            if (!array_key_exists($f, $s)) { continue; }
+            if (!is_string($s[$f])) { return null; }
+            $neu[$f] = $s[$f];
+        }
+        if (array_key_exists('spalten', $s)) {
+            if (!is_int($s['spalten']) && !is_string($s['spalten'])) { return null; }
+            $neu['spalten'] = $s['spalten'];
+        }
+        // Die PIN reist nie mit - auch nicht, wenn eine Anfrage eine traegt.
+        $neu['pin'] = '';
+        $kroh = array_key_exists('kacheln', $s) ? $s['kacheln'] : array();
+        if (!is_array($kroh)) { return null; }
+        $kacheln = array();
+        foreach ($kroh as $k) {
+            if (!is_array($k)) { return null; }
+            $kn = array();
+            foreach (array('uuid', 'titel', 'kachel', 'groesse', 'symbol') as $f) {
+                if (!array_key_exists($f, $k) || ($f === 'symbol' && $k[$f] === null)) { continue; }
+                if (!is_string($k[$f])) { return null; }
+                $kn[$f] = $k[$f];
+            }
+            if (array_key_exists('sichtbar', $k)) {
+                $sb = $k['sichtbar'];
+                if ($sb !== null && !is_int($sb) && !is_bool($sb) && !is_string($sb)) { return null; }
+                $kn['sichtbar'] = $sb;
+            }
+            if (array_key_exists('schritte', $k)) {
+                if (!is_array($k['schritte'])) { return null; }
+                $kn['schritte'] = array();
+                foreach ($k['schritte'] as $sch) {
+                    if (!is_array($sch) || !isset($sch['uuid'], $sch['befehl'])
+                            || !is_string($sch['uuid']) || !is_string($sch['befehl'])) {
+                        return null;
+                    }
+                    $kn['schritte'][] = array('uuid' => $sch['uuid'], 'befehl' => $sch['befehl']);
+                }
+            }
+            $kacheln[] = $kn;
+        }
+        $neu['kacheln'] = $kacheln;
+        $seiten[] = $neu;
+    }
+    return array('seiten' => $seiten);
+}
+
+/** Die Orte, die zum Entwurf passen: array(Seite ab 0, Kachel ab 0 oder -1
+ * fuer die Seite selbst, Feld aus der Liste). Alles andere faellt weg. */
+function db_entwurf_orte($orte, $entwurf)
+{
+    $felder = array('seite', 'schluessel', 'name', 'spalten', 'pin', 'kacheln', 'form',
+                    'titel', 'kachel', 'groesse', 'sichtbar', 'symbol', 'schritte');
+    $aus = array();
+    foreach ((array) $orte as $o) {
+        if (!is_array($o) || count($o) !== 3 || !isset($o[0], $o[1], $o[2])
+                || !is_int($o[0]) || !is_int($o[1]) || !is_string($o[2])) {
+            continue;
+        }
+        if (!in_array($o[2], $felder, true) || $o[0] < 0 || $o[0] >= count($entwurf['seiten'])) { continue; }
+        if ($o[1] < -1 || $o[1] >= count($entwurf['seiten'][$o[0]]['kacheln'])) { continue; }
+        $o = array($o[0], $o[1], $o[2]);
+        if (!in_array($o, $aus, true)) { $aus[] = $o; }
+    }
+    return $aus;
+}
+
+/** Der Entwurf fuer die Einmalmeldung, oder array(), wenn es keinen gibt.
+ * $roh: das abgeschickte JSON, $d: sein Inhalt, $orte: aus db_seiten_pruefen. */
+function db_entwurf_sammeln($roh, $d, $orte)
+{
+    if (!is_string($roh) || strlen($roh) > db_entwurf_grenze()) { return array(); }
+    $e = db_entwurf_form($d);
+    if ($e === null) { return array(); }
+    $o = array();
+    foreach ((array) $orte as $x) {
+        if (is_array($x) && count($x) === 3 && is_int($x[0]) && is_int($x[1])) {
+            $o[] = array($x[0] - 1, $x[1] - 1, $x[2]);
+        }
+    }
+    return array('formular' => 'designer', 'werte' => array(), 'felder' => array(),
+                 'entwurf' => $e, 'orte' => db_entwurf_orte($o, $e));
+}
+
+/** Der Entwurf aus der Einmalmeldung - noch einmal dieselbe Form und dieselben
+ * Orte wie beim Schreiben; sonst kein Entwurf. */
+function db_entwurf_pruefen($e)
+{
+    $f = db_entwurf_form(isset($e['entwurf']) ? $e['entwurf'] : null);
+    if ($f === null) { return array(); }
+    return array('formular' => 'designer', 'werte' => array(), 'felder' => array(),
+                 'entwurf' => $f, 'orte' => db_entwurf_orte(isset($e['orte']) ? $e['orte'] : array(), $f));
 }
 
 /** Traegt die Seite gerade die Eingaben dieses Formulars? */
