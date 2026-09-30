@@ -121,6 +121,10 @@ if (isset($_POST['activetab']) && preg_match($db_muster, (string) $_POST['active
 
 $db_meldungen = array();
 $db_fehler = array();
+/* X-2 (Regeln/04): die Eingaben eines abgewiesenen Formulars und die Namen
+ * der beanstandeten Felder - sie reisen mit der Einmalmeldung. */
+$db_eingaben = array();
+$db_bean = array();
 
 /* ---------------------------------------------------------------- *
  * Der Wachposten - EIN Posten, vor allen Handlern.
@@ -169,6 +173,8 @@ if (!$db_post) {
         $db_meldungen = $db_einmal['meldungen'];
         $db_fehler = array_merge($db_fehler, $db_einmal['fehler']);
         $db_ausgabe = $db_einmal['ausgabe'];
+        // X-2: db_eingabe() und db_beanstandet_stil() lesen sie von hier.
+        $db_eingaben = $db_einmal['eingaben'];
     }
 }
 /* O17: aendert sich etwas, das der Dienst beim Start liest, wird er
@@ -209,6 +215,11 @@ $db_sauber = function ($feld) {
  * jeder Name, der ein Leerzeichen enthaelt. */
 if ($db_post && (isset($_POST['vorlage']) || isset($_POST['vorlage_out']))) {
     list($db_name, $db_xml) = isset($_POST['vorlage_out']) ? db_vorlage_out() : db_vorlage();
+    /* a1 (Verbesserungsbau 30.09.2026): die Kennung dieser Vorlage merken.
+     * Scheitert das (beschaedigte dashboard.json), kommt der Download
+     * trotzdem - der Reiter zeigt dann "unbekannt" bzw. den alten Stand. */
+    $db_va = isset($_POST['vorlage_out']) ? 'vq' : 'vi';
+    db_vorlage_merken($db_va, db_vorlage_kennung($db_va));
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $db_name . '"');
     echo $db_xml;
@@ -231,6 +242,7 @@ if ($db_post && isset($_POST['speichern'])) {
 
     $db_ms = $db_sauber('miniserver');
     if (!preg_match('/^[0-9]{1,3}$/', $db_ms)) {
+        $db_bean[] = 'miniserver';
         $db_fehler[] = db_t('EINST.FEHLER_MS');
     } else {
         $db_cfg['miniserver'] = $db_ms;
@@ -249,8 +261,10 @@ if ($db_post && isset($_POST['speichern'])) {
                    'eco_hell' => array(DB_ECO_HELL_MIN, DB_ECO_HELL_MAX)) as $db_f => $db_g) {
         $db_w = $db_sauber($db_f);
         if (!preg_match('/^[0-9]+$/', $db_w)) {
+            $db_bean[] = $db_f;
             $db_fehler[] = sprintf(db_t('EINST.FEHLER_ZAHL'), db_t('EINST.L_' . strtoupper($db_f)));
         } elseif ((int) $db_w < $db_g[0] || (int) $db_w > $db_g[1]) {
+            $db_bean[] = $db_f;
             $db_fehler[] = sprintf(db_t('EINST.FEHLER_BEREICH'),
                                    db_t('EINST.L_' . strtoupper($db_f)), $db_g[0], $db_g[1]);
         } else {
@@ -269,8 +283,12 @@ if ($db_post && isset($_POST['speichern'])) {
         $db_cfg['nacht_von'] = '';
         $db_cfg['nacht_bis'] = '';
     } elseif (!preg_match($db_zeitmuster, $db_nv) || !preg_match($db_zeitmuster, $db_nb)) {
+        $db_bean[] = 'nacht_von';
+        $db_bean[] = 'nacht_bis';
         $db_fehler[] = db_t('EINST.FEHLER_NACHTZEIT');
     } elseif ($db_nv === $db_nb) {
+        $db_bean[] = 'nacht_von';
+        $db_bean[] = 'nacht_bis';
         $db_fehler[] = db_t('EINST.FEHLER_NACHTGLEICH');
     } else {
         $db_cfg['nacht_von'] = $db_nv;
@@ -282,9 +300,11 @@ if ($db_post && isset($_POST['speichern'])) {
      * '0 oder 10 bis 3600' ist keiner. */
     $db_rn = $db_sauber('ruhe_nach');
     if (!preg_match('/^[0-9]+$/', $db_rn)) {
+        $db_bean[] = 'ruhe_nach';
         $db_fehler[] = sprintf(db_t('EINST.FEHLER_ZAHL'), db_t('EINST.L_RUHE_NACH'));
     } elseif ((int) $db_rn !== 0
               && ((int) $db_rn < DB_RUHE_NACH_MIN || (int) $db_rn > DB_RUHE_NACH_MAX)) {
+        $db_bean[] = 'ruhe_nach';
         $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_NACH'),
                                DB_RUHE_NACH_MIN, DB_RUHE_NACH_MAX);
     } else {
@@ -296,9 +316,11 @@ if ($db_post && isset($_POST['speichern'])) {
      * demselben Grund wie beim Ruhebild. */
     $db_en = $db_sauber('eco_nach');
     if (!preg_match('/^[0-9]+$/', $db_en)) {
+        $db_bean[] = 'eco_nach';
         $db_fehler[] = sprintf(db_t('EINST.FEHLER_ZAHL'), db_t('EINST.L_ECO_NACH'));
     } elseif ((int) $db_en !== 0
               && ((int) $db_en < DB_ECO_NACH_MIN || (int) $db_en > DB_ECO_NACH_MAX)) {
+        $db_bean[] = 'eco_nach';
         $db_fehler[] = sprintf(db_t('EINST.FEHLER_ECO_NACH'),
                                DB_ECO_NACH_MIN, DB_ECO_NACH_MAX);
     } else {
@@ -317,6 +339,7 @@ if ($db_post && isset($_POST['speichern'])) {
         $db_wb = db_baustein($db_w);
         $db_wk = ($db_wb !== null && isset($db_wb['kachel'])) ? (string) $db_wb['kachel'] : '';
         if ($db_wb === null || ($db_wk !== 'wert' && $db_wk !== 'text')) {
+            $db_bean[] = $db_f;
             $db_fehler[] = sprintf(db_t('EINST.FEHLER_WETTER_BAUSTEIN'),
                                    db_t('EINST.L_' . strtoupper($db_f)));
         } else {
@@ -332,6 +355,7 @@ if ($db_post && isset($_POST['speichern'])) {
     if ($db_rs === '') {
         $db_cfg['ruhe_seite'] = '';
     } elseif (db_seite($db_rs) === null) {
+        $db_bean[] = 'ruhe_seite';
         $db_fehler[] = db_t('EINST.FEHLER_RUHE_SEITE');
     } else {
         $db_cfg['ruhe_seite'] = $db_rs;
@@ -339,9 +363,34 @@ if ($db_post && isset($_POST['speichern'])) {
 
     $db_farbe = $db_sauber('farbe');
     if (!in_array($db_farbe, array('dunkel', 'hell'), true)) {
+        $db_bean[] = 'farbe';
         $db_fehler[] = db_t('EINST.FEHLER_FARBE');
     } else {
         $db_cfg['farbe'] = $db_farbe;
+    }
+
+    /* b1 (Verbesserungsbau 30.09.2026): PIN-freie Absender. Jeder Eintrag
+     * muss eine IP-Adresse sein; gespeichert wird die Normalform. Was nicht
+     * passt, wird abgewiesen und genannt - nie still weggelassen. */
+    list($db_pf, $db_pf_falsch) = db_pin_frei_lesen(
+        isset($_POST['pin_frei']) && is_string($_POST['pin_frei']) ? $_POST['pin_frei'] : "\x00");
+    if ($db_pf === null) {
+        $db_bean[] = 'pin_frei';
+        $db_fehler[] = sprintf(db_t('EINST.FEHLER_PIN_FREI'),
+                               db_e(implode(', ', array_slice($db_pf_falsch, 0, 5))), DB_PIN_FREI_MAX);
+    } else {
+        $db_cfg['pin_frei'] = implode(', ', $db_pf);
+    }
+
+    /* Tafel-1 (Verbesserungsbau 30.09.2026): der Praefix der Tafelthemen.
+     * Abgewiesen wird er auch bei ausgeschalteter Einstellung - sonst wartete
+     * der Fehler still bis zum Einschalten. */
+    $db_tmp = $db_sauber('tafel_mqtt_praefix');
+    if (!db_tafel_mqtt_praefix_gueltig($db_tmp)) {
+        $db_bean[] = 'tafel_mqtt_praefix';
+        $db_fehler[] = db_t('EINST.FEHLER_TAFEL_MQTT_PRAEFIX');
+    } else {
+        $db_cfg['tafel_mqtt_praefix'] = $db_tmp;
     }
 
     // Haken: isset() stellt sie beim Absenden DIESES Formulars. Alle Haken
@@ -350,7 +399,7 @@ if ($db_post && isset($_POST['speichern'])) {
     foreach (array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach',
                    'haptik', 'verlauf', 'sse', 'tafelsteuerung',
                    'gesichert_schalten', 'ruhe_uhr', 'ruhe_wetter',
-                   'ambient') as $db_h) {
+                   'ambient', 'tafel_mqtt') as $db_h) {
         $db_cfg[$db_h] = isset($_POST[$db_h]) ? 1 : 0;
     }
 
@@ -368,18 +417,23 @@ if ($db_post && isset($_POST['speichern'])) {
     $db_zpw = isset($_POST['z_passwort']) ? $_POST['z_passwort'] : '';
     $db_vpw = isset($_POST['visu_pw']) ? $_POST['visu_pw'] : '';
     if ($db_zadr !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-]{0,80}$/', $db_zadr)) {
+        $db_bean[] = 'z_adresse';
         $db_fehler[] = db_t('EINST.FEHLER_ZADRESSE');
     } elseif ($db_zadr !== '' && (!preg_match('/^[0-9]+$/', $db_zport)
             || (int) $db_zport < 1 || (int) $db_zport > 65535)) {
+        $db_bean[] = 'z_port';
         $db_fehler[] = db_t('EINST.FEHLER_ZPORT');
     }
     /* Ein Anfuehrungszeichen im Benutzernamen wird abgewiesen und gemeldet,
      * nicht still entfernt (Hinweis der Bauliste, Durchgang 29.09.2026). */
     if (db_steuerzeichen($db_zben) || strpbrk($db_zben, "\"'") !== false) {
+        $db_bean[] = 'z_benutzer';
         $db_fehler[] = db_t('EINST.FEHLER_ZBENUTZER');
     }
     // Kennwoerter duerfen Anfuehrungszeichen tragen; nur eine Liste ist falsch.
     if (!is_string($db_zpw) || !is_string($db_vpw)) {
+        $db_bean[] = 'z_passwort';
+        $db_bean[] = 'visu_pw';
         $db_fehler[] = db_t('EINST.FEHLER_KENNWORT_FORM');
         $db_zpw = '';
         $db_vpw = '';
@@ -426,7 +480,7 @@ if ($db_post && isset($_POST['speichern'])) {
             $db_bildda = true;
         }
     }
-    if ($db_bildfehler !== '') { $db_fehler[] = $db_bildfehler; }
+    if ($db_bildfehler !== '') { $db_fehler[] = $db_bildfehler; $db_bean[] = 'ruhe_bild'; }
 
     /* Ein Mangel an ANDERER Stelle im selben Formular verwirft die gewaehlte
      * Datei - PHP haelt sie nur bis zum Ende der Anfrage, und kein Browser
@@ -446,6 +500,7 @@ if ($db_post && isset($_POST['speichern'])) {
     $db_masse = null;
     if (!$db_fehler && !$db_bild_weg && $db_bildda) {
         if ((int) $_FILES['ruhe_bild']['size'] > DB_RUHE_BILD_MAX) {
+            $db_bean[] = 'ruhe_bild';
             $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_GROSS'),
                                    (int) (DB_RUHE_BILD_MAX / 1048576));
         } else {
@@ -454,6 +509,7 @@ if ($db_post && isset($_POST['speichern'])) {
                                  IMAGETYPE_WEBP => 'webp');
             if (!is_array($db_masse) || !isset($db_masse[2])
                     || !isset($db_endungen[$db_masse[2]])) {
+                $db_bean[] = 'ruhe_bild';
                 $db_fehler[] = db_t('EINST.FEHLER_RUHE_BILD_TYP');
             } elseif ((int) $db_masse[0] > DB_RUHE_BILD_KANTE
                       || (int) $db_masse[1] > DB_RUHE_BILD_KANTE) {
@@ -461,6 +517,7 @@ if ($db_post && isset($_POST['speichern'])) {
                  * PNG mit 25000 Punkten Kantenlaenge bleibt weit unter
                  * 4 MB, und dekodieren muss es das Tablet, nicht der
                  * Server. */
+                $db_bean[] = 'ruhe_bild';
                 $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_KANTE'),
                                        (int) $db_masse[0], (int) $db_masse[1],
                                        DB_RUHE_BILD_KANTE);
@@ -470,6 +527,10 @@ if ($db_post && isset($_POST['speichern'])) {
         }
     }
 
+    /* X-2 (Regeln/04): abgewiesen - die Eingaben reisen zurueck ins Formular. */
+    if ($db_fehler) {
+        $db_eingaben = db_eingaben_sammeln('speichern', $db_bean);
+    }
     /* O4/O5 (Durchgang 29.09.2026): erst ALLES pruefen, dann schreiben - und
      * jede Erfolgsmeldung haengt am Rueckgabewert. Bis 0.9.25 meldete ein
      * unschreibbares zugang.json "Die Einstellungen wurden gespeichert"
@@ -518,11 +579,13 @@ if ($db_post && isset($_POST['speichern'])) {
         }
         if ($db_schreibfehler) {
             $db_fehler = array_merge($db_fehler, $db_schreibfehler);
+            // X-2: nicht gespeichert - auch dann bleiben die Eingaben stehen.
+            $db_eingaben = db_eingaben_sammeln('speichern', array());
         } else {
             $db_meldungen[] = db_t('EINST.GESPEICHERT');
             // O17: was der Dienst beim Start liest
             foreach (array('miniserver', 'tls', 'takt', 'http_rueckfall', 'http_takt',
-                           'verlauf', 'verlauf_punkte') as $db_k) {
+                           'verlauf', 'verlauf_punkte', 'tafel_mqtt', 'tafel_mqtt_praefix') as $db_k) {
                 if (json_encode($db_cfg_vorher[$db_k]) !== json_encode($db_cfg[$db_k])) {
                     $db_nachziehen = true;
                 }
@@ -595,25 +658,35 @@ if ($db_post && isset($_POST['seiten_speichern'])) {
      * jede Ausgabe maskiert sie.
      * C11: die PIN wird als Pruefwert gespeichert (password_hash). */
     $db_neu = array();
+    // X-2: Nummer im Formular -> Seitenschluessel; die Eingaben reisen je Schluessel.
+    $db_zeilen = array();
+    foreach ($db_seiten as $db_i => $db_s) {
+        $db_zeilen[$db_i] = is_array($db_s) && isset($db_s['schluessel']) ? (string) $db_s['schluessel'] : '';
+    }
     foreach ($db_seiten as $db_i => $db_s) {
         if (!empty($db_weg[$db_i])) { continue; }
+        $db_bk = $db_zeilen[$db_i];
         $db_n = isset($db_namen[$db_i]) && is_string($db_namen[$db_i]) ? trim($db_namen[$db_i]) : '';
         if ($db_n === '') {
+            $db_bean[] = 's_name:' . $db_bk;
             $db_fehler[] = sprintf(db_t('BOARD.FEHLER_NAME'), (int) $db_i + 1);
             continue;
         }
         if (db_steuerzeichen($db_n)) {
+            $db_bean[] = 's_name:' . $db_bk;
             $db_fehler[] = sprintf(db_t('DESIGN.FEHLER_ZEICHEN'),
                                    db_e((string) (isset($db_s['schluessel']) ? $db_s['schluessel'] : '')));
             continue;
         }
         $db_sp = isset($db_spalten[$db_i]) && is_string($db_spalten[$db_i]) ? trim($db_spalten[$db_i]) : '6';
         if (!preg_match('/^[0-9]{1,2}$/', $db_sp) || (int) $db_sp < 2 || (int) $db_sp > 12) {
+            $db_bean[] = 's_spalten:' . $db_bk;
             $db_fehler[] = sprintf(db_t('BOARD.FEHLER_SPALTEN'), db_e($db_n));
             continue;
         }
         $db_pin = isset($db_pins[$db_i]) && is_string($db_pins[$db_i]) ? trim($db_pins[$db_i]) : '';
         if ($db_pin !== '' && !preg_match('/^[0-9]{4,10}$/', $db_pin)) {
+            $db_bean[] = 's_pin:' . $db_bk;
             $db_fehler[] = sprintf(db_t('BOARD.FEHLER_PIN'), db_e($db_n));
             continue;
         }
@@ -624,6 +697,7 @@ if ($db_post && isset($_POST['seiten_speichern'])) {
         if ($db_pin !== '') {
             $db_h = db_pin_hash($db_pin);
             if ($db_h === false) {
+                $db_bean[] = 's_pin:' . $db_bk;
                 $db_fehler[] = sprintf(db_t('BOARD.FEHLER_PIN'), db_e($db_n));
                 continue;
             }
@@ -634,7 +708,14 @@ if ($db_post && isset($_POST['seiten_speichern'])) {
     }
     if (!$db_fehler) {
         if (db_seiten_speichern($db_neu)) { $db_meldungen[] = db_t('BOARD.GESPEICHERT'); }
-        else { $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_p['seiten'])); }
+        else {
+            $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_p['seiten']));
+            // X-2: nicht gespeichert - die Eingaben bleiben stehen.
+            $db_eingaben = db_eingaben_sammeln('seiten_speichern', array(), $db_zeilen);
+        }
+    } else {
+        // X-2 (Regeln/04): abgewiesen - die Eingaben reisen zurueck, nie die PIN.
+        $db_eingaben = db_eingaben_sammeln('seiten_speichern', $db_bean, $db_zeilen);
     }
     $db_tab = 'tab-boards';
 }
@@ -752,8 +833,10 @@ if ($db_post && isset($_POST['db_sichern'])) {
         }
     }
     if ($db_heil) {
-        $db_js = json_encode(db_sicherung_bauen(),
-            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        /* X-3 (Verbesserungsbau 30.09.2026): bestuende die Datei das eigene
+         * Zurueckspielen nicht, steht die Warnung in ihrem Kopf - geliefert
+         * wird sie trotzdem. */
+        $db_js = db_sicherung_mit_warnung();
     }
     if ($db_js !== false) {
         /* S3 (0.9.26): zusaetzlich zum Download ein Eintrag im
@@ -895,7 +978,7 @@ if ($db_nachziehen) {
  * gerendert - lieber ohne Umleitung als ohne Meldung. */
 if ($db_post) {
     if (db_einmal_schreiben(array('meldungen' => $db_meldungen, 'fehler' => $db_fehler,
-                                  'ausgabe' => $db_ausgabe))) {
+                                  'ausgabe' => $db_ausgabe, 'eingaben' => $db_eingaben))) {
         header('Location: index.php?form=' . rawurlencode(substr($db_tab, 4)), true, 303);
         exit;
     }
@@ -1112,6 +1195,24 @@ ob_start();
 <form action="index.php" method="post" enctype="multipart/form-data">
   <?php echo db_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<?php
+/* X-2 (Regeln/04): nach einer Beanstandung zeigt DIESES Formular die
+ * eingetippten Werte statt der gespeicherten. Dafuer werden $db_cfg und
+ * $db_zugang nur fuer die Dauer des Formulars ueberlagert und danach
+ * zurueckgesetzt (hinter </form>). Kennwoerter reisen nie mit. */
+$db_cfg_gespeichert = $db_cfg;
+$db_zugang_gespeichert = $db_zugang;
+if (db_eingaben_aktiv('speichern')) {
+    foreach ($db_eingaben['werte'] as $db_ek => $db_ev) {
+        if (array_key_exists($db_ek, $db_cfg)) { $db_cfg[$db_ek] = $db_ev; }
+    }
+    foreach (array('z_adresse' => 'adresse', 'z_port' => 'port', 'z_benutzer' => 'benutzer') as $db_ek => $db_zk) {
+        if (array_key_exists($db_ek, $db_eingaben['werte'])) { $db_zugang[$db_zk] = $db_eingaben['werte'][$db_ek]; }
+    }
+    echo '<div class="sm-warnung" id="db-eingaben-zurueck">' . db_e(db_t('EINST.EINGABEN_ZURUECK')) . '</div>'
+       . db_beanstandet_stil('speichern');
+}
+?>
 
 <h2><?= db_e(db_t('EINST.H_MS')) ?></h2>
 <p class="sm-hilfe"><?= db_t('EINST.MS_ERKLAERUNG') ?></p>
@@ -1240,6 +1341,25 @@ ob_start();
 <label><input data-role="none" type="checkbox" name="tafelsteuerung" value="1"<?= !empty($db_cfg['tafelsteuerung']) ? ' checked' : '' ?>>
   <?= db_e(db_t('EINST.L_TAFELSTEUERUNG')) ?></label>
 <p class="sm-hilfe"><?= db_t('EINST.H_TAFELSTEUERUNG') ?></p>
+<label><input data-role="none" type="checkbox" name="tafel_mqtt" value="1"<?= !empty($db_cfg['tafel_mqtt']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_TAFEL_MQTT')) ?></label>
+<div class="sm-feld">
+  <label for="tafel_mqtt_praefix"><?= db_e(db_t('EINST.L_TAFEL_MQTT_PRAEFIX')) ?></label>
+  <input data-role="none" type="text" name="tafel_mqtt_praefix" id="tafel_mqtt_praefix"
+         value="<?= db_e($db_cfg['tafel_mqtt_praefix']) ?>" placeholder="dashboard">
+  <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_TAFEL_MQTT'),
+      '<span class="sm-mono">' . db_e(implode(', ', db_tafel_mqtt_themen((string) $db_cfg['tafel_mqtt_praefix']))) . '</span>') ?></p>
+</div>
+
+<h3><?= db_e(db_t('EINST.T_PIN_FREI')) ?></h3>
+<div class="sm-feld">
+  <label for="pin_frei"><?= db_e(db_t('EINST.L_PIN_FREI')) ?></label>
+  <input data-role="none" type="text" name="pin_frei" id="pin_frei"
+         value="<?= db_e($db_cfg['pin_frei']) ?>" placeholder="192.168.1.50, 192.168.1.51">
+  <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_PIN_FREI'), DB_PIN_FREI_MAX,
+      '<span class="sm-mono">' . db_e(db_adresse_normal(isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '') !== ''
+          ? db_adresse_normal((string) $_SERVER['REMOTE_ADDR']) : '?') . '</span>') ?></p>
+</div>
 
 <h2><?= db_e(db_t('EINST.H_AMBIENT')) ?></h2>
 <p class="sm-hilfe"><?= db_t('EINST.AMBIENT_ERKLAERUNG') ?></p>
@@ -1410,6 +1530,11 @@ if (db_wetter_eigene_gewaehlt($db_cfg)) {
 <button data-role="none" class="sm-btn sm-b-aktion" name="speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+<?php
+// X-2: ab hier wieder die gespeicherten Werte.
+$db_cfg = $db_cfg_gespeichert;
+$db_zugang = $db_zugang_gespeichert;
+?>
 
 <h2><?= db_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= db_t('EINST.SICH_ERKLAERUNG') ?></div>
@@ -1430,6 +1555,16 @@ if (db_wetter_eigene_gewaehlt($db_cfg)) {
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="db_sichern" value="1"><?= db_t('EINST.K_SICHERN') ?></button>
   </form>
 </div>
+<?php
+/* X-3 (Verbesserungsbau 30.09.2026): gelb am Knopf, wenn die Sicherung des
+ * jetzigen Stands das eigene Zurueckspielen nicht bestuende - dieselbe
+ * Pruefung wie beim Zurueckspielen. Die Sicherung kommt trotzdem. */
+$db_altwerte = db_sicherung_altwerte();
+if ($db_altwerte) { ?>
+<div class="sm-warnung" id="db-sicherung-warnung"><?= db_t('EINST.SICH_ALTWERT') ?><ul>
+<?php foreach ($db_altwerte as $db_aw) { ?><li><?= db_e($db_aw) ?></li><?php } ?>
+</ul></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post" enctype="multipart/form-data">
     <?php echo db_fmt(); ?>
@@ -1518,6 +1653,11 @@ if (!$db_vliste) { ?>
 <form action="index.php" method="post">
   <?php echo db_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-boards">
+<?php if (db_eingaben_aktiv('seiten_speichern')) {
+    // X-2: die eingetippten Werte stehen wieder da, nie die PIN.
+    echo '<div class="sm-warnung" id="db-eingaben-zurueck-seiten">' . db_e(db_t('EINST.EINGABEN_ZURUECK')) . '</div>'
+       . db_beanstandet_stil('seiten_speichern', $db_seiten);
+} ?>
 <table class="sm-tabelle">
 <tr><th><?= db_e(db_t('BOARD.T_NAME')) ?></th><th><?= db_e(db_t('BOARD.T_KACHELN')) ?></th>
     <th><?= db_e(db_t('BOARD.T_SPALTEN')) ?></th><th><?= db_e(db_t('BOARD.T_PIN')) ?></th>
@@ -1526,21 +1666,21 @@ if (!$db_vliste) { ?>
     $db_k = (string) $db_s['schluessel']; ?>
 <tr>
   <td><input data-role="none" type="text" name="s_name[<?= (int) $db_i ?>]"
-             value="<?= db_e($db_s['name']) ?>" size="18">
+             value="<?= db_e(db_eingabe('seiten_speichern', 's_name', $db_s['name'], $db_k)) ?>" size="18">
       <div class="sm-hilfe sm-mono"><?= db_e($db_k) ?></div></td>
   <td><?= count(isset($db_s['kacheln']) ? $db_s['kacheln'] : array()) ?></td>
   <td><input data-role="none" type="text" name="s_spalten[<?= (int) $db_i ?>]"
-             value="<?= (int) (isset($db_s['spalten']) ? $db_s['spalten'] : 6) ?>" size="3"></td>
+             value="<?= db_e(db_eingabe('seiten_speichern', 's_spalten', (int) (isset($db_s['spalten']) ? $db_s['spalten'] : 6), $db_k)) ?>" size="3"></td>
   <td><input data-role="none" type="password" name="s_pin[<?= (int) $db_i ?>]" value="" size="8"
              placeholder="<?= db_e(!empty($db_s['pin']) ? db_t('BOARD.PIN_DA') : db_t('BOARD.PIN_LEER')) ?>">
       <?php if (!empty($db_s['pin'])) { ?>
       <div class="sm-hilfe"><label><input data-role="none" type="checkbox"
-        name="s_pinweg[<?= (int) $db_i ?>]" value="1"> <?= db_e(db_t('BOARD.PIN_WEG')) ?></label></div>
+        name="s_pinweg[<?= (int) $db_i ?>]" value="1"<?= db_eingabe('seiten_speichern', 's_pinweg', 0, $db_k) ? ' checked' : '' ?>> <?= db_e(db_t('BOARD.PIN_WEG')) ?></label></div>
       <?php } ?></td>
   <td><a href="<?= db_e(db_tafel_adresse($db_k)) ?>" target="_blank"
          class="sm-mono" style="font-size:0.8em"><?= db_e(db_t('BOARD.OEFFNEN')) ?></a>
       <div class="sm-hilfe sm-mono" style="font-size:0.75em"><?= db_e(db_tafel_adresse($db_k)) ?></div></td>
-  <td><label><input data-role="none" type="checkbox" name="s_weg[<?= (int) $db_i ?>]" value="1"></label></td>
+  <td><label><input data-role="none" type="checkbox" name="s_weg[<?= (int) $db_i ?>]" value="1"<?= db_eingabe('seiten_speichern', 's_weg', 0, $db_k) ? ' checked' : '' ?>></label></td>
 </tr>
 <?php } ?>
 </table>
@@ -1642,6 +1782,18 @@ if ($db_sy_lage !== 'ok' || !db_symbol_liste()) { ?>
   <button data-role="none" class="sm-btn sm-b-technik" name="vorlage_out" value="1"><?= db_e(db_t('LOX.K_VORLAGE_OUT')) ?></button>
   </div>
 </form>
+<?php /* a1 (Verbesserungsbau 30.09.2026): je Vorlage, ob die zuletzt
+        heruntergeladene noch der entspricht, die das Plugin jetzt erzeugt. */
+foreach (array('vi' => 'VI_DASHBOARD_STATUS.xml', 'vq' => 'VQ_DASHBOARD_STEUERUNG.xml') as $db_va => $db_vn) {
+    list($db_vl, $db_vz) = db_vorlage_lage($db_va, $db_cfg);
+    if ($db_vl === 'veraltet') { ?>
+<div class="sm-warnung" id="db-vorlage-<?= db_e($db_va) ?>" data-lage="veraltet"><?= sprintf(db_t('LOX.VORLAGE_VERALTET'), '<span class="sm-mono">' . db_e($db_vn) . '</span>', db_e(date('d.m.Y H:i', $db_vz))) ?></div>
+<?php } elseif ($db_vl === 'aktuell') { ?>
+<p class="sm-hilfe" id="db-vorlage-<?= db_e($db_va) ?>" data-lage="aktuell"><?= sprintf(db_t('LOX.VORLAGE_AKTUELL'), '<span class="sm-mono">' . db_e($db_vn) . '</span>', db_e(date('d.m.Y H:i', $db_vz))) ?></p>
+<?php } else { ?>
+<p class="sm-hilfe" id="db-vorlage-<?= db_e($db_va) ?>" data-lage="unbekannt"><?= sprintf(db_t('LOX.VORLAGE_UNBEKANNT'), '<span class="sm-mono">' . db_e($db_vn) . '</span>') ?></p>
+<?php }
+} ?>
 <div class="sm-warnung"><?= db_t('LOX.IMPORT_WARNUNG') ?></div>
 </div>
 
@@ -1674,6 +1826,19 @@ if ($db_sy_lage !== 'ok' || !db_symbol_liste()) { ?>
 <tr><td class="sm-mono">…&amp;aktion=tafel&amp;ruhe=1</td><td><?= db_t('LOX.SOUT_RUHE') ?></td></tr>
 <?php } ?>
 </table>
+<?php /* Tafel-1: der Weg ueber MQTT, zusaetzlich zum virtuellen Ausgang. */ ?>
+<h4 style="margin:14px 0 2px"><?= db_e(db_t('LOX.SMQTT_TITEL')) ?></h4>
+<?php if (empty($db_cfg['tafel_mqtt'])) { ?>
+<p class="sm-hilfe"><?= db_t('LOX.SMQTT_AUS') ?></p>
+<?php } else {
+    $db_tmt = db_tafel_mqtt_themen((string) $db_cfg['tafel_mqtt_praefix']); ?>
+<table class="sm-tabelle">
+<tr><th><?= db_e(db_t('LOX.T_THEMA')) ?></th><th><?= db_e(db_t('LOX.T_BEDEUTUNG')) ?></th></tr>
+<tr><td class="sm-mono"><?= db_e($db_tmt[0]) ?></td><td><?= db_t('LOX.SMQTT_SEITE') ?></td></tr>
+<tr><td class="sm-mono"><?= db_e($db_tmt[1]) ?></td><td><?= db_t('LOX.SMQTT_WECKEN') ?></td></tr>
+</table>
+<p class="sm-hilfe"><?= sprintf(db_t('LOX.SMQTT_TEXT'), '<span class="sm-mono">publish ' . db_e($db_tmt[0]) . ' &lt;v&gt;</span>') ?></p>
+<?php } ?>
 </div>
 
 <!-- Ausfallerkennung: der Schritt, den der Hausstandard ausdruecklich

@@ -49,6 +49,7 @@ sys.path.insert(0, str(HIER))
 
 from entwurf import entwurf_bauen, bausteine_sammeln          # noqa: E402
 from lox_client import Miniserver, LoxFehler, LoxZeit, selbstpruefung   # noqa: E402
+import tafel_mqtt                                              # noqa: E402
 
 
 def lb_wurzel_ermitteln():
@@ -123,6 +124,10 @@ DATEI_ABBILD = os.path.join(DATADIR, "abbild.json")
 DATEI_ZUSTAND = os.path.join(DATADIR, "zustand.json")
 DATEI_VERLAUF = os.path.join(DATADIR, "verlauf.json")
 DATEI_TAFEL = os.path.join(DATADIR, "tafel.json")
+# Tafel-1 (Verbesserungsbau 30.09.2026): dieselbe Sperre wie db_tafel_befehl()
+# in db_lib.php, und der Stand des MQTT-Abos fuer den Reiter Test.
+DATEI_TAFEL_SPERRE = os.path.join(DATADIR, "tafel.sperre")
+DATEI_TAFEL_MQTT = os.path.join(DATADIR, "tafel_mqtt.json")
 DATEI_PID = os.path.join(DATADIR, "dienst.pid")
 DATEI_SOLL = os.path.join(DATADIR, "soll_laufen")
 ORDNER_BEFEHLE = os.path.join(DATADIR, "befehle")
@@ -195,6 +200,14 @@ VORGABEN = {
     "wetter_lage": "",
     "wetter_temp": "",
     "wetter_zusatz": "",
+    # b1 (Verbesserungsbau 30.09.2026): PIN-freie Absender, ab Werk leer. Der
+    # Dienst wertet sie nicht aus; sie stehen hier, weil der Reiter Test die
+    # beiden Vorgabetabellen gegeneinander haelt.
+    "pin_frei": "",
+    # Tafel-1 (Verbesserungsbau 30.09.2026): Tafeln zusaetzlich ueber MQTT
+    # steuern - ab Werk AUS (bin/tafel_mqtt.py).
+    "tafel_mqtt": 0,
+    "tafel_mqtt_praefix": "dashboard",
 }
 
 _LOG = logging.getLogger("dashboard")
@@ -934,6 +947,35 @@ def antworten_aufraeumen(alter: int = 120) -> None:
 # Dauerbetrieb
 # ---------------------------------------------------------------------------
 
+def tafel_mqtt_starten(cfg: dict, laeuft):
+    """Tafel-1 (Verbesserungsbau 30.09.2026): das MQTT-Abo fuer die Tafeln als
+    eigene Aufgabe neben der Miniserver-Verbindung - es haengt nicht an ihr.
+    Ist die Einstellung aus, steht das in der Standdatei (der Reiter Test
+    unterscheidet so "aus" von "noch nicht neu gestartet"), und es gibt keine
+    Aufgabe. Rueckgabe die Aufgabe oder None."""
+    try:
+        an = int(cfg.get("tafel_mqtt") or 0) == 1
+    except (TypeError, ValueError):
+        an = False
+    if not an:
+        json_schreiben(DATEI_TAFEL_MQTT, {"ts": int(time.time()), "lage": "aus"})
+        return None
+    praefix = cfg.get("tafel_mqtt_praefix")
+    if not tafel_mqtt.praefix_gueltig(praefix):
+        _LOG.error("Tafel ueber MQTT: der Praefix ist ungueltig - kein Abo. Im Reiter "
+                   "Einstellungen berichtigen.")
+        json_schreiben(DATEI_TAFEL_MQTT, {"ts": int(time.time()), "lage": "praefix_ungueltig",
+                                          "praefix": str(praefix)[:140],
+                                          "grund": "Praefix ungueltig"})
+        return None
+    abo = tafel_mqtt.TafelMqtt(
+        praefix, general_pfad=os.path.join(HOME, "config", "system", "general.json"),
+        tafel_pfad=DATEI_TAFEL, sperre_pfad=DATEI_TAFEL_SPERRE, seiten_pfad=DATEI_DASHBOARD,
+        status_pfad=DATEI_TAFEL_MQTT, config=config, json_lesen=json_lesen,
+        json_schreiben=json_schreiben, sperre=datei_sperre, log=_LOG, laeuft=laeuft)
+    return asyncio.ensure_future(abo.laufen_sicher())
+
+
 class Dienst:
     def __init__(self) -> None:
         self.laeuft = True
@@ -984,6 +1026,8 @@ class Dienst:
         tabelle = kacheltabelle()
         os.makedirs(ORDNER_BEFEHLE, exist_ok=True)
         os.makedirs(ORDNER_ANTWORTEN, exist_ok=True)
+        # Tafel-1: das MQTT-Abo laeuft neben der Verbindung zum Miniserver.
+        tafel_aufgabe = tafel_mqtt_starten(cfg, lambda: self.laeuft)
         takt = max(1, min(30, int(cfg.get("takt") or 2)))
         wartezeit = 5
 
@@ -1090,6 +1134,13 @@ class Dienst:
                     break
                 await asyncio.sleep(0.5)
             wartezeit = min(120, wartezeit * 2)
+        if tafel_aufgabe is not None:
+            # Die Aufgabe sieht self.laeuft selbst und endet innerhalb einer
+            # Sekunde; haengt sie, wird sie abgebrochen.
+            try:
+                await asyncio.wait_for(tafel_aufgabe, 5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
         return 0
 
     async def http_weg(self, cfg: dict, tabelle: dict) -> None:

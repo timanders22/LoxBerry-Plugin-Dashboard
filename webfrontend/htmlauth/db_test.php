@@ -364,6 +364,10 @@ function db_pruefungen()
     /* S8 (0.9.26): Symbole aus LoxoneIcons - Quelle, Anzahl, und ob jede
      * Kachel mit Symbol ihre Datei findet. */
     $zeilen[] = db_symbole_pruefzeile();
+    /* Tafel-1 (Verbesserungsbau 30.09.2026): Tafeln ueber MQTT - verbunden,
+     * getrennt, still, oder aus. Faellt der Weg aus, sagt die Zeile, dass
+     * der virtuelle Ausgang weiter wirkt (Rahmen, D-Punkte). */
+    $zeilen[] = db_tafel_mqtt_pruefzeile();
     // Antwortet der eigene Endpunkt? Ein echter Aufruf, drei Ausgaenge.
     list($st, $text) = db_endpunkt_probe(db_token_soll(db_config()));
     $zeilen[] = db_pruefzeile($st, db_t('TEST.F_ENDPUNKT'), $text);
@@ -467,6 +471,44 @@ function db_symbole_pruefzeile()
                                                 db_e(implode(', ', array_keys($fehlt)))));
     }
     return db_pruefzeile(1, $frage, sprintf(db_t('TEST.A_SYMBOLE'), count($liste), db_e($o), $mit));
+}
+
+/** Tafel-1: die Pruefzeile "Tafeln ueber MQTT". Grau: aus. Haken: der
+ * Dienst meldet vor hoechstens 180 s "verbunden" mit dem eingestellten
+ * Praefix. Kreuz: Dienst angehalten, Stand fehlt oder ist alt, der Dienst
+ * arbeitet noch mit anderen Einstellungen, oder der Broker ist nicht zu
+ * erreichen - jeweils mit dem Satz, dass der virtuelle Ausgang weiter wirkt. */
+function db_tafel_mqtt_pruefzeile()
+{
+    $frage = db_t('TEST.F_TAFEL_MQTT');
+    $cfg = db_config();
+    if (empty($cfg['tafel_mqtt'])) {
+        return db_pruefzeile(-1, $frage, db_t('TEST.A_TAFEL_MQTT_AUS'));
+    }
+    $rueck = ' ' . db_t('TEST.A_TAFEL_MQTT_RUECKFALL');
+    if (db_dienst_pid() <= 0) {
+        return db_pruefzeile(0, $frage, db_t('TEST.A_TAFEL_MQTT_KEIN_DIENST') . $rueck);
+    }
+    $st = db_tafel_mqtt_stand();
+    $ts = (isset($st['ts']) && is_numeric($st['ts'])) ? (int) $st['ts'] : 0;
+    $alter = time() - $ts;
+    if ($ts <= 0 || $alter < 0 || $alter > 180) {
+        return db_pruefzeile(0, $frage, db_t('TEST.A_TAFEL_MQTT_STILL') . $rueck);
+    }
+    $lage = isset($st['lage']) && is_string($st['lage']) ? $st['lage'] : '';
+    $praefix = isset($st['praefix']) && is_string($st['praefix']) ? $st['praefix'] : '';
+    if ($lage === 'aus' || $praefix !== (string) $cfg['tafel_mqtt_praefix']) {
+        return db_pruefzeile(0, $frage, db_t('TEST.A_TAFEL_MQTT_NEUSTART') . $rueck);
+    }
+    $zahl = function ($k) use ($st) { return (isset($st[$k]) && is_numeric($st[$k])) ? (int) $st[$k] : 0; };
+    if ($lage === 'verbunden') {
+        return db_pruefzeile(1, $frage, sprintf(db_t('TEST.A_TAFEL_MQTT'),
+            db_e(isset($st['broker']) ? (string) $st['broker'] : '?'),
+            db_e(implode(', ', db_tafel_mqtt_themen($praefix))),
+            $zahl('befehle'), $zahl('verworfen'), $zahl('retained')));
+    }
+    return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_TAFEL_MQTT_GETRENNT'), db_e($lage),
+        db_e(isset($st['grund']) && is_string($st['grund']) ? $st['grund'] : '')) . $rueck);
 }
 
 function db_pruefungen_html()

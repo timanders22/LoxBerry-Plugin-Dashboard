@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.26 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.27 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,32 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.27
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen unter PHP 7.4,
+8.3 und 8.5 sowie an einem nachgebauten Broker; nicht am Gerät.
+
+* **Tablets ohne PIN:** eine Liste von Absender-Adressen, die für Seiten mit
+  PIN keine PIN brauchen – auch nicht während einer Sperre. Ab Werk leer.
+  Entschieden wird nur über die tatsächliche Absenderadresse, nie über
+  Kopfzeilen wie `X-Forwarded-For`; hinter einem Reverse Proxy gilt eine
+  Freigabe deshalb für alle, die über ihn kommen.
+* **Tafeln über MQTT (ab Werk aus):** `<Präfix>/tafel/alle/seite`
+  (Seitenschlüssel oder Nummer) und `…/wecken` (1), zusätzlich zum virtuellen
+  Ausgang. Zurückbehaltene Befehle wirken nie; fällt der Broker aus, schaltet
+  der virtuelle Ausgang weiter, und der Reiter Test sagt es. Aus Loxone über
+  das MQTT-Gateway mit `publish`.
+* **„Vorlage neu importieren“:** Der Reiter „Einbindung in Loxone“ zeigt den
+  Hinweis, sobald die zuletzt heruntergeladene Vorlage nicht mehr zur aktuellen
+  passt (neue Seite, neue Fassung, neues Token, anderer Sprache). Für Vorlagen,
+  die vor dieser Fassung geladen wurden, steht ein grauer Satz.
+* Nach einer Beanstandung stehen die eingetippten Werte wieder im Formular
+  (Einstellungen, Dashboards); Kennwörter und PINs nie.
+* „Einstellungen sichern“ warnt gelb, wenn das Zurückspielen die Datei abweisen
+  würde. Sicherungen aus 0.9.26 bleiben zurückspielbar; die neuen Einstellungen
+  stehen dann auf Werk und werden genannt.
 
 ## Neu in 0.9.26
 
@@ -358,6 +384,7 @@ und bedient damit beliebig viele Tablets.
     bin/dashboard_dienst.py  Dienst: Verbindung halten, Abbild schreiben,
                              Befehlswarteschlange, Selbsttest, Proben
     bin/entwurf.py           Erstentwurf aus der Struktur
+    bin/tafel_mqtt.py        Tafelbefehle über MQTT (ab Werk aus)
     bin/dienst.sh            Start, Stopp, Wächter, Proben
     cron/cron.01min          minütlicher Wächter
     dpkg/apt                 die beiden Debian-Pakete, von LoxBerry als
@@ -507,6 +534,21 @@ Zeitplan, Verlaufskurve auf den Kacheln, das Ruhebild (siehe unten), und die
 Steuerung der Anzeige durch Loxone (Seitenwechsel, Wecken, Helligkeit,
 Ruhebild) über einen virtuellen Ausgang.
 
+**Tafeln über MQTT** (Einstellung *Tafeln zusätzlich über MQTT steuern*, ab Werk
+aus): Der Dienst abonniert dann `<Präfix>/tafel/alle/seite` (Schlüssel der Seite
+oder ihre Nummer, 1 = erste Seite) und `<Präfix>/tafel/alle/wecken` (1) am
+Broker des LoxBerry (Zugang aus der `general.json`) und legt den Befehl auf
+demselben Weg ab wie der virtuelle Ausgang — er wirkt auf alle Tafeln. Präfix
+ab Werk `dashboard`. Zurückbehaltene (retained) Befehle wirken nie, sonst
+sprängen die Tafeln nach jedem Neustart des Dienstes. Fällt der Broker aus,
+bleibt es beim virtuellen Ausgang, und der Reiter *Test* sagt es. Aus Loxone
+geht der Befehl über das MQTT-Gateway des LoxBerry (UDP-Eingang, `publish`).
+
+Der Reiter *Einbindung in Loxone* merkt sich beim Herunterladen die Kennung
+jeder Vorlage und sagt danach **„Vorlage neu importieren“**, sobald das Plugin
+eine andere erzeugen würde (neue Fassung, neues Token, neue Seite,
+Tafelsteuerung an). Datum und Rechnername zählen dabei nicht mit.
+
 ### Der Ambient-Modus
 
 Uhrzeit, Datum und Wetter stehen **dauerhaft** über den Kacheln, das
@@ -617,6 +659,12 @@ Text trägt. Wer das erst am Tablet merkt, sucht lange.
   fünf Minuten gesperrt, jede weitere Sperre dauert doppelt so lang
   (höchstens einen Tag); jeder Fehlversuch steht gebremst mit Absender im
   Protokoll, nie mit der PIN.
+- **Tablets ohne PIN:** Im Reiter *Einstellungen* lässt sich eine Liste von
+  Absender-Adressen eintragen, die für Seiten mit PIN keine PIN brauchen, auch
+  nicht während einer Sperre (ab Werk leer). Maßgeblich ist allein die Adresse
+  der Verbindung (`REMOTE_ADDR`); Kopfzeilen wie `X-Forwarded-For` werden nie
+  gelesen. Hinter einem Reverse Proxy sieht der LoxBerry nur den Proxy — eine
+  Freigabe seiner Adresse gilt dann für jeden, der über ihn kommt.
 - Geschaltet werden kann **nur, was auf einer Seite steht**, und nur mit den
   Befehlen, die die Kacheltabelle für genau diesen Bausteintyp nennt. Bei einer
   Szene wird **jeder Schritt einzeln** geprüft — sie ist keine Abkürzung an der
@@ -651,6 +699,9 @@ Namentlich ungeprüft und deshalb hier genannt:
 - **Der Weg für gesicherte Bausteine** ist aus dem Dokument gebaut und gegen
   eine Attrappe gemessen, die den erwarteten Hash ebenfalls aus dem Dokument
   rechnet — nicht aus diesem Quelltext. Am Gerät geprüft ist er nicht.
+- **Tafeln über MQTT** sind gegen einen nachgebauten Broker auf `127.0.0.1`
+  gemessen (MQTT 3.1.1, mit und ohne Retain-Merkmal), nicht gegen den
+  Mosquitto eines LoxBerry und nicht mit dem MQTT-Gateway.
 - **Die Marke „Aktualisierung läuft"** (neu in 0.9.23) ist in WSL mit einem
   nachgestellten Installer-Ablauf gemessen, nicht an einem LoxBerry. Der
   Benutzerwechsel auf `loxberry` und Apache sind dabei nicht nachgebildet.

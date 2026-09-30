@@ -57,6 +57,8 @@ if (!defined('DB_RUHE_HELL_MAX')) { define('DB_RUHE_HELL_MAX', 100); }
 if (!defined('DB_PIN_VERSUCHE')) { define('DB_PIN_VERSUCHE', 5); }
 if (!defined('DB_PIN_SPERRE')) { define('DB_PIN_SPERRE', 300); }
 if (!defined('DB_PIN_SPERRE_MAX')) { define('DB_PIN_SPERRE_MAX', 86400); }
+/* b1 (Verbesserungsbau 30.09.2026): hoechstens so viele PIN-freie Absender. */
+if (!defined('DB_PIN_FREI_MAX')) { define('DB_PIN_FREI_MAX', 32); }
 /* C13: dieselbe Abweisung vom selben Absender steht hoechstens einmal je
  * DB_ABWEISUNG_BREMSE Sekunden im Protokoll. */
 if (!defined('DB_ABWEISUNG_BREMSE')) { define('DB_ABWEISUNG_BREMSE', 60); }
@@ -263,6 +265,16 @@ function db_vorgaben()
         'wetter_lage'    => '',   // Baustein-UUID, Text: "wolkenlos"
         'wetter_temp'    => '',   // Baustein-UUID, Zahl: Temperatur in °C
         'wetter_zusatz'  => '',   // Baustein-UUID, frei: Wind, Regen, Feuchte
+        /* b1 (Verbesserungsbau 30.09.2026): Absender-Adressen (Tablets), die
+         * fuer Seiten mit PIN keine PIN brauchen. Ab Werk leer - dann gilt
+         * die PIN fuer jeden, wie bisher. Normalform: Adressen mit ", "
+         * getrennt (db_pin_frei_lesen). */
+        'pin_frei'       => '',
+        /* Tafel-1 (Verbesserungsbau 30.09.2026): Tafeln zusaetzlich ueber
+         * MQTT steuern (<praefix>/tafel/alle/seite, .../wecken). Ab Werk AUS;
+         * der virtuelle Ausgang wirkt unabhaengig davon wie bisher. */
+        'tafel_mqtt'         => 0,
+        'tafel_mqtt_praefix' => 'dashboard',
     );
 }
 
@@ -684,6 +696,34 @@ function db_tafel_lesen()
         'ruhe'    => (int) (isset($d['ruhe']) ? $d['ruhe'] : -1),
         'ts'      => (int) (isset($d['ts']) ? $d['ts'] : 0),
     );
+}
+
+/* ---------------- Tafel-1: Tafeln ueber MQTT (Verbesserungsbau 30.09.2026) ----
+ *
+ * Das Abo haelt der Dienst (bin/tafel_mqtt.py); er schreibt den Befehl auf
+ * DEMSELBEN Weg wie db_tafel_befehl() nach tafel.json und seinen Stand nach
+ * data/plugins/<ordner>/tafel_mqtt.json. Hier stehen nur die Regel fuer den
+ * Praefix (dieselbe wie MUSTER_PRAEFIX dort), die Themen und das Lesen des
+ * Stands. */
+
+/** Ein Praefix: 1 bis 4 Stufen aus [A-Za-z0-9_-], je hoechstens 32 Zeichen,
+ * ohne + und # (sonst abonnierte der Dienst fremde Themen mit). */
+function db_tafel_mqtt_praefix_gueltig($p)
+{
+    return is_string($p)
+        && preg_match('#^[A-Za-z0-9_\-]{1,32}(/[A-Za-z0-9_\-]{1,32}){0,3}\z#', $p) === 1;
+}
+
+/** Die Themen, die der Dienst abonniert - fuer Oberflaeche und Reiter Test. */
+function db_tafel_mqtt_themen($praefix)
+{
+    return array($praefix . '/tafel/alle/seite', $praefix . '/tafel/alle/wecken');
+}
+
+/** Der Stand, den der Dienst zuletzt geschrieben hat (oder array()). */
+function db_tafel_mqtt_stand()
+{
+    return db_json_lesen(db_paths()['datadir'] . '/tafel_mqtt.json');
 }
 
 function db_bausteine()
@@ -1911,7 +1951,9 @@ function db_seite_daten($schluessel)
         'schluessel' => $schluessel,
         'name'       => (string) (isset($seite['name']) ? $seite['name'] : $schluessel),
         // Nur die Tatsache, dass eine PIN gesetzt ist - nie ihr Wert.
-        'pin'        => !empty($seite['pin']) ? 1 : 0,
+        // b1: auf einem PIN-freien Tablet (REMOTE_ADDR in der Liste) fragt
+        // die Anzeigeseite nicht; der Endpunkt verlangt sie dort ebenso nicht.
+        'pin'        => (!empty($seite['pin']) && !db_pin_frei($cfg)) ? 1 : 0,
         'spalten'    => (int) (isset($seite['spalten']) ? $seite['spalten'] : 6),
         'kacheln'    => $kacheln,
         'ok'         => (int) (isset($abbild['ok']) ? $abbild['ok'] : 0),
@@ -1974,6 +2016,11 @@ function db_pin_pruefen($schluessel, $eingabe)
     if (is_int($soll)) { $soll = (string) $soll; }
     if (!is_string($soll)) { return array(false, 'PIN', 0); }
     if ($soll === '') { return array(true, '', 0); }
+    /* b1 (Verbesserungsbau 30.09.2026): ein freigegebener Absender braucht
+     * keine PIN - auch nicht waehrend einer Sperre der Seite; die Sperre trifft
+     * damit nur noch die anderen. Entschieden wird ueber REMOTE_ADDR
+     * (db_pin_frei), nie ueber eine Kopfzeile. */
+    if (db_pin_frei()) { return array(true, '', 0); }
     $eingabe = is_string($eingabe) ? $eingabe : '';
     $p = db_paths();
     $datei = $p['datadir'] . '/pin_sperre.json';
@@ -2010,6 +2057,78 @@ function db_pin_pruefen($schluessel, $eingabe)
             db_json_schreiben($datei, $st, 0600);
             return array(false, 'PIN', 0);
         });
+}
+
+/* ---------------- b1: PIN-freie Absender (Verbesserungsbau 30.09.2026) ----
+ *
+ * Bis 0.9.27 galt die PIN-Sperre je Seite: wer das Token kannte, konnte mit
+ * fuenf falschen PINs eine Seite sperren - und damit auch die Tablets an der
+ * Wand. Jetzt gibt es eine Liste von Absender-Adressen, die fuer Seiten mit
+ * PIN gar keine PIN brauchen. Ab Werk ist sie leer.
+ *
+ * Entschieden wird allein ueber REMOTE_ADDR, also die Adresse, von der die
+ * Verbindung zum LoxBerry kommt. Kopfzeilen wie X-Forwarded-For, Forwarded
+ * oder X-Real-IP schreibt der Absender selbst; sie werden nie gelesen. Steht
+ * ein Reverse Proxy davor, sieht der LoxBerry nur ihn - dann gilt eine
+ * Freigabe seiner Adresse fuer jeden, der ueber ihn kommt (Hilfe und README
+ * sagen das). */
+
+/** Eine IP-Adresse in Normalform: IPv4 als a.b.c.d, IPv6 kanonisch; eine
+ * IPv4-gemappte IPv6-Adresse (::ffff:a.b.c.d, so meldet ein Webserver auf
+ * einem IPv6-Sockel IPv4-Absender) als IPv4. '' = keine Adresse. */
+function db_adresse_normal($a)
+{
+    if (!is_string($a)) { return ''; }
+    $a = trim($a);
+    if ($a === '' || filter_var($a, FILTER_VALIDATE_IP) === false) { return ''; }
+    $bin = @inet_pton($a);
+    if (!is_string($bin)) { return ''; }
+    if (strlen($bin) === 16 && substr($bin, 0, 12) === str_repeat("\0", 10) . "\xff\xff") {
+        $bin = substr($bin, 12);
+    }
+    $n = @inet_ntop($bin);
+    return is_string($n) ? $n : '';
+}
+
+/** Die Liste aus einer Eingabe (getrennt durch Komma, Semikolon, Leerzeichen
+ * oder Zeilenende). Rueckgabe array(normierte Liste | null, ungueltige
+ * Eintraege). null heisst abgewiesen: ein Eintrag ist keine IP-Adresse, die
+ * Liste ist zu lang, oder die Eingabe ist keine Zeichenkette. */
+function db_pin_frei_lesen($roh)
+{
+    if (!is_string($roh) || strlen($roh) > 2000 || db_steuerzeichen(str_replace(array("\r", "\n", "\t"), ' ', $roh))) {
+        return array(null, array());
+    }
+    $aus = array();
+    $falsch = array();
+    foreach (preg_split('/[\s,;]+/', trim($roh), -1, PREG_SPLIT_NO_EMPTY) as $e) {
+        $n = db_adresse_normal($e);
+        if ($n === '') { $falsch[] = $e; continue; }
+        if (!in_array($n, $aus, true)) { $aus[] = $n; }
+    }
+    if ($falsch || count($aus) > DB_PIN_FREI_MAX) { return array(null, $falsch); }
+    return array($aus, array());
+}
+
+/** Ist der Absender DIESER Anfrage PIN-frei? Nur REMOTE_ADDR. Eine Liste, die
+ * sich nicht lesen laesst, gibt niemanden frei (fail closed). */
+function db_pin_frei($cfg = null)
+{
+    if ($cfg === null) { $cfg = db_config(); }
+    $roh = isset($cfg['pin_frei']) ? $cfg['pin_frei'] : '';
+    if (!is_string($roh) || trim($roh) === '') { return false; }
+    list($liste) = db_pin_frei_lesen($roh);
+    if (!$liste) { return false; }
+    $wer = db_adresse_normal(isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '');
+    return $wer !== '' && in_array($wer, $liste, true);
+}
+
+/** Schluessel, die eine Sicherung aus 0.9.27 oder frueher nicht kennen kann
+ * (Verbesserungsbau 30.09.2026). Fehlen sie, gilt ihre Vorgabe, und die Seite
+ * nennt sie; jeder andere fehlende Schluessel bleibt eine Beanstandung. */
+function db_sicherung_nachgezogen()
+{
+    return array('pin_frei', 'tafel_mqtt', 'tafel_mqtt_praefix');
 }
 
 /** Felder, die der Endpunkt als Zustandszeile liefert.
@@ -2063,10 +2182,16 @@ function db_selbsttest_ausgabe()
     return $text;
 }
 
-function db_vorlage()
+/** $neutral (a1, Verbesserungsbau 30.09.2026): ohne Datum im Kommentar und
+ * mit festem Rechnernamen - nur fuer die Kennung (db_vorlage_kennung). Das
+ * Datum aendert sich taeglich und der Rechnername mit der Adresszeile des
+ * Browsers; beides macht die Vorlage fuer Loxone nicht zu einer anderen. */
+function db_vorlage($neutral = false)
 {
     $p = db_paths();
     $token = db_token();
+    $host = $neutral ? 'loxberry' : db_host();
+    $datum = $neutral ? '' : date('d.m.Y');
     $cmds = array();
     foreach (db_status_felder() as $feld => $info) {
         $cmds[] = array(
@@ -2084,10 +2209,10 @@ function db_vorlage()
     }
     return array('VI_DASHBOARD_STATUS.xml', db_xml_virtual_in_http(array(
         'title'   => 'Dashboard-Designer',
-        'address' => 'http://' . db_host() . '/plugins/' . $p['plugin']
+        'address' => 'http://' . $host . '/plugins/' . $p['plugin']
                    . '/index.php?token=' . $token . '&aktion=status',
         'polling' => '60',
-        'comment' => db_kuerzen(sprintf(db_t('VORLAGE.KOPF'), date('d.m.Y')), 40),
+        'comment' => db_kuerzen(sprintf(db_t('VORLAGE.KOPF'), $datum), 40),
     ), $cmds));
 }
 
@@ -2105,15 +2230,16 @@ function db_tafel_befehle()
 }
 
 /** Vorlage der Steuerbefehle (virtueller Ausgang). */
-function db_vorlage_out()
+function db_vorlage_out($neutral = false)
 {
     $p = db_paths();
     $token = db_token();
     $cfg = db_config();
     $kopf = array(
         'title'   => 'Dashboard-Designer Steuerung',
-        'address' => 'http://' . db_host(),
-        'comment' => db_kuerzen(sprintf(db_t('VORLAGE.KOPF'), date('d.m.Y')), 40),
+        // a1: neutral ohne Rechnername und Datum (siehe db_vorlage).
+        'address' => 'http://' . ($neutral ? 'loxberry' : db_host()),
+        'comment' => db_kuerzen(sprintf(db_t('VORLAGE.KOPF'), $neutral ? '' : date('d.m.Y')), 40),
     );
     /* H5 (Durchgang 29.09.2026): Ist die Tafelsteuerung aus, stehen KEINE
      * Befehle in der Vorlage, und der Kopf sagt es - wie beim Ruhebild
@@ -2166,6 +2292,61 @@ function db_vorlage_out()
     return array('VQ_DASHBOARD_STEUERUNG.xml', db_xml_virtual_out($kopf, $cmds));
 }
 
+
+/* ---------------- a1: Vorlage neu importieren? (Verbesserungsbau 30.09.2026)
+ *
+ * Loxone Config liest eine Vorlage einmal ein und weiss danach nichts mehr
+ * von ihr. Aendert sich die Vorlage - neue Fassung des Plugins, neues Token,
+ * eine Seite mehr, die Tafelsteuerung an -, arbeitet Loxone mit der alten
+ * weiter, und nichts sagt es. Deshalb haelt das Plugin beim Herunterladen die
+ * KENNUNG der Vorlage fest; der Reiter "Einbindung in Loxone" vergleicht sie
+ * mit der Kennung der Vorlage, die es jetzt erzeugen wuerde.
+ *
+ * Die Kennung ist sha256 ueber die Vorlage OHNE Datum und OHNE den
+ * Rechnernamen aus der Adresszeile (db_vorlage(true)). Die Sprache der
+ * Oberflaeche gehoert dazu: die Kommentare in Loxone wechseln mit ihr.
+ * Gemerkt wird in dashboard.json unter 'vorlagen' (kein Einstellwert, nicht
+ * in db_vorgaben und nicht in der Sicherung): die Datei uebersteht ein Update
+ * ueber die Zweitschrift, und nach dem Update zeigt der Vergleich, ob die
+ * neue Fassung eine andere Vorlage erzeugt. Der Merker sagt, was
+ * heruntergeladen wurde - ob es in Loxone importiert wurde, weiss das Plugin
+ * nicht. */
+
+/** Die Kennung der Vorlage, die das Plugin JETZT erzeugen wuerde.
+ * $art 'vi' (virtuelle Eingaenge) oder 'vq' (virtueller Ausgang). */
+function db_vorlage_kennung($art)
+{
+    list(, $xml) = ($art === 'vq') ? db_vorlage_out(true) : db_vorlage(true);
+    return substr(hash('sha256', (string) $xml), 0, 16);
+}
+
+/** Den Merker nach dem Herunterladen setzen. Eine beschaedigte
+ * dashboard.json wird nicht angefasst (C12) - der Download kommt trotzdem. */
+function db_vorlage_merken($art, $kennung)
+{
+    $p = db_paths();
+    $roh = db_json_lesen_streng($p['config'], $lage);
+    if ($lage !== 'ok' && $lage !== 'fehlt') { return false; }
+    $cfg = array_merge(db_vorgaben(), is_array($roh) ? $roh : array());
+    $m = (isset($cfg['vorlagen']) && is_array($cfg['vorlagen'])) ? $cfg['vorlagen'] : array();
+    $m[$art] = array('kennung' => (string) $kennung, 'zeit' => time());
+    $cfg['vorlagen'] = $m;
+    return db_config_speichern($cfg);
+}
+
+/** array(Lage, Zeitpunkt des Merkers): 'aktuell', 'veraltet' oder
+ * 'unbekannt' (noch nie ueber diese Seite heruntergeladen, oder vor 0.9.28). */
+function db_vorlage_lage($art, $cfg = null)
+{
+    if ($cfg === null) { $cfg = db_config(); }
+    $m = (isset($cfg['vorlagen']) && is_array($cfg['vorlagen']) && isset($cfg['vorlagen'][$art])
+          && is_array($cfg['vorlagen'][$art])) ? $cfg['vorlagen'][$art] : null;
+    if ($m === null || !isset($m['kennung']) || !is_string($m['kennung']) || $m['kennung'] === '') {
+        return array('unbekannt', 0);
+    }
+    $zeit = (isset($m['zeit']) && is_numeric($m['zeit'])) ? (int) $m['zeit'] : 0;
+    return array(hash_equals(db_vorlage_kennung($art), $m['kennung']) ? 'aktuell' : 'veraltet', $zeit);
+}
 
 /**
  * Die Sicherungsdatei bauen (O3, Durchgang 29.09.2026).
@@ -2228,7 +2409,7 @@ function db_sicherung_wert_pruefen($k, $w)
     );
     $haken = array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'haptik',
                    'verlauf', 'sse', 'tafelsteuerung', 'gesichert_schalten', 'ruhe_uhr',
-                   'ruhe_wetter', 'ambient');
+                   'ruhe_wetter', 'ambient', 'tafel_mqtt');
     if (isset($ganz[$k])) {
         return (is_int($w) && $w >= $ganz[$k][0] && $w <= $ganz[$k][1]) ? ''
             : sprintf(db_t('EINST.SICH_GRUND_BEREICH'), $ganz[$k][0], $ganz[$k][1]);
@@ -2260,6 +2441,14 @@ function db_sicherung_wert_pruefen($k, $w)
         case 'ruhe_bild':
             return (is_string($w) && in_array($w, array('', 'jpg', 'png', 'webp'), true))
                 ? '' : db_t('EINST.SICH_GRUND_BILD');
+        case 'tafel_mqtt_praefix':
+            // Tafel-1: dieselbe Regel wie im Formular.
+            return db_tafel_mqtt_praefix_gueltig($w) ? '' : db_t('EINST.SICH_GRUND_TAFEL_MQTT_PRAEFIX');
+        case 'pin_frei':
+            // b1: dieselbe Regel wie im Formular (db_pin_frei_lesen).
+            if (!is_string($w)) { return db_t('EINST.SICH_GRUND_PIN_FREI'); }
+            list($pf_liste) = db_pin_frei_lesen($w);
+            return $pf_liste !== null ? '' : db_t('EINST.SICH_GRUND_PIN_FREI');
         case 'wetter_lage':
         case 'wetter_temp':
         case 'wetter_zusatz':
@@ -2377,10 +2566,24 @@ function db_sicherung_lesen($roh)
      * (gemessen an VolkswagenID 0.9.11 am 03.09.2026; am 07.09.2026 ueber den
      * Bestand ausgerollt). */
     $fehlend = array();
+    $nachgezogen = array();
     foreach (array_keys($vorgaben) as $fk) {
         if (!array_key_exists($fk, $daten)) {
+            /* Verbesserungsbau 30.09.2026: Schluessel, die eine Sicherung aus
+             * 0.9.27 oder frueher noch nicht kennen kann, bekommen ihre
+             * Vorgabe, und die Seite nennt sie - sonst liesse sich keine
+             * aeltere Sicherung mehr zurueckspielen. Jeder andere fehlende
+             * Schluessel bleibt eine Beanstandung. */
+            if (in_array($fk, db_sicherung_nachgezogen(), true)) {
+                $nachgezogen[] = $fk;
+                continue;
+            }
             $fehlend[] = $fk;
         }
+    }
+    if ($nachgezogen) {
+        $hinweise[] = sprintf(db_t('EINST.SICH_NACHGEZOGEN'), count($nachgezogen),
+            htmlspecialchars(implode(', ', $nachgezogen), ENT_QUOTES, 'UTF-8'));
     }
     if ($fehlend) {
         $mangel[] = sprintf(db_t('EINST.SICH_FEHLEND'), count($fehlend),
@@ -2433,6 +2636,62 @@ function db_sicherung_lesen($roh)
     return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $teile, $hinweise);
 }
 
+/* ---------------- X-3: bestuende die eigene Sicherung? (Verbesserungsbau 30.09.2026)
+ *
+ * Ein Wert kann in dashboard.json, seiten.json oder zugang.json stehen, den das
+ * Zurueckspielen abweist: von Hand eingetragen, aus einer aelteren Fassung
+ * uebernommen, oder ein Baustein der Wetterzeile, den es in Loxone nicht mehr
+ * gibt. Bis 0.9.27 lieferte "Einstellungen sichern" eine solche Datei ohne
+ * Hinweis - gemerkt hat man es erst beim Zurueckspielen, also zu spaet. */
+
+/** Die Beanstandungen, die das Zurueckspielen gegen diese Sicherungsdatei
+ * erheben wuerde - als Text ohne HTML, ohne Werte (die Meldungen nennen
+ * Schluessel und Grund, nie den Inhalt). array() = sie bestuende. */
+function db_sicherung_mangel_texte($js)
+{
+    $e = db_sicherung_lesen($js);
+    $aus = array();
+    foreach ((array) $e[1] as $m) {
+        $t = trim(html_entity_decode(strip_tags((string) $m), ENT_QUOTES, 'UTF-8'));
+        if ($t !== '') { $aus[] = $t; }
+    }
+    return $aus;
+}
+
+/** Die Sicherungsdatei, wie "Einstellungen sichern" sie liefert - mit der
+ * Warnung im Kopf, falls das Zurueckspielen sie abwiese. false nur, wenn
+ * sich nichts kodieren laesst. */
+function db_sicherung_mit_warnung()
+{
+    $f = JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+    $s = db_sicherung_bauen();
+    $js = json_encode($s, $f);
+    if ($js === false) { return false; }
+    $mangel = db_sicherung_mangel_texte($js);
+    if ($mangel) {
+        $s['_']['warnung'] = $mangel;
+        $js2 = json_encode($s, $f);
+        if ($js2 !== false) { $js = $js2; }
+    }
+    return $js;
+}
+
+/** Fuer den Knopf: die Beanstandungen gegen die Sicherung des JETZIGEN
+ * Stands. null = nicht zu pruefen (eine Datei ist beschaedigt - dann liefert
+ * der Knopf ohnehin nichts und die Seite sagt es oben). */
+function db_sicherung_altwerte()
+{
+    $p = db_paths();
+    foreach (array('config', 'seiten', 'geheim') as $d) {
+        db_json_lesen_streng($p[$d], $lage);
+        if ($lage === 'kaputt' || $lage === 'unlesbar') { return null; }
+    }
+    $js = json_encode(db_sicherung_bauen(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false) { return array(db_t('EINST.SICH_SCHREIBFEHLER')); }
+    return db_sicherung_mangel_texte($js);
+}
+
 /** Die gepruefte Sicherung einspielen: Konfiguration, Seiten, Zugang. Geht
  * ein Schreibschritt schief, werden die schon geschriebenen Dateien auf den
  * Stand davor zurueckgesetzt - eine halb eingespielte Sicherung gibt es
@@ -2446,6 +2705,13 @@ function db_sicherung_einspielen($neu, $teile)
         $vorher[$z] = is_file($p[$z]) ? @file_get_contents($p[$z]) : null;
     }
     $getan = array();
+    /* a1: der Merker der heruntergeladenen Vorlagen beschreibt, was Loxone
+     * kennt - nicht die Sicherung. Er bleibt stehen; bringt die Sicherung ein
+     * anderes Token mit, zeigt der Reiter danach "neu importieren". */
+    $db_alt = db_json_lesen_streng($p['config'], $db_alt_lage);
+    if ($db_alt_lage === 'ok' && isset($db_alt['vorlagen']) && is_array($db_alt['vorlagen'])) {
+        $neu['vorlagen'] = $db_alt['vorlagen'];
+    }
     $ok = db_config_speichern($neu, true);
     if ($ok) { $getan[] = 'config'; }
     if ($ok && is_array($teile) && isset($teile['seiten'])) {
@@ -3234,7 +3500,176 @@ function db_einmal_lesen()
         }
     }
     if (isset($d['ausgabe']) && is_string($d['ausgabe'])) { $aus['ausgabe'] = $d['ausgabe']; }
+    // X-2: die Eingaben eines beanstandeten Formulars - nur, was die Liste kennt.
+    $aus['eingaben'] = db_eingaben_pruefen(isset($d['eingaben']) ? $d['eingaben'] : null);
     return $aus;
+}
+
+/* ==================================================================
+ * X-2: Eingaben nach einer Beanstandung (Regeln/04, Hausregel 30.09.2026)
+ * ==================================================================
+ *
+ * Seit der Umleitung nach jedem POST (O1, 0.9.25) zeigte der GET nach einer
+ * Abweisung die GESPEICHERTEN Werte: wer im Reiter Einstellungen drei Felder
+ * richtig und eines falsch eingab, tippte alle vier neu. Jetzt reisen die
+ * Eingaben des beanstandeten Formulars mit der Einmalmeldung (0600,
+ * Datenordner, 120 s, beim GET gelesen und geloescht) - nur die Felder DIESES
+ * Formulars aus der Liste unten. Nie ein Geheimnis: Kennwoerter und PINs
+ * stehen als 'geheim' darin, damit sie markiert werden koennen; ihr Wert
+ * reist nie mit, das Feld bleibt leer und zeigt den Platzhalter. Ein
+ * gewaehltes Bild ('datei') kann kein Browser wieder einsetzen; das sagt
+ * EINST.RUHE_BILD_VERWORFEN. Das Feld zum Entfernen des Bildes ('--') ist
+ * ein Befehl und kein Wert; es kommt bewusst leer zurueck.
+ * Nur nach einer Beanstandung: nach erfolgreichem Speichern zeigt der GET die
+ * gespeicherten Werte. */
+
+/** Die Felder je Formular (Name des Knopfes), mit ihrer Art. 'liste' und
+ * 'haken_liste' sind Felder je Seite (s_name[<nr>]); sie reisen je
+ * Seitenschluessel, nicht je Nummer. */
+function db_eingabe_felder()
+{
+    return array(
+        'speichern' => array(
+            'miniserver' => 'text', 'tls' => 'haken', 'z_adresse' => 'text', 'z_port' => 'text',
+            'z_benutzer' => 'text', 'z_passwort' => 'geheim', 'visu_pw' => 'geheim',
+            'gesichert_schalten' => 'haken', 'takt' => 'text', 'http_rueckfall' => 'haken',
+            'http_takt' => 'text', 'wartezeit' => 'text', 'sse' => 'haken', 'farbe' => 'text',
+            'vollbild' => 'haken', 'wach' => 'haken', 'haptik' => 'haken',
+            'steuerung_ein' => 'haken', 'rotation' => 'text', 'nacht_von' => 'text',
+            'nacht_bis' => 'text', 'nacht_helligkeit' => 'text', 'verlauf' => 'haken',
+            'verlauf_punkte' => 'text', 'tafelsteuerung' => 'haken', 'tafel_mqtt' => 'haken',
+            'tafel_mqtt_praefix' => 'text', 'pin_frei' => 'text', 'ambient' => 'haken',
+            'ruhe_nach' => 'text', 'ruhe_uhr' => 'haken', 'ruhe_wetter' => 'haken',
+            'ruhe_kacheln' => 'text', 'ruhe_seite' => 'text', 'ruhe_hell' => 'text',
+            'ruhe_bild' => 'datei', 'eco_nach' => 'text', 'eco_hell' => 'text',
+            'wetter_lage' => 'text', 'wetter_temp' => 'text', 'wetter_zusatz' => 'text'),
+        'seiten_speichern' => array(
+            's_name' => 'liste', 's_spalten' => 'liste', 's_pin' => 'geheim',
+            's_pinweg' => 'haken_liste', 's_weg' => 'haken_liste'),
+    );
+}
+
+/** Die Eingaben eines abgewiesenen POST fuer die Einmalmeldung.
+ * $beanstandet: Feldnamen, bei Feldern je Seite 'feld:schluessel'.
+ * $zeilen: Nummer im Formular => Seitenschluessel (nur seiten_speichern). */
+function db_eingaben_sammeln($formular, $beanstandet, $zeilen = array())
+{
+    $liste = db_eingabe_felder();
+    if (!isset($liste[$formular])) { return array(); }
+    $werte = array();
+    foreach ($liste[$formular] as $k => $art) {
+        if ($art === 'text') {
+            $werte[$k] = (isset($_POST[$k]) && is_string($_POST[$k])) ? substr($_POST[$k], 0, 2000) : '';
+        } elseif ($art === 'haken') {
+            $werte[$k] = isset($_POST[$k]) ? 1 : 0;
+        } elseif ($art === 'liste' || $art === 'haken_liste') {
+            $roh = (isset($_POST[$k]) && is_array($_POST[$k])) ? $_POST[$k] : array();
+            $werte[$k] = array();
+            foreach ((array) $zeilen as $i => $s) {
+                if (!is_string($s) || $s === '') { continue; }
+                if ($art === 'liste') {
+                    $werte[$k][$s] = (isset($roh[$i]) && is_string($roh[$i])) ? substr($roh[$i], 0, 2000) : '';
+                } else {
+                    $werte[$k][$s] = !empty($roh[$i]) ? 1 : 0;
+                }
+            }
+        }
+        // 'geheim' und 'datei': nie mitnehmen.
+    }
+    $felder = array();
+    foreach ((array) $beanstandet as $b) {
+        if (!is_string($b)) { continue; }
+        $k = strpos($b, ':') !== false ? substr($b, 0, strpos($b, ':')) : $b;
+        if (isset($liste[$formular][$k]) && !in_array($b, $felder, true)) { $felder[] = $b; }
+    }
+    return array('formular' => $formular, 'werte' => $werte, 'felder' => $felder);
+}
+
+/** Die Eingaben aus der Einmalmeldung - nur, was die Liste kennt, in der Art,
+ * die sie nennt. Alles andere faellt weg. */
+function db_eingaben_pruefen($e)
+{
+    $liste = db_eingabe_felder();
+    if (!is_array($e) || !isset($e['formular']) || !is_string($e['formular'])
+        || !isset($liste[$e['formular']])) {
+        return array();
+    }
+    $f = $e['formular'];
+    $werte = array();
+    $roh = (isset($e['werte']) && is_array($e['werte'])) ? $e['werte'] : array();
+    foreach ($liste[$f] as $k => $art) {
+        if (!array_key_exists($k, $roh)) { continue; }
+        $w = $roh[$k];
+        if ($art === 'text' && is_string($w)) {
+            $werte[$k] = $w;
+        } elseif ($art === 'haken') {
+            $werte[$k] = empty($w) ? 0 : 1;
+        } elseif (($art === 'liste' || $art === 'haken_liste') && is_array($w)) {
+            $werte[$k] = array();
+            foreach ($w as $s => $x) {
+                // Ein Schluessel aus Ziffern kommt aus json_decode als Zahl.
+                $s = (string) $s;
+                if (!preg_match('/^[a-z0-9-]{1,60}\z/', $s)) { continue; }
+                if ($art === 'liste' && is_string($x)) { $werte[$k][$s] = $x; }
+                if ($art === 'haken_liste') { $werte[$k][$s] = empty($x) ? 0 : 1; }
+            }
+        }
+    }
+    $felder = array();
+    if (isset($e['felder']) && is_array($e['felder'])) {
+        foreach ($e['felder'] as $b) {
+            if (!is_string($b)) { continue; }
+            $teile = explode(':', $b, 2);
+            if (!isset($liste[$f][$teile[0]])) { continue; }
+            if (isset($teile[1]) && !preg_match('/^[a-z0-9-]{1,60}\z/', $teile[1])) { continue; }
+            $felder[] = $b;
+        }
+    }
+    return array('formular' => $f, 'werte' => $werte, 'felder' => $felder);
+}
+
+/** Traegt die Seite gerade die Eingaben dieses Formulars? */
+function db_eingaben_aktiv($formular)
+{
+    $e = isset($GLOBALS['db_eingaben']) ? $GLOBALS['db_eingaben'] : array();
+    return is_array($e) && isset($e['formular']) && $e['formular'] === $formular;
+}
+
+/** Der anzuzeigende Wert: die Eingabe nach einer Beanstandung, sonst der
+ * gespeicherte. $zeile: Seitenschluessel bei Feldern je Seite. */
+function db_eingabe($formular, $feld, $gespeichert, $zeile = null)
+{
+    if (!db_eingaben_aktiv($formular)) { return $gespeichert; }
+    $w = $GLOBALS['db_eingaben']['werte'];
+    if (!array_key_exists($feld, $w)) { return $gespeichert; }
+    if ($zeile === null) { return $w[$feld]; }
+    return (is_array($w[$feld]) && array_key_exists($zeile, $w[$feld])) ? $w[$feld][$zeile] : $gespeichert;
+}
+
+/** Die Markierung der beanstandeten Felder als Stilregel. Einstellungen: die
+ * id des Feldes (gleich seinem Namen). Seiten: name="feld[<nr>]" mit der
+ * Nummer, unter der die Seite JETZT im Formular steht. Namen und Schluessel
+ * kommen nur aus der Liste bzw. nach Muster - nichts Fremdes gelangt in die
+ * Regel. */
+function db_beanstandet_stil($formular, $seiten = array())
+{
+    if (!db_eingaben_aktiv($formular)) { return ''; }
+    $wahl = array();
+    foreach ($GLOBALS['db_eingaben']['felder'] as $b) {
+        $teile = explode(':', $b, 2);
+        if (!isset($teile[1])) {
+            $wahl[] = '.sm-wrap #' . $teile[0];
+            continue;
+        }
+        foreach ((array) $seiten as $i => $s) {
+            if (is_array($s) && isset($s['schluessel']) && $s['schluessel'] === $teile[1]) {
+                $wahl[] = '.sm-wrap input[name="' . $teile[0] . '[' . (int) $i . ']"]';
+            }
+        }
+    }
+    if (!$wahl) { return ''; }
+    return '<style>' . implode(', ', array_unique($wahl))
+         . ' { border: 2px solid #c62828 !important; background: #fff5f5 !important; }</style>';
 }
 
 /* ---------------- O9: Pflichtzeilen des Reiters Test ---------------- */
