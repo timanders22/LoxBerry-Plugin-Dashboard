@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.24 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.25 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,86 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.25
+
+Durchgang vom 29./30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer,
+HTTP-Weg zu Loxone). Gemessen an Attrappen für Miniserver, Tafel und Installer;
+ein echter Miniserver war nicht angeschlossen. Befunde mit Datei:Zeile:
+`Pruefung-Durchgang-2026-09-29/Dashboard_BEFUNDE_UND_VERBESSERUNGEN.md`.
+
+**Nach einem Update bitte einmal tun:** im Reiter *Einbindung in Loxone* die
+Vorlage für die virtuellen Eingänge neu erzeugen und importieren. Die
+Suchtexte beginnen jetzt mit einem Semikolon, `ALTER` darf −1 sein, und alle
+Werte sind analog. Die alten Eingänge bleiben in Loxone Config daneben stehen.
+
+**Dienst**
+
+* **Beim Systemstart liefen oft zwei Dienste.** Holt cron nach einem Uhrsprung
+  verpasste Minuten nach, starten zwei Wächter in derselben Sekunde. Gemessen:
+  9 von 10 Läufen mit zwei Diensten und damit zwei Anmeldungen am Miniserver.
+  Jetzt nimmt jeder Start zuerst eine Sperre; ein zweiter Dienst beendet sich
+  sofort, und der Wächter beendet überzählige Dienste.
+* „Anmeldung prüfen“, „Struktur holen“ und die übrigen Einmalläufe warten
+  nicht mehr neben einem laufenden Dienst; sie sagen dann, dass der Dienst
+  läuft, statt eine zweite Anmeldung zu öffnen.
+* Speichern mit geänderten Verbindungswerten und jedes Zurückspielen starten
+  einen laufenden Dienst neu, damit die Änderung gilt, und sagen das.
+
+**Zugangsdaten und Dateien**
+
+* Oberfläche und Dienst schrieben `zugang.json` und `seiten.json` ohne
+  gemeinsame Sperre. Gemessen: bei gleichzeitigem Schreiben gingen Passwort und
+  Visualisierungs-Passwort verloren, und kurzzeitig lag eine lesbare Kopie mit
+  dem Miniserver-Token herum. Jetzt: gemeinsame Sperre, Nebendatei mit
+  Prozessnummer, Rechte vor dem Inhalt, Länge geprüft.
+* Eine beschädigte `zugang.json`, `seiten.json` oder `dashboard.json` wird
+  nicht mehr überschrieben oder still durch ein neues Token ersetzt. Sie bleibt
+  als `.kaputt` liegen, die Oberfläche meldet es.
+* `dashboard.json`, `seiten.json` und die Zweitschriften haben die Rechte 0600.
+
+**Tafel und Endpunkt**
+
+* **PIN:** Nach fünf Fehlversuchen ist die PIN einer Seite fünf Minuten
+  gesperrt, jede weitere Sperre dauert doppelt so lang. Bisher ließen sich
+  10 000 PINs in knapp zwei Minuten durchprobieren. Die PIN steht nur noch als
+  Prüfwert in `seiten.json`; eine alte Klartext-PIN gilt unverändert weiter und
+  wird beim ersten Lesen umgewandelt.
+* Eine Sicherung mit dem Token als Liste öffnete Endpunkt und Tafel für
+  `token=Array`. Beim Zurückspielen wird jetzt jeder Wert wie beim Speichern
+  geprüft; die Sicherung enthält jetzt auch die Seiten und die Zugangsdaten.
+* `OK` geht auf 0, wenn das Abbild älter ist als das Dreifache des Takts.
+  Ohne Abbild antwortet `aktion=status` mit 503. Nach einem Verbindungsabriss
+  oder dem Anhalten des Dienstes steht nicht mehr `ok=1` im Abbild. Die Tafel
+  dunkelt veraltete Werte ab und sagt es.
+* Ein Wert mit HTML-Auszeichnung konnte auf der Tafel Skript ausführen, und ein
+  Bausteinname mit `<!--<script>` ließ alle Kacheln verschwinden. Beides ist
+  geschlossen.
+* Zwei Tafelbefehle kurz nacheinander (Seite wechseln, Wecken) überschreiben
+  sich nicht mehr.
+* Die Tafel spricht die Sprache des LoxBerry, auch auf der Seite „Kein Zugang“.
+* Der HTTP-Notnagel fragt nur noch die Bausteine ab, die auf einer Seite
+  liegen: gemessen 18 statt 1276 Abfragen je Runde.
+
+**Oberfläche**
+
+* Jedes Formular leitet nach dem Absenden um; ein Neuladen der Seite würfelt
+  kein neues Token mehr.
+* Designer und Reiter *Dashboards* weisen ungültige Eingaben ab und benennen
+  sie, statt sie still zurechtzubiegen.
+* Der Reiter *Test* zeigt jetzt: Cron-Eintrag, Endpunkt über HTTP,
+  Formularschutz und ob die Konfiguration heil ist; zwei gleichzeitig laufende
+  Dienste werden als Fehler gezeigt.
+* „Logdatei leeren“ braucht einen Haken.
+
+**Installation**
+
+* Eine Neuinstallation spielt keine Sicherung einer früheren Installation mehr
+  ein und startet keinen Dienst (neu: `preinstall.sh`, Reste nach `.alt`).
+* Eine halb angelegte Python-Umgebung wird entfernt; der Dienst läuft dann mit
+  dem System-Python.
+* `uninstall.sh` im Wurzelordner entfällt; LoxBerry ruft nur
+  `uninstall/uninstall` auf. Die Deinstallation räumt auch `.alt`-Reste ab.
 
 ## Neu in 0.9.24
 
@@ -268,10 +348,14 @@ und bedient damit beliebig viele Tablets.
                              für Dienst, Designer und Anzeigeseite
     webfrontend/htmlauth/    Oberfläche (sechs Reiter) + Designer
     webfrontend/html/        Endpunkt, Anzeigeseite (tafel.php), Bibliothek
-    uninstall.sh             räumt die Sicherungen mit den Zugangsdaten weg
-    uninstall/uninstall      dasselbe — welches der beiden LoxBerry ausführt,
-                             ist hier nicht nachgemessen, deshalb tut seit
-                             0.9.13 jedes die ganze Arbeit
+    preinstall.sh            legt bei einer Neuinstallation Sicherungen
+                             einer früheren Installation nach .alt, statt
+                             sie einzuspielen
+    uninstall/uninstall      hält den Dienst an und räumt die Sicherungen
+                             mit den Zugangsdaten weg, samt .alt — LoxBerry
+                             ruft bei der Deinstallation nur dieses Skript
+                             auf; ein uninstall.sh im Wurzelordner gibt es
+                             seit 0.9.25 nicht mehr
 
 ## Was am Miniserver benutzt wird
 
@@ -493,8 +577,9 @@ eine Jalousie ist keine Wetterangabe. Ein Baustein, den es nicht mehr gibt,
 wird beim Speichern **abgewiesen** statt stillschweigend geleert — sonst wäre
 eine gelöschte Wahl ein stiller Rückfall auf die andere Quelle.
 
-Unter der Auswahl steht, **wie die Zeile im Augenblick aussähe**. Das ist
-nicht Zierde: an einer echten Anlage gemessen liefert Weather4Loxone seinen
+Nach dem Speichern steht unter der Auswahl, **was die gewählten Bausteine
+gerade tragen** — der rohe Wert, noch nicht so formatiert wie auf der Tafel.
+Das ist nicht Zierde: an einer echten Anlage gemessen liefert Weather4Loxone seinen
 Baustein `Wetter aktuell` leer, während `Wetter Heute samt Wettertyp` den
 Text trägt. Wer das erst am Tablet merkt, sucht lange.
 
@@ -508,12 +593,20 @@ Text trägt. Wer das erst am Tablet merkt, sucht lange.
   bekommt dieselbe Abweisung wie sonst auch.
 - Je Seite ist eine PIN möglich. Geprüft wird die PIN **der Seite, von der der
   Druck kam** — deshalb ist `&seite=` bei jedem schaltenden Aufruf Pflicht.
+  Die PIN steht nur als Prüfwert (`password_hash`) in `seiten.json`; eine
+  Klartext-PIN aus einer älteren Fassung wird beim ersten Lesen umgewandelt
+  und gilt unverändert weiter. Nach fünf Fehlversuchen ist die PIN der Seite
+  fünf Minuten gesperrt, jede weitere Sperre dauert doppelt so lang
+  (höchstens einen Tag); jeder Fehlversuch steht gebremst mit Absender im
+  Protokoll, nie mit der PIN.
 - Geschaltet werden kann **nur, was auf einer Seite steht**, und nur mit den
   Befehlen, die die Kacheltabelle für genau diesen Bausteintyp nennt. Bei einer
   Szene wird **jeder Schritt einzeln** geprüft — sie ist keine Abkürzung an der
   Prüfung vorbei. Beides wird zweimal geprüft: am Endpunkt und im Dienst.
 - Zugangsdaten liegen in `zugang.json` mit Rechten 0600 — nie in der
   angezeigten Konfiguration, nie auf der Kommandozeile, nie in der Adresse.
+  `dashboard.json` (sie trägt das Aktionstoken) und `seiten.json` (sie trägt
+  die PIN-Prüfwerte) haben ebenfalls die Rechte 0600.
   Der Wert eines Kennworts wird nirgends angezeigt, auch nicht verkürzt.
 - Eingaben, die nicht zum Muster passen, werden **abgelehnt und benannt**, nie
   stillschweigend zurechtgebogen.

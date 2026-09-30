@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import errno
 import json
 import logging
 import logging.handlers
@@ -126,6 +128,15 @@ DATEI_SOLL = os.path.join(DATADIR, "soll_laufen")
 ORDNER_BEFEHLE = os.path.join(DATADIR, "befehle")
 ORDNER_ANTWORTEN = os.path.join(DATADIR, "antworten")
 DATEI_LOG = os.path.join(LOGDIR, "dashboard.log")
+# C1 (Durchgang 29.09.2026): die Einzelinstanz-Sperre. Der Dauerlaeufer haelt
+# sie bis zum Ende; die Einmallaeufe, die den Miniserver fragen, nehmen
+# dieselbe (Regeln/03, "Ein Dauerlaeufer nimmt eine Sperrdatei").
+DATEI_SPERRE = os.path.join(DATADIR, "dienst.lock")
+# C3: dieselben Sperrdateien nimmt die Oberflaeche (db_mit_sperre() in
+# webfrontend/html/db_lib.php) - zugang.json und seiten.json werden auf
+# beiden Seiten nur unter ihnen gelesen, geaendert und geschrieben.
+DATEI_ZUGANG_SPERRE = os.path.join(CONFIGDIR, "zugang.sperre")
+DATEI_SEITEN_SPERRE = os.path.join(CONFIGDIR, "seiten.sperre")
 
 # Muessen zu db_vorgaben() in webfrontend/html/db_lib.php passen. Bis 0.9.5
 # fehlte hier 'haptik', obwohl der Kommentar Gleichheit zusicherte.
@@ -288,26 +299,141 @@ def json_lesen(pfad: str) -> dict:
         return {}
 
 
-def json_schreiben(pfad: str, daten: Any, rechte: int | None = None) -> bool:
-    """Erst in eine Nebendatei, dann umbenennen - sonst liest die Oberflaeche
-    irgendwann eine halb geschriebene Datei."""
+def datei_schreiben(pfad: str, inhalt: bytes, rechte: int | None = None) -> bool:
+    """Erst leer anlegen und schuetzen, dann fuellen, Laenge pruefen, umbenennen.
+
+    C3/C4 (Durchgang 29.09.2026, Regeln/03 "Atomares Schreiben"): bis 0.9.25
+    hiess die Nebendatei '<ziel>.tmp' - dieselbe wie die der Oberflaeche. Beide
+    schrieben zugang.json gleichzeitig hinein (gemessen: bis 2397 ungueltige
+    Lesungen), und die Rechte kamen erst nach dem Inhalt (gemessen: 7177
+    Beobachtungen einer lesbaren Nebendatei mit ms_token). Jetzt: Nebendatei
+    mit Prozessnummer, Rechte beim Anlegen, volle Laenge, dann os.replace.
+    Ohne 'rechte' gilt wie bisher die Vorgabe des Systems (umask).
+    O_BINARY gibt es nur unter Windows (dort schriebe os.open sonst CRLF);
+    unter Linux ist der Wert 0 und aendert nichts."""
+    tmp = "%s.tmp.%d" % (pfad, os.getpid())
     try:
         os.makedirs(os.path.dirname(pfad), exist_ok=True)
-        tmp = pfad + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(daten, fh, ensure_ascii=False, indent=1)
-        if rechte is not None:
-            os.chmod(tmp, rechte)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0),
+                     0o666 if rechte is None else rechte)
+        try:
+            if rechte is not None:
+                os.chmod(tmp, rechte)
+            n = 0
+            while n < len(inhalt):
+                geschrieben = os.write(fd, inhalt[n:])
+                if geschrieben <= 0:
+                    raise OSError("kurze Schreibung")
+                n += geschrieben
+        finally:
+            os.close(fd)
+        if os.path.getsize(tmp) != len(inhalt):
+            raise OSError("die Laenge der Nebendatei stimmt nicht")
         os.replace(tmp, pfad)
         return True
     except OSError as f:
         _LOG.error("Konnte %s nicht schreiben: %s", pfad, f)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
         return False
+
+
+def json_schreiben(pfad: str, daten: Any, rechte: int | None = None) -> bool:
+    """Erst kodieren, dann ueber datei_schreiben() - sonst liest die
+    Oberflaeche irgendwann eine halb geschriebene Datei."""
+    try:
+        roh = json.dumps(daten, ensure_ascii=False, indent=1).encode("utf-8")
+    except (TypeError, ValueError) as f:
+        _LOG.error("Konnte %s nicht kodieren: %s", pfad, f)
+        return False
+    return datei_schreiben(pfad, roh, rechte)
+
+
+_KAPUTT_GEMELDET: set = set()
+
+
+def kaputt_melden(pfad: str, roh: bytes) -> None:
+    """Eine beschaedigte Datei: Abschrift '<datei>.kaputt' und eine Zeile ins
+    Protokoll. Die Datei bleibt liegen - darueber schreibt niemand still."""
+    if pfad in _KAPUTT_GEMELDET:
+        return
+    _KAPUTT_GEMELDET.add(pfad)
+    ziel = pfad + ".kaputt"
+    try:
+        with open(ziel, "rb") as fh:
+            alt = fh.read()
+    except OSError:
+        alt = None
+    if alt != roh:
+        datei_schreiben(ziel, roh, 0o600)
+    _LOG.error("%s ist beschaedigt (kein gueltiges JSON). Abschrift: %s. Darueber "
+               "wird nichts geschrieben, bis sie ersetzt ist.", pfad, ziel)
+
+
+def json_lesen_streng(pfad: str):
+    """(Inhalt, Lage) - Lage 'ok', 'fehlt', 'kaputt' oder 'unlesbar'.
+
+    C3/C12 (Durchgang 29.09.2026): unlesbares JSON ist ein Befund, nie {}.
+    Bis 0.9.25 machte json_lesen() daraus eine leere Datei, und
+    token_merken() schrieb nur seine eigenen Schluessel zurueck - Kennwort
+    und Visualisierungs-Passwort waren fort."""
+    try:
+        with open(pfad, "rb") as fh:
+            roh = fh.read()
+    except FileNotFoundError:
+        return {}, "fehlt"
+    except OSError:
+        return None, "unlesbar"
+    try:
+        d = json.loads(roh.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        d = None
+    if d == []:
+        d = {}
+    if not isinstance(d, dict):
+        kaputt_melden(pfad, roh)
+        return None, "kaputt"
+    return d, "ok"
+
+
+@contextlib.contextmanager
+def datei_sperre(sperrdatei: str):
+    """Eine gemeinsame Sperre mit der Oberflaeche (fcntl.flock). Ohne fcntl
+    (nicht Linux) oder wenn die Datei sich nicht oeffnen laesst, wird ohne
+    Sperre gearbeitet - wie db_mit_sperre() in db_lib.php."""
+    fh = None
+    try:
+        import fcntl
+        os.makedirs(os.path.dirname(sperrdatei), exist_ok=True)
+        fh = open(sperrdatei, "a")
+        try:
+            os.chmod(sperrdatei, 0o600)
+        except OSError:
+            pass
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except ImportError:
+        fh = None
+    except OSError as f:
+        _LOG.warning("Sperrdatei %s nicht zu nehmen (%s) - weiter ohne Sperre.", sperrdatei, f)
+        if fh is not None:
+            fh.close()
+        fh = None
+    try:
+        yield
+    finally:
+        if fh is not None:
+            fh.close()
 
 
 def config() -> dict:
     c = dict(VORGABEN)
-    c.update(json_lesen(DATEI_CONFIG))
+    # C12: eine beschaedigte dashboard.json wird gemeldet (Abschrift, Zeile im
+    # Protokoll); der Dienst arbeitet dann mit den Vorgaben und schreibt nichts.
+    d, _lage = json_lesen_streng(DATEI_CONFIG)
+    if isinstance(d, dict):
+        c.update(d)
     return c
 
 
@@ -352,7 +478,15 @@ def miniserver_daten(nummer: str = "1") -> dict:
     waere zumutbar, aber unnoetig. Wer einen anderen Zugang will, traegt ihn
     in zugang.json ein (Rechte 0600); der hat dann Vorrang.
     """
-    eigen = json_lesen(DATEI_GEHEIM)
+    eigen, lage = json_lesen_streng(DATEI_GEHEIM)
+    if lage in ("kaputt", "unlesbar"):
+        # C3 (Durchgang 29.09.2026): NICHT still auf den LoxBerry-Zugang
+        # zurueckfallen - bis 0.9.25 meldete sich der Dienst dann mit anderen
+        # Zugangsdaten an, ohne dass es irgendwo stand.
+        raise LoxFehler("zugang.json ist beschaedigt (%s). Die Abschrift liegt als "
+                        "zugang.json.kaputt daneben. Reiter Einstellungen: Einstellungen "
+                        "zurueckspielen, oder die Datei entfernen - dann gelten die "
+                        "LoxBerry-Zugangsdaten." % lage)
     if eigen.get("adresse") and eigen.get("benutzer"):
         return {"quelle": "eigen", "name": eigen.get("name") or "eigener Zugang",
                 "adresse": str(eigen["adresse"]), "port": int(eigen.get("port") or 80),
@@ -383,16 +517,24 @@ def token_merken(token: str, kennung: str, hashalg: str = "") -> None:
     riet die Wiederanmeldung auf SHA256, scheiterte bei SHA1-Benutzern
     lautlos und liess sich bei jedem Dienststart ein neues Token ausstellen.
     """
-    d = json_lesen(DATEI_GEHEIM)
-    d["ms_token"] = token
-    d["ms_kennung"] = kennung
-    if hashalg:
-        d["ms_hashalg"] = hashalg
-    json_schreiben(DATEI_GEHEIM, d, 0o600)
+    # C3 (Durchgang 29.09.2026): lesen, aendern, schreiben unter der
+    # gemeinsamen Sperre mit der Oberflaeche; eine beschaedigte Datei wird
+    # nicht ueberschrieben.
+    with datei_sperre(DATEI_ZUGANG_SPERRE):
+        d, lage = json_lesen_streng(DATEI_GEHEIM)
+        if lage in ("kaputt", "unlesbar"):
+            _LOG.error("Das Miniserver-Token wird nicht gemerkt: zugang.json ist %s.", lage)
+            return
+        d["ms_token"] = token
+        d["ms_kennung"] = kennung
+        if hashalg:
+            d["ms_hashalg"] = hashalg
+        json_schreiben(DATEI_GEHEIM, d, 0o600)
 
 
 def token_holen() -> tuple[str, str, str]:
-    d = json_lesen(DATEI_GEHEIM)
+    d, _lage = json_lesen_streng(DATEI_GEHEIM)
+    d = d or {}
     return (str(d.get("ms_token") or ""), str(d.get("ms_kennung") or ""),
             str(d.get("ms_hashalg") or ""))
 
@@ -404,7 +546,8 @@ def visu_passwort() -> str:
     verlaesst den LoxBerry auch nicht: der Dienst bildet daraus den Hash und
     schickt nur den. Weder Endpunkt noch Anzeigeseite sehen es je.
     """
-    return str(json_lesen(DATEI_GEHEIM).get("visu_pw") or "")
+    d, _lage = json_lesen_streng(DATEI_GEHEIM)
+    return str((d or {}).get("visu_pw") or "")
 
 
 def baustein_finden(uuid: str, struktur: dict) -> dict:
@@ -464,6 +607,51 @@ def abbild_bauen(ms: Miniserver, index: dict, ok: int | None = None) -> dict:
         "anzahl_zustaende": len(ms.zustaende),
         "tabellen": dict(getattr(ms, "tabellen", {}) or {}),
     }
+
+
+def abbild_gestoert(grund: str) -> None:
+    """Das letzte Abbild bekommt ok=0 - Werte und Zeitstempel bleiben stehen.
+
+    C7 (Durchgang 29.09.2026, Entscheidung 4): bis 0.9.25 ging ok=0 nur nach
+    zustand.json, der Endpunkt liest aber abbild.json. Nach einem Abriss,
+    einem Absturz oder einem Anhalten blieb dort ok=1 stehen, und der Eingang
+    DASHBOARD_OK zeigte 1 (gemessen, M3 des MQTT-Pruefers: 40 s nach dem
+    Abriss OK=1). Der Zeitstempel bleibt der der letzten Werte - er wird nur
+    bei Erfolg aufgefrischt (Regeln/03), sonst waere ALTER eine Luege."""
+    a = json_lesen(DATEI_ABBILD)
+    if not a:
+        return
+    if int(a.get("ok") or 0) == 0 and a.get("fehler") == grund:
+        return
+    a["ok"] = 0
+    a["fehler"] = grund
+    json_schreiben(DATEI_ABBILD, a)
+
+
+def notnagel_bausteine(struktur: dict, cfg: dict) -> set:
+    """H4 (Durchgang 29.09.2026): die Bausteine, die der HTTP-Notnagel abfragt -
+    die sichtbaren Kacheln der Seiten (ohne Szenen) und das Wetter: die
+    gewaehlten Wetterbausteine und Loxones Wetterdienst."""
+    aus = set()
+    d, _lage = json_lesen_streng(DATEI_DASHBOARD)
+    for s in ((d or {}).get("seiten") or []):
+        if not isinstance(s, dict):
+            continue
+        for k in (s.get("kacheln") or []):
+            if not isinstance(k, dict) or k.get("kachel") == "szene":
+                continue
+            # Dieselbe Regel wie db_kacheln_sichtbar() in db_lib.php.
+            if "sichtbar" in k and not k.get("sichtbar"):
+                continue
+            if k.get("uuid"):
+                aus.add(str(k.get("uuid")))
+    for f in ("wetter_lage", "wetter_temp", "wetter_zusatz"):
+        if cfg.get(f):
+            aus.add(str(cfg.get(f)))
+    for b in (struktur.get("bausteine") or []):
+        if b.get("kachel") == "wetter" and b.get("uuid"):
+            aus.add(str(b.get("uuid")))
+    return aus
 
 
 def _haupt_zustand(b: dict) -> str:
@@ -629,9 +817,21 @@ async def warteschlange(ms: Miniserver, struktur: dict) -> None:
         if not name.endswith(".json"):
             continue
         pfad = os.path.join(ORDNER_BEFEHLE, name)
-        auftrag = json_lesen(pfad)
+        # H3 (Durchgang 29.09.2026): den Auftrag ERST in Besitz nehmen, dann
+        # lesen. Bis 0.9.25 hiess es "lesen, dann loeschen": ein zweiter Leser
+        # fand die Datei noch, las nach dem Loeschen {} und schrieb "Diesen
+        # Baustein gibt es in der Struktur nicht" in die Antwort - der
+        # Endpunkt meldete eine Fehlschaltung, obwohl geschaltet wurde
+        # (gemessen, B4 des MQTT-Pruefers: 5 von 6 Auftraegen). Wer das
+        # Umbenennen verliert, ueberspringt den Auftrag.
+        eigen = "%s.in.%d" % (pfad, os.getpid())
         try:
-            os.remove(pfad)
+            os.rename(pfad, eigen)
+        except OSError:
+            continue
+        auftrag = json_lesen(eigen)
+        try:
+            os.remove(eigen)
         except OSError:
             pass
         kennung = name[:-5]
@@ -714,6 +914,16 @@ def antworten_aufraeumen(alter: int = 120) -> None:
     try:
         for n in os.listdir(ORDNER_ANTWORTEN):
             p = os.path.join(ORDNER_ANTWORTEN, n)
+            if jetzt - os.path.getmtime(p) > alter:
+                os.remove(p)
+    except OSError:
+        pass
+    # H3: ein in Besitz genommener Auftrag, dessen Leser mittendrin endete.
+    try:
+        for n in os.listdir(ORDNER_BEFEHLE):
+            if ".json.in." not in n:
+                continue
+            p = os.path.join(ORDNER_BEFEHLE, n)
             if jetzt - os.path.getmtime(p) > alter:
                 os.remove(p)
     except OSError:
@@ -851,6 +1061,10 @@ class Dienst:
                             break
                     antworten_aufraeumen()
                     await asyncio.sleep(takt)
+                # C7: die Schleife ist verlassen - Abriss, Zeitueberschreitung
+                # oder Anhalten. Das Abbild sagt es, bevor es jemand liest.
+                abbild_gestoert("Der Dienst wurde angehalten." if not self.laeuft
+                                else "Die Verbindung zum Miniserver ist abgerissen.")
             except asyncio.CancelledError:
                 if ms is not None:
                     await ms.schliessen()
@@ -859,6 +1073,7 @@ class Dienst:
                 _LOG.error("%s", f)
                 json_schreiben(DATEI_ZUSTAND, {"ok": 0, "ts": int(time.time()),
                                                "weg": "", "fehler": str(f)})
+                abbild_gestoert(str(f))
                 if int(cfg.get("http_rueckfall") or 0):
                     await self.http_weg(cfg, tabelle)
             finally:
@@ -912,6 +1127,14 @@ class Dienst:
         ms.hashalg = alg or "SHA256"
         struktur = json_lesen(DATEI_STRUKTUR)
         index = zustands_index(struktur)
+        # H4 (Durchgang 29.09.2026): nur die Bausteine, die auf einer Seite
+        # stehen, dazu das Wetter. Bis 0.9.25 fragte der Notnagel JEDEN
+        # Baustein der Anlage einzeln ab, ohne Pause zwischen den Runden - an
+        # der Attrappe mit 638 Bausteinen 1276 Zustaende und 1278
+        # TCP-Verbindungen in 113,7 s statt 60 s (gemessen, B5 des
+        # MQTT-Pruefers). Das belastet genau den Miniserver, der gerade
+        # schwaechelt.
+        gebraucht = notnagel_bausteine(struktur, cfg)
         # Nur Bausteine, die ueberhaupt einen Zustand haben.
         # Der HAUPTzustand, nicht irgendeiner. Bis 0.9.12 stand hier
         # values()[0] - also der Zustand, den Loxone in 'states' zufaellig
@@ -925,14 +1148,15 @@ class Dienst:
         # haupt_index() nutzt es zwanzig Zeilen weiter oben genau dafuer.
         paare = [(b["uuid"], _haupt_zustand(b))
                  for b in (struktur.get("bausteine") or [])
-                 if (b.get("zustaende") or {})]
+                 if (b.get("zustaende") or {}) and str(b.get("uuid") or "") in gebraucht]
         if not paare:
-            _LOG.info("Keine Struktur zwischengespeichert - der HTTP-Notnagel entfaellt.")
+            _LOG.info("Kein Baustein einer Seite ist zwischengespeichert - der "
+                      "HTTP-Notnagel entfaellt.")
             return
         takt = max(5, min(120, int(cfg.get("http_takt") or 10)))
         _LOG.warning("Der WebSocket steht nicht. Es wird auf HTTP-Abfrage "
-                     "zurueckgefallen: %d Bausteine alle %d s. Das ist der Notnagel, "
-                     "nicht der Regelweg.", len(paare), takt)
+                     "zurueckgefallen: %d Bausteine der Seiten alle %d s. Das ist der "
+                     "Notnagel, nicht der Regelweg.", len(paare), takt)
         ms.weg = "http"
         schleife = asyncio.get_running_loop()
         ende = time.time() + 60
@@ -941,10 +1165,12 @@ class Dienst:
                 marke = await schleife.run_in_executor(None, ms.http_marke)
             except Exception as f:
                 _LOG.warning("Der HTTP-Weg bekommt keine Beglaubigung: %s", f)
+                abbild_gestoert("Notnagel: keine Beglaubigung - %s" % f)
                 return
             fehler = 0
             for buuid, zuuid in paare:
-                if not self.laeuft:
+                # H4: die Frist gilt auch innerhalb einer Runde.
+                if not self.laeuft or time.time() >= ende:
                     break
                 try:
                     ms.zustaende[zuuid] = await schleife.run_in_executor(
@@ -954,6 +1180,7 @@ class Dienst:
                     if fehler > 5:
                         _LOG.warning("Auch der HTTP-Weg antwortet nicht mehr "
                                      "(%d Fehlversuche hintereinander).", fehler)
+                        abbild_gestoert("Notnagel: der HTTP-Weg antwortet nicht mehr.")
                         return
                 else:
                     fehler = 0
@@ -963,7 +1190,12 @@ class Dienst:
                 "fehler": "Notnagel: der WebSocket steht nicht.",
                 "miniserver": ms.host,
                 "bausteine": len(paare), "zustaende": len(ms.zustaende)})
-            await asyncio.sleep(takt)
+            # H4: ZWISCHEN den Runden pausieren - in kurzen Schritten, damit
+            # ein Anhalten nicht einen ganzen Takt wartet, und nicht ueber
+            # die Frist hinaus.
+            pause_ende = min(ende, time.time() + takt)
+            while self.laeuft and time.time() < pause_ende:
+                await asyncio.sleep(min(0.5, max(0.01, pause_ende - time.time())))
 
 
 # ---------------------------------------------------------------------------
@@ -1117,6 +1349,10 @@ async def entwurf_erzeugen(von_vorn: bool = False) -> int:
     struktur = json_lesen(DATEI_STRUKTUR)
     if not struktur.get("bausteine"):
         # Ohne Struktur laesst sich nichts entwerfen - dann erst verbinden.
+        # C1: das ist ein Einmallauf gegen den Miniserver - er nimmt die Sperre.
+        if not sperre_nehmen():
+            print(SPERRE_BELEGT)
+            return 3
         if await einmal() != 0:
             return 1
         struktur = json_lesen(DATEI_STRUKTUR)
@@ -1131,9 +1367,23 @@ async def entwurf_erzeugen(von_vorn: bool = False) -> int:
         roh["rooms"][k] = {"name": v.get("name"), "defaultRating": v.get("bewertung") or 0}
     for k, v in (struktur.get("kategorien") or {}).items():
         roh["cats"][k] = {"name": v.get("name")}
-    alt = None if von_vorn else json_lesen(DATEI_DASHBOARD)
-    neu = entwurf_bauen(roh, tabelle, alt)
-    json_schreiben(DATEI_DASHBOARD, neu)
+    # C11/C12 (Durchgang 29.09.2026): unter der gemeinsamen Sperre mit der
+    # Oberflaeche, mit 0600 (die Datei traegt die PIN-Pruefwerte), und eine
+    # beschaedigte seiten.json wird nicht still ueberschrieben - bis 0.9.25
+    # las sie sich als leer, und "ergaenzen" machte einen neuen Entwurf daraus.
+    with datei_sperre(DATEI_SEITEN_SPERRE):
+        alt = None
+        if not von_vorn:
+            alt, lage = json_lesen_streng(DATEI_DASHBOARD)
+            if lage in ("kaputt", "unlesbar"):
+                print("Fehlgeschlagen: seiten.json ist beschaedigt (%s). Die Abschrift liegt "
+                      "als seiten.json.kaputt daneben; es wurde nichts geschrieben. "
+                      "'Von vorn anfangen' ersetzt die Datei ausdruecklich." % lage)
+                return 1
+        neu = entwurf_bauen(roh, tabelle, alt)
+        if not json_schreiben(DATEI_DASHBOARD, neu, 0o600):
+            print("Fehlgeschlagen: seiten.json liess sich nicht schreiben.")
+            return 1
     print("Entwurf gespeichert: %d Seiten, %d Kacheln."
           % (len(neu["seiten"]), sum(len(s["kacheln"]) for s in neu["seiten"])))
     return 0
@@ -1153,8 +1403,14 @@ def selbsttest() -> int:
         os.makedirs(p, exist_ok=True)
         zeilen.append((1 if os.access(p, os.W_OK) else 0,
                        "Ordner %s beschreibbar: %s" % (name, p)))
-    d = miniserver_daten(str(config().get("miniserver") or "1"))
-    if not d:
+    try:
+        d = miniserver_daten(str(config().get("miniserver") or "1"))
+        d_fehler = ""
+    except LoxFehler as f:
+        d, d_fehler = {}, str(f)
+    if d_fehler:
+        zeilen.append((0, d_fehler))
+    elif not d:
         zeilen.append((0, "Kein Miniserver gefunden. Unter System, Miniserver eintragen."))
     else:
         zeilen.append((1, "Miniserver '%s' auf %s:%d, Zugangsdaten aus %s"
@@ -1246,6 +1502,55 @@ def selbsttest() -> int:
     return 1 if fehlt else 0
 
 
+_SPERRE = None
+SPERRE_BELEGT = (
+    "Der Dienst laeuft und haelt die Verbindung zum Miniserver selbst. Dieser Einmallauf "
+    "wuerde eine zweite Anmeldung oeffnen und das gemerkte Token ueberschreiben - er endet "
+    "deshalb, ohne etwas zu tun (Rueckgabewert 3). Die Struktur holt der laufende Dienst "
+    "von selbst neu, sobald sich die Loxone-Konfiguration aendert. Fuer eine Probe den "
+    "Dienst kurz anhalten.")
+
+
+def sperre_nehmen() -> bool:
+    """C1 (Durchgang 29.09.2026): die Einzelinstanz-Sperre (fcntl.flock auf
+    dienst.lock, ohne Warten). Das Handle bleibt bis zum Prozessende offen;
+    faellt es, faellt die Sperre. Python-Dateien werden seit 3.4 nicht an
+    Kindprozesse vererbt (PEP 446). Bauart BLE-Scanner NG 1.3.20.
+    Rueckgabe False nur, wenn ein anderer sie haelt; ohne fcntl oder bei einem
+    anderen Fehler wird ohne Sperre weitergearbeitet (mit Protokollzeile)."""
+    global _SPERRE
+    if _SPERRE is not None:
+        return True
+    try:
+        import fcntl
+    except ImportError:
+        return True
+    try:
+        os.makedirs(DATADIR, exist_ok=True)
+        fh = open(DATEI_SPERRE, "a")
+    except OSError as f:
+        _LOG.warning("Sperrdatei %s nicht zu oeffnen (%s) - weiter ohne Sperre.", DATEI_SPERRE, f)
+        return True
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as f:
+        fh.close()
+        if f.errno in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+            return False
+        _LOG.warning("Sperrdatei %s nicht zu nehmen (%s) - weiter ohne Sperre.", DATEI_SPERRE, f)
+        return True
+    _SPERRE = fh
+    return True
+
+
+def einmallauf(lauf) -> int:
+    """Ein Einmallauf gegen den Miniserver - nur mit der Sperre (C1)."""
+    if not sperre_nehmen():
+        print(SPERRE_BELEGT)
+        return 3
+    return asyncio.run(lauf())
+
+
 def main() -> int:
     einmalig = ("--selbsttest", "--einmal", "--entwurf", "--anmeldeprobe",
                 "--httpprobe", "--visuprobe")
@@ -1253,17 +1558,26 @@ def main() -> int:
     if "--selbsttest" in sys.argv:
         return selbsttest()
     if "--einmal" in sys.argv:
-        return asyncio.run(einmal())
+        return einmallauf(einmal)
     if "--entwurf" in sys.argv:
         return asyncio.run(entwurf_erzeugen("--von-vorn" in sys.argv))
     if "--anmeldeprobe" in sys.argv:
-        return asyncio.run(anmeldeprobe())
+        return einmallauf(anmeldeprobe)
     if "--httpprobe" in sys.argv:
-        return asyncio.run(httpprobe())
+        return einmallauf(httpprobe)
     if "--visuprobe" in sys.argv:
-        return asyncio.run(visuprobe())
+        return einmallauf(visuprobe)
 
     os.makedirs(DATADIR, exist_ok=True)
+    # C1: ein zweiter Dienst endet sofort mit 3 - er laeuft nicht daneben her.
+    # Bis 0.9.25 gab es keine Sperre: zwei Waechter in derselben Sekunde
+    # ergaben zwei Dienste mit zwei Sitzungen am Miniserver (gemessen).
+    if not sperre_nehmen():
+        msg = ("Der Dashboard-Dienst laeuft bereits (Sperre %s belegt) - dieser zweite "
+               "Start endet." % DATEI_SPERRE)
+        _LOG.warning("%s", msg)
+        sys.stderr.write(msg + "\n")
+        return 3
     with open(DATEI_PID, "w", encoding="utf-8") as fh:
         fh.write(str(os.getpid()))
     d = Dienst()
@@ -1273,11 +1587,23 @@ def main() -> int:
     try:
         return asyncio.run(d.laufen())
     finally:
+        # C7: das Abbild sagt, dass niemand mehr schreibt.
+        abbild_gestoert("Der Dienst wurde beendet.")
         _LOG.info("Dienst beendet.")
+        # C2 (Durchgang 29.09.2026): die PID-Datei nur loeschen, wenn sie die
+        # EIGENE Nummer traegt. Bis 0.9.25 loeschte ein beendeter zweiter
+        # Dienst die Datei des ersten, und der Endpunkt wies danach jeden
+        # Befehl mit 503 ab, obwohl ein Dienst lief (gemessen, pidfolge.sh).
         try:
-            os.remove(DATEI_PID)
+            with open(DATEI_PID, encoding="utf-8") as fh:
+                inhalt = fh.read().strip()
         except OSError:
-            pass
+            inhalt = ""
+        if inhalt == str(os.getpid()):
+            try:
+                os.remove(DATEI_PID)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

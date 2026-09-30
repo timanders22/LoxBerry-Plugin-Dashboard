@@ -12,14 +12,16 @@
 #   config/plugins/<x>.backup.seiten.json    die ganze Handarbeit
 #   config/plugins/<x>.backup.zugang.json    Benutzer und Kennwort
 #   data/plugins/<x>.upgrade_sicherung       der Verlauf waehrend des Updates
+#   <jeweils>.alt                            beiseitegelegt von preinstall.sh
+#                                            und preupgrade.sh (Entscheidung 1)
 #
-# ACHTUNG: Dieses Skript und uninstall.sh im Wurzelverzeichnis raeumen SEIT
-# 0.9.13 dasselbe ab und halten beide den Dienst an. Bis 0.9.12 waren ihre
-# Aufgaben aufgeteilt: dieses hier raeumte beide Sorten, hielt aber den Dienst
-# nicht an; jenes hielt ihn an, liess dafuer die .upgrade_sicherung liegen.
-# Welches der beiden LoxBerry ausfuehrt, ist hier nicht nachgemessen - deshalb
-# tut jetzt jedes die ganze Arbeit. Beide sind mehrfach ausfuehrbar, ein
-# zweiter Lauf findet nichts mehr und meldet 0.
+# Dieses Skript ist das EINZIGE, das LoxBerry bei der Deinstallation
+# ausfuehrt: plugininstall.pl liest nur uninstall/uninstall* (am Geraet am
+# 18.09.2026 gemessen, Regeln/06). Bis 0.9.24 lag daneben ein uninstall.sh im
+# Wurzelverzeichnis mit derselben Arbeit, und dieser Kommentar sagte, welches
+# der beiden laufe, sei nicht nachgemessen. Seit 0.9.25 ist uninstall.sh
+# entfernt (I7, Durchgang 29.09.2026). Das Skript ist mehrfach ausfuehrbar,
+# ein zweiter Lauf findet nichts mehr und meldet 0.
 #
 # Aufruf: <ZUFALLSKENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <TEMPFOLDER>
 # ACHTUNG: $1 ist NICHT der Arbeitsordner, sondern eine zehnstellige
@@ -62,8 +64,19 @@ fi
 # sollen.
 DIENST="$UN_BASE/bin/plugins/$UN_FOLDER/dienst.sh"
 if [ -x "$DIENST" ]; then
-    "$DIENST" stop >/dev/null 2>&1
-    echo "<INFO> Dienst angehalten."
+    # I8 (Durchgang 29.09.2026): "angehalten" nur nach Erfolg. Bis 0.9.25
+    # stand die Meldung bedingungslos da, auch wenn dienst.sh mit
+    # "FEHLER: Dienst laeuft weiter" und 1 zurueckkam. Mit Zeitgrenze, damit
+    # die Deinstallation nicht haengt (Fehlerklasse 6).
+    if command -v timeout >/dev/null 2>&1; then UN_T="timeout 60"; else UN_T=""; fi
+    UN_AUS=$($UN_T "$DIENST" stop 2>&1)
+    UN_RC=$?
+    UN_AUS=$(printf '%s' "$UN_AUS" | tr '\n' ' ')
+    if [ "$UN_RC" = 0 ]; then
+        echo "<INFO> Dienst: $UN_AUS"
+    else
+        echo "<WARNING> Der Dienst liess sich nicht anhalten (Rueckgabewert $UN_RC): $UN_AUS"
+    fi
 fi
 
 # Der Punkt hinter dem Ordnernamen ist Absicht: er trennt den Nachbarn vom
@@ -75,6 +88,13 @@ for f in "$UN_BASE/config/plugins/$UN_FOLDER".backup.*; do
 done
 if [ -e "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" ]; then
     rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" && ANZAHL=$((ANZAHL + 1))
+fi
+# Entscheidung 1: die von preinstall.sh/preupgrade.sh beiseitegelegte
+# .upgrade_sicherung.alt raeumt die Deinstallation mit ab. (Die .alt der
+# Zweitschriften trifft schon das Muster <ordner>.backup.* oben.) Gemessen
+# vorher (Fall J des Installer-Pruefers): sie blieb liegen.
+if [ -e "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.alt" ]; then
+    rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.alt" && ANZAHL=$((ANZAHL + 1))
 fi
 # Die Marke einer abgebrochenen Aktualisierung liegt ebenfalls neben dem
 # Datenordner und geht mit ihm nicht weg. Bliebe sie liegen, sperrte sie Dienst

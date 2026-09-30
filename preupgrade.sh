@@ -71,6 +71,30 @@ fi
 # Inhalt ist die Unixzeit; sie gilt hoechstens eine Stunde.
 mkdir -p "$BASE/data/plugins" 2>/dev/null
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+# I3 (Durchgang 29.09.2026, Entscheidung 1, letzter Satz): Liegt die Marke
+# schon, wurde ein Update zwischen preupgrade und postinstall abgebrochen -
+# dessen Sicherungen sind die einzige Abschrift und bleiben. Liegt sie NICHT,
+# stammen vorhandene Sicherungen aus einem frueheren Vorgang und gehen vor dem
+# neuen Sichern nach .alt. Gemessen vorher (Installer-Pruefer): Fall E2 spielte
+# ein Token aus einem frueheren Vorgang ein; Fall E3 liess einen bewusst
+# angehaltenen Dienst nach dem Update wieder laufen (lief_vorher von damals).
+if [ ! -f "$MARKE" ]; then
+    DB_ALT=""
+    for ZIEL in "$BASE/config/plugins/$PFOLDER".backup.dashboard.json \
+                "$BASE/config/plugins/$PFOLDER".backup.seiten.json \
+                "$BASE/config/plugins/$PFOLDER".backup.zugang.json \
+                "$BASE/data/plugins/$PFOLDER.upgrade_sicherung"; do
+        [ -e "$ZIEL" ] || continue
+        rm -rf "${ZIEL:?}.alt" 2>/dev/null
+        mv -f "$ZIEL" "$ZIEL.alt" 2>/dev/null && DB_ALT="$DB_ALT $ZIEL.alt"
+    done
+    for A in "$BASE/config/plugins/$PFOLDER".backup.dashboard.json.alt \
+             "$BASE/config/plugins/$PFOLDER".backup.seiten.json.alt \
+             "$BASE/config/plugins/$PFOLDER".backup.zugang.json.alt; do
+        [ -f "$A" ] && chmod 600 "$A" 2>/dev/null
+    done
+    [ -n "$DB_ALT" ] && echo "<WARNING> Sicherungen eines frueheren Vorgangs werden nicht eingespielt, beiseitegelegt:$DB_ALT"
+fi
 date +%s > "$MARKE" 2>/dev/null
 if [ -s "$MARKE" ]; then
     echo "<OK> Dienststart und Oberflaeche bis zum Ende der Aktualisierung gesperrt."
@@ -296,6 +320,10 @@ for f in dashboard.json seiten.json zugang.json; do
 done
 # zugang.json enthaelt Zugangsdaten - die Sicherung ebenso schuetzen.
 chmod 600 "$BASE/config/plugins/$PFOLDER.backup.zugang.json" 2>/dev/null
+# C11/I6 (Durchgang 29.09.2026): dashboard.json traegt das Aktionstoken,
+# seiten.json die PIN-Pruefwerte - beide Zweitschriften ebenso 0600.
+chmod 600 "$BASE/config/plugins/$PFOLDER.backup.dashboard.json" 2>/dev/null
+chmod 600 "$BASE/config/plugins/$PFOLDER.backup.seiten.json" 2>/dev/null
 echo "<OK> preupgrade abgeschlossen."
 
 # ---------- Langzeitwerte retten ----------

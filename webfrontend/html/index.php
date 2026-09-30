@@ -45,8 +45,14 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/db_lib.php';
 
 $db_cfg = db_config();
-$db_soll = (string) $db_cfg['aktionstoken'];
-$db_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
+/* C5 (Durchgang 29.09.2026): das Token ist eine Zeichenkette nach Muster,
+ * die Angabe aus der Adresse ebenso - VOR jeder Umwandlung geprueft. Bis
+ * 0.9.25 machte (string) aus ?token[]=x und aus einem Token, das als Liste
+ * in einer Sicherung stand, das Wort "Array"; beide kamen durch (gemessen,
+ * Befund 5 des Code-Pruefers, 7.4 und 8.5). */
+$db_soll = db_token_soll($db_cfg);
+$db_ist = db_get('token');
+if (!is_string($db_ist)) { $db_ist = ''; }
 
 /* ---------------- Selbstpruefung ----------------
  *
@@ -81,8 +87,18 @@ if ($db_soll === '') {
     http_response_code(403);
     header('Content-Type: text/plain; charset=utf-8');
     header('Cache-Control: no-store');
+    // C12: eine beschaedigte dashboard.json ist kein "noch nie geoeffnet".
+    $db_lage = db_config_lage();
+    if ($db_lage === 'kaputt' || $db_lage === 'unlesbar') {
+        db_abweisung('Endpunkt', 'KONFIG_KAPUTT');
+        echo "FEHLER;OK=0;GRUND=KONFIG_KAPUTT\n";
+        echo db_t('EP.KONFIG_KAPUTT') . "\n";
+        exit;
+    }
+    db_abweisung('Endpunkt', 'KEIN_TOKEN_GESETZT');
     echo "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
-    echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
+    echo (array_key_exists('aktionstoken', db_json_lesen(db_paths()['config']))
+          ? db_t('EP.TOKEN_UNTAUGLICH') : db_t('EP.KEIN_TOKEN')) . "\n";
     exit;
 }
 if (!hash_equals($db_soll, $db_ist)) {
@@ -90,39 +106,49 @@ if (!hash_equals($db_soll, $db_ist)) {
     header('Content-Type: text/plain; charset=utf-8');
     header('Cache-Control: no-store');
     echo "FEHLER;OK=0;GRUND=TOKEN\n";
-    // Gebremst protokollieren: eine Dauerstoerung soll die Logdatei nicht
-    // unlesbar machen, aber ein falsches Token gehoert gesehen.
-    db_log_gebremst('token', 'Aufruf mit falschem Token abgewiesen.');
+    // C13: gebremst, mit Absender und Grund, nie mit dem Token.
+    db_abweisung('Endpunkt', 'TOKEN');
     exit;
 }
 
 /* ---------------- Aktion (Weissliste) ---------------- */
 $db_lesend = array('status', 'seiten', 'seite', 'werte', 'strom', 'roh', 'ruhebild');
 $db_schaltend = array('befehl', 'szene', 'tafel');
-$db_aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
-if (!in_array($db_aktion, array_merge($db_lesend, $db_schaltend), true)) {
+$db_aktion = db_get('aktion');
+if ($db_aktion === null) { $db_aktion = 'status'; }
+if (!is_string($db_aktion) || !in_array($db_aktion, array_merge($db_lesend, $db_schaltend), true)) {
     http_response_code(400);
     header('Content-Type: text/plain; charset=utf-8');
     header('Cache-Control: no-store');
+    db_abweisung('Endpunkt', 'UNBEKANNTE_AKTION');
     echo "FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION\n";
-    echo 'Erlaubt sind: ' . implode(', ', array_merge($db_lesend, $db_schaltend)) . "\n";
+    echo sprintf(db_t('EP.ERLAUBT'), implode(', ', array_merge($db_lesend, $db_schaltend))) . "\n";
     exit;
 }
 
 /* Parameter: enge Muster. Was nicht passt, wird abgewiesen und benannt -
  * nicht stillschweigend zurechtgebogen. */
-$db_seite = isset($_GET['seite']) ? (string) $_GET['seite'] : '';
-if ($db_seite !== '' && !preg_match('/^[a-z0-9-]{1,60}$/', $db_seite)) {
+$db_seite = db_get('seite');
+$db_seite_gut = ($db_seite === null || $db_seite === ''
+                 || (is_string($db_seite) && preg_match('/^[a-z0-9-]{1,60}$/', $db_seite)));
+if ($db_seite === null) { $db_seite = ''; }
+if (!$db_seite_gut) {
     http_response_code(400);
     header('Content-Type: text/plain; charset=utf-8');
     header('Cache-Control: no-store');
+    db_abweisung('Endpunkt', 'SEITE_UNGUELTIG');
     echo "FEHLER;OK=0;GRUND=SEITE_UNGUELTIG\n";
-    echo "Ein Seitenschluessel besteht aus Kleinbuchstaben, Ziffern und Bindestrich.\n";
+    echo db_t('EP.SEITE_MUSTER') . "\n";
     exit;
 }
 
 function db_json_raus($daten, $code = 200)
 {
+    // C13 (Durchgang 29.09.2026): jeder abgewiesene Weg ins Protokoll -
+    // gebremst, mit Absender und Grund (db_abweisung in db_lib.php).
+    if ($code >= 400) {
+        db_abweisung('Endpunkt', isset($daten['grund']) ? $daten['grund'] : ('HTTP' . (int) $code));
+    }
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
@@ -183,12 +209,12 @@ if ($db_aktion === 'seiten') {
 if ($db_aktion === 'seite' || $db_aktion === 'werte') {
     if ($db_seite === '') {
         db_json_raus(array('ok' => 0, 'grund' => 'SEITE_FEHLT',
-                           'meldung' => 'Es wurde keine Seite angegeben.'), 400);
+                           'meldung' => db_t('EP.SEITE_FEHLT')), 400);
     }
     $d = ($db_aktion === 'seite') ? db_seite_daten($db_seite) : db_seite_werte($db_seite);
     if ($d === null) {
         db_json_raus(array('ok' => 0, 'grund' => 'SEITE_UNBEKANNT',
-                           'meldung' => 'Diese Seite gibt es nicht.'), 404);
+                           'meldung' => db_t('EP.SEITE_UNBEKANNT')), 404);
     }
     db_json_raus($d);
 }
@@ -210,11 +236,11 @@ if ($db_aktion === 'seite' || $db_aktion === 'werte') {
 if ($db_aktion === 'strom') {
     if ($db_seite === '') {
         db_json_raus(array('ok' => 0, 'grund' => 'SEITE_FEHLT',
-                           'meldung' => 'Es wurde keine Seite angegeben.'), 400);
+                           'meldung' => db_t('EP.SEITE_FEHLT')), 400);
     }
     if (db_seite($db_seite) === null) {
         db_json_raus(array('ok' => 0, 'grund' => 'SEITE_UNBEKANNT',
-                           'meldung' => 'Diese Seite gibt es nicht.'), 404);
+                           'meldung' => db_t('EP.SEITE_UNBEKANNT')), 404);
     }
     header('Content-Type: text/event-stream; charset=utf-8');
     header('Cache-Control: no-store');
@@ -254,14 +280,24 @@ if ($db_aktion === 'status') {
     // Zwischenstation sie zwischenspeichern - eine eingefrorene Anzeige saehe
     // dann aus wie "laeuft".
     header('Cache-Control: no-store');
-    $a = db_abbild();
-    $seiten = db_seiten();
-    $kacheln = 0;
-    foreach ($seiten as $s) {
-        $kacheln += count(isset($s['kacheln']) && is_array($s['kacheln']) ? $s['kacheln'] : array());
+    /* C7/H1 (Durchgang 29.09.2026, Entscheidung 4):
+     *   - OK=0, sobald ALTER die Frist uebersteigt (3 x max(takt, 30 s), im
+     *     Notnagel 3 x http_takt) oder das Alter unbrauchbar ist (-1);
+     *     ALTER bleibt daneben unveraendert. Bis 0.9.25 blieb OK=1 bei jedem
+     *     Ausfall - Miniserver weg, Dienst abgestuerzt oder angehalten
+     *     (gemessen: ALTER=90000 mit OK=1, B1 des MQTT-Pruefers).
+     *   - Ohne Abbild antwortet der Endpunkt mit 503 und nennt den Grund
+     *     (Regeln/07, "auch vor dem ersten Abruf"). OK ist hier ein
+     *     Gesundheitsmerker: mit Abbild bleibt es bei 200 und OK=0, damit
+     *     ein Alarm auf OK=0 ausloesen kann (Ausnahme BatterieBMS, Regeln/07).
+     *   - Die Zeile entsteht aus db_status_felder() - eine Stelle (H8). */
+    $db_w = db_status_werte();
+    if (!db_abbild()) {
+        http_response_code(503);
+        echo db_status_zeile($db_w) . ";GRUND=KEIN_ABBILD\n";
+        exit;
     }
-    printf("DASHBOARD;OK=%d;BAUSTEINE=%d;SEITEN=%d;KACHELN=%d;ALTER=%d\n",
-        (int) (!empty($a['ok'])), count(db_bausteine()), count($seiten), $kacheln, db_alter());
+    echo db_status_zeile($db_w) . "\n";
     exit;
 }
 
@@ -272,8 +308,7 @@ header('Content-Type: application/json; charset=utf-8');
 if ($db_aktion === 'tafel') {
     if (empty($db_cfg['tafelsteuerung'])) {
         db_json_raus(array('ok' => 0, 'grund' => 'GESPERRT',
-                           'meldung' => 'Die Tafelsteuerung ist im Reiter Einstellungen '
-                                      . 'abgeschaltet.'), 403);
+                           'meldung' => db_t('EP.TAFEL_GESPERRT')), 403);
     }
     /* ERST alles pruefen, DANN einmal schreiben. Bis 0.9.12 schrieb jeder
      * Zweig einzeln: ein Aufruf mit gueltiger Seite und ungueltigem 'hell'
@@ -284,49 +319,57 @@ if ($db_aktion === 'tafel') {
     if ($db_seite !== '') {
         if (db_seite($db_seite) === null) {
             db_json_raus(array('ok' => 0, 'grund' => 'SEITE_UNBEKANNT',
-                               'meldung' => 'Diese Seite gibt es nicht.'), 404);
+                               'meldung' => db_t('EP.SEITE_UNBEKANNT')), 404);
         }
         $db_felder['seite'] = $db_seite;
         $db_getan[] = 'seite=' . $db_seite;
     }
-    if (isset($_GET['wach'])) {
-        if (!preg_match('/^[01]$/', (string) $_GET['wach'])) {
+    // C5: jede Angabe VOR der Umwandlung auf ihre Art geprueft.
+    $db_v = db_get('wach');
+    if ($db_v !== null) {
+        if (!is_string($db_v) || !preg_match('/^[01]$/', $db_v)) {
             db_json_raus(array('ok' => 0, 'grund' => 'WERT_UNGUELTIG',
-                               'meldung' => 'wach ist 0 oder 1.'), 400);
+                               'meldung' => db_t('EP.WACH')), 400);
         }
-        $db_felder['wach'] = (int) $_GET['wach'];
-        $db_getan[] = 'wach=' . (int) $_GET['wach'];
+        $db_felder['wach'] = (int) $db_v;
+        $db_getan[] = 'wach=' . (int) $db_v;
     }
-    if (isset($_GET['hell'])) {
-        $db_h = (string) $_GET['hell'];
-        if (!preg_match('/^[0-9]{1,3}$/', $db_h) || (int) $db_h > 100) {
+    $db_h = db_get('hell');
+    if ($db_h !== null) {
+        if (!is_string($db_h) || !preg_match('/^[0-9]{1,3}$/', $db_h) || (int) $db_h > 100) {
             db_json_raus(array('ok' => 0, 'grund' => 'WERT_UNGUELTIG',
-                               'meldung' => 'hell ist eine Zahl von 0 bis 100.'), 400);
+                               'meldung' => db_t('EP.HELL')), 400);
         }
         $db_felder['hell'] = (int) $db_h;
         $db_getan[] = 'hell=' . (int) $db_h;
     }
-    if (isset($_GET['ruhe'])) {
-        if (!preg_match('/^[01]$/', (string) $_GET['ruhe'])) {
+    $db_r = db_get('ruhe');
+    if ($db_r !== null) {
+        if (!is_string($db_r) || !preg_match('/^[01]$/', $db_r)) {
             db_json_raus(array('ok' => 0, 'grund' => 'WERT_UNGUELTIG',
-                               'meldung' => 'ruhe ist 0 oder 1.'), 400);
+                               'meldung' => db_t('EP.RUHE')), 400);
         }
         if (empty($db_cfg['ruhe_nach'])) {
             /* Nicht stillschweigend nichts tun: wer das Ruhebild aus Loxone
              * schaltet und es ist gar nicht eingerichtet, sucht sonst am
              * falschen Ende. */
             db_json_raus(array('ok' => 0, 'grund' => 'RUHE_AUS',
-                               'meldung' => 'Das Ruhebild ist im Reiter Einstellungen '
-                                          . 'abgeschaltet (Ruhebild nach 0 Sekunden).'), 409);
+                               'meldung' => db_t('EP.RUHE_AUS')), 409);
         }
-        $db_felder['ruhe'] = (int) $_GET['ruhe'];
-        $db_getan[] = 'ruhe=' . (int) $_GET['ruhe'];
+        $db_felder['ruhe'] = (int) $db_r;
+        $db_getan[] = 'ruhe=' . (int) $db_r;
     }
     if (!$db_getan) {
         db_json_raus(array('ok' => 0, 'grund' => 'NICHTS_ANGEGEBEN',
-                           'meldung' => 'Erwartet wird seite=, wach=, hell= oder ruhe=.'), 400);
+                           'meldung' => db_t('EP.NICHTS')), 400);
     }
-    db_tafel_befehl($db_felder);
+    /* C8 (Durchgang 29.09.2026): ein misslungenes Schreiben ist ein Fehler.
+     * Bis 0.9.25 wurde der Rueckgabewert verworfen und {"ok":1} gemeldet,
+     * obwohl tafel.json unveraendert blieb (gemessen, E8). */
+    if (!db_tafel_befehl($db_felder)) {
+        db_json_raus(array('ok' => 0, 'grund' => 'SCHREIBFEHLER',
+                           'meldung' => db_t('EP.SCHREIBFEHLER')), 500);
+    }
     db_json_raus(array('ok' => 1, 'meldung' => implode(', ', $db_getan)));
 }
 
@@ -334,7 +377,7 @@ if ($db_aktion === 'tafel') {
 
 if (empty($db_cfg['steuerung_ein'])) {
     db_json_raus(array('ok' => 0, 'grund' => 'GESPERRT',
-                       'meldung' => 'Das Schalten ist im Reiter Einstellungen gesperrt.'), 403);
+                       'meldung' => db_t('EP.SCHALTEN_GESPERRT')), 403);
 }
 
 /* Von WELCHER Seite kommt der Befehl?
@@ -350,17 +393,25 @@ if (empty($db_cfg['steuerung_ein'])) {
  */
 if ($db_seite === '') {
     db_json_raus(array('ok' => 0, 'grund' => 'SEITE_FEHLT',
-                       'meldung' => 'Fuer einen Befehl ist &seite= Pflicht - die PIN '
-                                  . 'haengt an der Seite, von der aus geschaltet wird.'), 400);
+                       'meldung' => db_t('EP.SEITE_PFLICHT')), 400);
 }
 $db_s = db_seite($db_seite);
 if ($db_s === null) {
     db_json_raus(array('ok' => 0, 'grund' => 'SEITE_UNBEKANNT',
-                       'meldung' => 'Diese Seite gibt es nicht.'), 404);
+                       'meldung' => db_t('EP.SEITE_UNBEKANNT')), 404);
 }
-if (!db_pin_stimmt($db_seite, isset($_GET['pin']) ? (string) $_GET['pin'] : '')) {
+/* C6 (Durchgang 29.09.2026): nach DB_PIN_VERSUCHE Fehlversuchen ist die PIN
+ * der Seite gesperrt; waehrend der Sperre wird gar nicht verglichen. Jeder
+ * Fehlversuch geht ueber db_json_raus() gebremst ins Protokoll. */
+$db_pin = db_get('pin');
+list($db_pin_ok, $db_pin_grund, $db_pin_rest) = db_pin_pruefen($db_seite, is_string($db_pin) ? $db_pin : '');
+if (!$db_pin_ok) {
+    if ($db_pin_grund === 'PIN_GESPERRT') {
+        db_json_raus(array('ok' => 0, 'grund' => 'PIN_GESPERRT', 'rest' => (int) $db_pin_rest,
+                           'meldung' => sprintf(db_t('EP.PIN_GESPERRT'), (int) $db_pin_rest)), 403);
+    }
     db_json_raus(array('ok' => 0, 'grund' => 'PIN',
-                       'meldung' => 'Die PIN stimmt nicht.'), 403);
+                       'meldung' => db_t('EP.PIN')), 403);
 }
 /* Die ROHLISTE - wie bis 0.9.12. Sie bedient 'aktion=befehl', und der sucht
  * ueber die UUID; ein Index ist dabei nie im Spiel, die Rohliste war dort
@@ -382,11 +433,10 @@ $db_kacheln = isset($db_s['kacheln']) && is_array($db_s['kacheln']) ? $db_s['kac
 /* ---------------- Szene: mehrere Befehle auf einen Druck ---------------- */
 
 if ($db_aktion === 'szene') {
-    $db_nr = isset($_GET['kachel']) ? (string) $_GET['kachel'] : '';
-    if (!preg_match('/^[0-9]{1,4}$/', $db_nr)) {
+    $db_nr = db_get('kachel');
+    if (!is_string($db_nr) || !preg_match('/^[0-9]{1,4}$/', $db_nr)) {
         db_json_raus(array('ok' => 0, 'grund' => 'KACHEL_UNGUELTIG',
-                           'meldung' => 'kachel ist die laufende Nummer der Kachel '
-                                      . 'auf dieser Seite.'), 400);
+                           'meldung' => db_t('EP.KACHEL')), 400);
     }
     $db_nr = (int) $db_nr;
     /* Die GEFILTERTE Liste - die Anzeigeseite nummeriert ueber sie. Die
@@ -396,12 +446,12 @@ if ($db_aktion === 'szene') {
             || (string) (isset($db_kacheln[$db_nr]['kachel'])
                          ? $db_kacheln[$db_nr]['kachel'] : '') !== 'szene') {
         db_json_raus(array('ok' => 0, 'grund' => 'KEINE_SZENE',
-                           'meldung' => 'An dieser Stelle steht keine Szene.'), 404);
+                           'meldung' => db_t('EP.KEINE_SZENE')), 404);
     }
     $db_schritte = db_szene_schritte($db_kacheln[$db_nr]);
     if (!$db_schritte) {
         db_json_raus(array('ok' => 0, 'grund' => 'SZENE_LEER',
-                           'meldung' => 'Diese Szene hat keine Schritte.'), 400);
+                           'meldung' => db_t('EP.SZENE_LEER')), 400);
     }
     // JEDER Schritt wird gegen dieselbe Positivliste geprueft. Eine Szene ist
     // keine Abkuerzung an der Pruefung vorbei.
@@ -409,8 +459,7 @@ if ($db_aktion === 'szene') {
         if (!preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{16}$/',
                         $db_sch['uuid'])) {
             db_json_raus(array('ok' => 0, 'grund' => 'UUID_UNGUELTIG',
-                               'meldung' => 'Ein Schritt dieser Szene traegt keine '
-                                          . 'Loxone-UUID.'), 400);
+                               'meldung' => db_t('EP.SCHRITT_UUID')), 400);
         }
         list($db_ok, $db_grund) = db_befehl_erlaubt($db_sch['uuid'], $db_sch['befehl']);
         if (!$db_ok) {
@@ -422,10 +471,7 @@ if ($db_aktion === 'szene') {
         if ($db_sb !== null && !empty($db_sb['gesichert'])
                 && (empty($db_cfg['gesichert_schalten']) || !db_visu_da())) {
             db_json_raus(array('ok' => 0, 'grund' => 'GESICHERT',
-                               'meldung' => 'Ein Schritt dieser Szene fuehrt auf einen '
-                                          . 'gesicherten Baustein. Dafuer muessen der Haken '
-                                          . 'und das Visualisierungs-Passwort im Reiter '
-                                          . 'Einstellungen gesetzt sein.'), 403);
+                               'meldung' => db_t('EP.SZENE_GESICHERT')), 403);
         }
     }
     /* Erst JETZT die Frage, ob der Dienst laeuft.
@@ -439,8 +485,7 @@ if ($db_aktion === 'szene') {
      */
     if (db_dienst_pid() === 0) {
         db_json_raus(array('ok' => 0, 'grund' => 'DIENST_LAEUFT_NICHT',
-                           'meldung' => 'Der Dienst laeuft nicht. Reiter Einstellungen, '
-                                      . 'Knopf "Dienst starten".'), 503);
+                           'meldung' => db_t('EP.DIENST_AUS')), 503);
     }
     list($db_erg, $db_meldung) = db_befehl_absetzen(
         array('befehle' => $db_schritte, 'seite' => $db_seite));
@@ -450,12 +495,14 @@ if ($db_aktion === 'szene') {
 
 /* ---------------- Einzelner Befehl ---------------- */
 
-$db_uuid = isset($_GET['uuid']) ? (string) $_GET['uuid'] : '';
-$db_befehl = isset($_GET['befehl']) ? (string) $_GET['befehl'] : '';
+$db_uuid = db_get('uuid');
+$db_befehl = db_get('befehl');
+if (!is_string($db_uuid)) { $db_uuid = ''; }
+if (!is_string($db_befehl)) { $db_befehl = ''; }
 
 if (!preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{16}$/', $db_uuid)) {
     db_json_raus(array('ok' => 0, 'grund' => 'UUID_UNGUELTIG',
-                       'meldung' => 'Das ist keine Loxone-UUID.'), 400);
+                       'meldung' => db_t('EP.UUID')), 400);
 }
 /* Zeichenvorrat des Befehls.
  *
@@ -479,7 +526,7 @@ if (!preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{16}$
  */
 if (!preg_match('#^[A-Za-z0-9_./+:(),-]{1,120}$#', $db_befehl)) {
     db_json_raus(array('ok' => 0, 'grund' => 'BEFEHL_UNGUELTIG',
-                       'meldung' => 'Der Befehl enthaelt unerlaubte Zeichen.'), 400);
+                       'meldung' => db_t('EP.BEFEHL_ZEICHEN')), 400);
 }
 
 $db_gefunden = false;
@@ -491,8 +538,7 @@ foreach ($db_kacheln as $db_k) {
 }
 if (!$db_gefunden) {
     db_json_raus(array('ok' => 0, 'grund' => 'NICHT_AUF_DIESER_SEITE',
-                       'meldung' => 'Dieser Baustein steht nicht auf der Seite "'
-                                  . $db_seite . '".'), 403);
+                       'meldung' => sprintf(db_t('EP.NICHT_AUF_SEITE'), $db_seite)), 403);
 }
 
 list($db_ok, $db_grund) = db_befehl_erlaubt($db_uuid, $db_befehl);
@@ -518,15 +564,11 @@ $db_b = db_baustein($db_uuid);
 if ($db_b !== null && !empty($db_b['gesichert'])) {
     if (empty($db_cfg['gesichert_schalten'])) {
         db_json_raus(array('ok' => 0, 'grund' => 'GESICHERT',
-                           'meldung' => 'Dieser Baustein ist in Loxone Config gesichert. '
-                                      . 'Das Schalten gesicherter Bausteine ist im Reiter '
-                                      . 'Einstellungen abgeschaltet.'), 403);
+                           'meldung' => db_t('EP.GESICHERT')), 403);
     }
     if (!db_visu_da()) {
         db_json_raus(array('ok' => 0, 'grund' => 'GESICHERT_OHNE_PASSWORT',
-                           'meldung' => 'Dieser Baustein ist gesichert, aber es ist kein '
-                                      . 'Visualisierungs-Passwort hinterlegt. Reiter '
-                                      . 'Einstellungen, Abschnitt Miniserver.'), 403);
+                           'meldung' => db_t('EP.GESICHERT_OHNE_PW')), 403);
     }
 }
 
@@ -541,8 +583,7 @@ if ($db_b !== null && !empty($db_b['gesichert'])) {
  */
 if (db_dienst_pid() === 0) {
     db_json_raus(array('ok' => 0, 'grund' => 'DIENST_LAEUFT_NICHT',
-                       'meldung' => 'Der Dienst laeuft nicht. Reiter Einstellungen, '
-                                  . 'Knopf "Dienst starten".'), 503);
+                       'meldung' => db_t('EP.DIENST_AUS')), 503);
 }
 
 list($db_erg, $db_meldung) = db_befehl_absetzen(

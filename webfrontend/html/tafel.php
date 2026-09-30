@@ -20,23 +20,39 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/db_lib.php';
 
 $cfg = db_config();
-$soll = (string) $cfg['aktionstoken'];
-$ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
+/* C5 (Durchgang 29.09.2026): Token und Angabe aus der Adresse als
+ * Zeichenkette geprueft, bevor verglichen wird - bis 0.9.25 lieferte
+ * ?token=Array bzw. ?token[]=x die Anzeigeseite aus, wenn das Token als Liste
+ * in einer Sicherung stand (gemessen). */
+$soll = db_token_soll($cfg);
+$ist = db_get('token');
+if (!is_string($ist)) { $ist = ''; }
+/* O13: die Sprache der Anlage (Base.Lang), nicht fest Deutsch. */
+$db_lang = db_sprache();
+/* C10 (Durchgang 29.09.2026): JSON im Skriptblock mit HEX_TAG, HEX_AMP,
+ * HEX_APOS und HEX_QUOT. Bis 0.9.25 beendete ein Bausteinname mit
+ * Kommentaranfang und Skripttag aus Loxone Config den Skriptblock: DATEN war
+ * undefined, auf der Seite standen 0 Kacheln (gemessen). */
+$db_jf = JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
 
 header('Content-Type: text/html; charset=utf-8');
 
 if ($soll === '' || !hash_equals($soll, $ist)) {
     http_response_code(403);
-    echo '<!DOCTYPE html><html lang="de"><head><meta charset="utf-8">'
+    // C13: gebremst, mit Absender und Grund, nie mit dem Token.
+    db_abweisung('Anzeigeseite', $soll === '' ? 'KEIN_TOKEN' : 'TOKEN');
+    echo '<!DOCTYPE html><html lang="' . db_e($db_lang) . '"><head><meta charset="utf-8">'
        . '<meta name="viewport" content="width=device-width,initial-scale=1">'
-       . '<title>Kein Zugang</title></head><body style="font-family:system-ui;padding:2em">'
-       . '<h1>Kein Zugang</h1><p>Das Token in der Adresse stimmt nicht. Die richtige '
-       . 'Adresse steht im Plugin unter <i>Dashboards</i>.</p></body></html>';
+       . '<title>' . db_e(db_t('TAFEL.KEIN_ZUGANG')) . '</title></head>'
+       . '<body style="font-family:system-ui;padding:2em">'
+       . '<h1>' . db_e(db_t('TAFEL.KEIN_ZUGANG')) . '</h1><p>' . db_t('TAFEL.KEIN_ZUGANG_TEXT')
+       . '</p></body></html>';
     exit;
 }
 
 $seiten = db_seiten();
-$wunsch = isset($_GET['seite']) ? (string) $_GET['seite'] : '';
+$wunsch = db_get('seite');
+if (!is_string($wunsch)) { $wunsch = ''; }
 if ($wunsch !== '' && !preg_match('/^[a-z0-9-]{1,60}$/', $wunsch)) { $wunsch = ''; }
 if ($wunsch === '' && $seiten) { $wunsch = (string) $seiten[0]['schluessel']; }
 $daten = $wunsch !== '' ? db_seite_daten($wunsch) : null;
@@ -83,6 +99,28 @@ $konf = array(
                       ? max(DB_ECO_NACH_MIN, min(DB_ECO_NACH_MAX, (int) $cfg['eco_nach'])) : 0,
     'eco_hell'     => max(DB_ECO_HELL_MIN, min(DB_ECO_HELL_MAX, (int) $cfg['eco_hell'])),
 );
+/* O13 (Durchgang 29.09.2026): jeder Text der Anzeigeseite kommt aus den
+ * Sprachdateien (Abschnitt TAFEL). Bis 0.9.25 rief die Tafel db_t() genau
+ * einmal auf; eine englische Anlage bekam "Abbrechen", "Weiter", "Ein",
+ * "Szene" und eine deutsche 403-Seite (gemessen, Befund 13 des
+ * Oberflaechen-Pruefers). */
+$db_tafeltexte = array();
+foreach (array('ABBRECHEN', 'WEITER', 'PIN_TITEL', 'ANTWORT_UNLESBAR', 'OHNE_BESTAETIGUNG',
+               'BEFEHL_FEHL', 'NICHT_ERREICHBAR', 'EIN', 'AUS', 'AKTIV', 'BEREIT', 'AUSLOESEN',
+               'SZENE_NR', 'PROZENT_ZU', 'PROZENT_OFFEN', 'BESCHATTEN', 'AUTOMATIK', 'SOLL',
+               'FENSTER_OFFEN', 'FAEHRT_AUF', 'FAEHRT_ZU', 'OFFEN', 'GESCHLOSSEN', 'AUF', 'STOPP',
+               'ZU', 'DAUERND_AN', 'AUS_KLEIN', 'START', 'DAUER', 'NR', 'JA', 'NEIN', 'GESPERRT',
+               'SUMME', 'HEUTE', 'WOCHE', 'ALARM', 'SCHARF', 'UNSCHARF', 'NOCH', 'QUITTIEREN',
+               'UNSCHARF_SCHALTEN', 'SCHARF_SCHALTEN', 'TEST_LAEUFT', 'RUHIG', 'URSACHE', 'SIRENE',
+               'NUR_QUITTIEREN', 'FARBE', 'SAETTIGUNG', 'HELL', 'WEISS', 'SCHRITTE',
+               'KEINE_WETTERDATEN', 'LAGE', 'GEFUEHLT', 'RF', 'WIND', 'WIND_AUS', 'WINDROSE',
+               'AKTIV_KLEIN', 'KEINE_EINTRAEGE', 'HANDBETRIEB', 'KEINE_WERTE', 'FEHLT',
+               'NICHT_DARSTELLBAR', 'MARKE_GESICHERT', 'MARKE_NURLESEN', 'SCHUB_FEHL', 'ERSATZWEG',
+               'LB_ANTWORTET_NICHT', 'BAND_LB', 'KEINE_MS', 'BAND_MS', 'WERTE_ALT', 'WERTE_ZU_ALT',
+               'BAND_ALT', 'KEINE_WERTE_DA', 'BAND_KEINE', 'VERBUNDEN', 'UEBER_HTTP') as $db_k) {
+    $db_tafeltexte[strtolower($db_k)] = db_t('TAFEL.' . $db_k);
+}
+
 $seitenliste = array();
 foreach ($seiten as $s) {
     if (!is_array($s)) { continue; }
@@ -91,7 +129,7 @@ foreach ($seiten as $s) {
 }
 ?>
 <!DOCTYPE html>
-<html lang="de">
+<html lang="<?= db_e($db_lang) ?>">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
@@ -99,7 +137,7 @@ foreach ($seiten as $s) {
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="<?= $dunkel ? '#14171c' : '#f2f4f7' ?>">
-<title><?= db_e($daten ? $daten['name'] : 'Dashboard') ?></title>
+<title><?= db_e($daten ? $daten['name'] : db_t('TAFEL.DOKUMENT_TITEL')) ?></title>
 <style>
 :root{
   --bg:<?= $dunkel ? '#14171c' : '#eef1f5' ?>;
@@ -274,9 +312,8 @@ input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px
 
 <?php if ($daten === null) { ?>
 <div class="leer">
-  <h1>Noch kein Dashboard</h1>
-  <p>Im Plugin unter <b>Dashboards</b> einen Entwurf erzeugen lassen &mdash;<br>
-     danach steht hier etwas.</p>
+  <h1><?= db_e(db_t('TAFEL.LEER_TITEL')) ?></h1>
+  <p><?= db_t('TAFEL.LEER_TEXT') ?></p>
 </div>
 <?php } else { ?>
 
@@ -334,16 +371,20 @@ input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px
  * Sie tat es beim ersten Anlauf - und beendete den Skriptblock genau so, wie
  * der Kommentar es beschreibt. Ein Beispiel, das den beschriebenen Fehler
  * selbst begeht, ist kein Beispiel. */
-var BASIS = <?= json_encode($basis, JSON_UNESCAPED_UNICODE) ?>;
-var SEITE = <?= json_encode($wunsch, JSON_UNESCAPED_UNICODE) ?>;
-var DATEN = <?= json_encode($daten, JSON_UNESCAPED_UNICODE) ?>;
-var KONF  = <?= json_encode($konf, JSON_UNESCAPED_UNICODE) ?>;
-var LISTE = <?= json_encode($seitenliste, JSON_UNESCAPED_UNICODE) ?>;
+var BASIS = <?= json_encode($basis, $db_jf) ?>;
+var SEITE = <?= json_encode($wunsch, $db_jf) ?>;
+var DATEN = <?= json_encode($daten, $db_jf) ?>;
+var KONF  = <?= json_encode($konf, $db_jf) ?>;
+var LISTE = <?= json_encode($seitenliste, $db_jf) ?>;
 var TAKT  = KONF.takt * 1000;
 var WETTER = (DATEN && DATEN.wetter) || null;
-/* Der einzige Text, den das Ruhebild selbst schreibt - deshalb aus der
-   Sprachdatei und nicht fest im Quelltext. */
-var RUHE_HINWEIS = <?= json_encode(db_t('ALLG.RUHE_BERUEHREN'), JSON_UNESCAPED_UNICODE) ?>;
+/* Der Text des Ruhebilds - aus der Sprachdatei. */
+var RUHE_HINWEIS = <?= json_encode(db_t('ALLG.RUHE_BERUEHREN'), $db_jf) ?>;
+/* O13: alle Texte der Tafel aus der Sprachdatei (Abschnitt TAFEL). */
+var T = <?= json_encode($db_tafeltexte, $db_jf) ?>;
+/* Platzhalter %s und %d der Reihe nach ersetzen. */
+function tx(s){ var a = arguments, i = 1;
+  return String(s).replace(/%[sd]/g, function(){ return i < a.length ? String(a[i++]) : ""; }); }
 var PIN   = "";
 
 /* ---------- Kleinteile ---------- */
@@ -374,11 +415,11 @@ function pin_fragen(){
   return new Promise(function(fertig){
     var d = document.createElement("div");
     d.className = "pin";
-    d.innerHTML = '<div><p style="margin:0 0 14px">'+e(DATEN.name)+' &ndash; PIN</p>'+
+    d.innerHTML = '<div><p style="margin:0 0 14px">'+e(tx(T.pin_titel, DATEN.name))+'</p>'+
       '<input type="password" inputmode="numeric" pattern="[0-9]*" maxlength="10" autofocus>'+
       '<div style="display:flex;gap:9px;margin-top:16px">'+
-      '<button style="flex:1" data-ab="1">Abbrechen</button>'+
-      '<button style="flex:1" class="stark" data-ok="1">Weiter</button></div></div>';
+      '<button style="flex:1" data-ab="1">'+e(T.abbrechen)+'</button>'+
+      '<button style="flex:1" class="stark" data-ok="1">'+e(T.weiter)+'</button></div></div>';
     document.body.appendChild(d);
     var feld = d.querySelector("input");
     feld.focus();
@@ -404,19 +445,20 @@ function absenden(pfad){
   var u = BASIS + pfad + "&seite=" + encodeURIComponent(SEITE)
         + (PIN ? "&pin=" + encodeURIComponent(PIN) : "");
   return fetch(u,{cache:"no-store"}).then(function(a){ return a.json().catch(function(){
-      return {ok:0,meldung:"Der LoxBerry hat keine lesbare Antwort geschickt."}; }); })
+      return {ok:0,meldung:T.antwort_unlesbar}; }); })
     .then(function(d){
       if(d.ok===1){ setTimeout(werte_holen, 250); }
-      else if(d.ok===2){ blase(d.meldung||"Abgeschickt, aber ohne Bestaetigung."); }
+      else if(d.ok===2){ blase(d.meldung||T.ohne_bestaetigung); }
       else {
         /* Falsche PIN: den gemerkten Wert verwerfen, sonst fragt die Seite
-           nie wieder nach und jeder weitere Druck geht ins Leere. */
-        if(d.grund === "PIN"){ PIN = ""; }
-        blase(d.meldung||"Der Befehl ging nicht durch.", true);
+           nie wieder nach und jeder weitere Druck geht ins Leere. Ebenso bei
+           einer gesperrten PIN (C6). */
+        if(d.grund === "PIN" || d.grund === "PIN_GESPERRT"){ PIN = ""; }
+        blase(d.meldung||T.befehl_fehl, true);
       }
       return d;
     })
-    .catch(function(){ blase("Der LoxBerry ist nicht erreichbar.", true); });
+    .catch(function(){ blase(T.nicht_erreichbar, true); });
 }
 
 /* &seite= ist Pflicht. Die PIN haengt an der SEITE, nicht am Baustein:
@@ -455,15 +497,15 @@ var BAUER = {};
 BAUER.schalter = function(k, w){
   var ein = an(w.active);
   return {klasse: ein?"an":"", inhalt:
-    '<div class="w">'+(ein?"Ein":"Aus")+'</div>'+
-    '<div class="knoepfe"><button data-b="on" class="'+(ein?"stark":"")+'">Ein</button>'+
-    '<button data-b="off" class="'+(ein?"":"stark")+'">Aus</button></div>'};
+    '<div class="w">'+e(ein?T.ein:T.aus)+'</div>'+
+    '<div class="knoepfe"><button data-b="on" class="'+(ein?"stark":"")+'">'+e(T.ein)+'</button>'+
+    '<button data-b="off" class="'+(ein?"":"stark")+'">'+e(T.aus)+'</button></div>'};
 };
 
 BAUER.taster = function(k, w){
   return {klasse: an(w.active)?"an":"", inhalt:
-    '<div class="w">'+(an(w.active)?"Aktiv":"Bereit")+'</div>'+
-    '<div class="knoepfe"><button data-b="pulse" class="stark">Ausloesen</button></div>'};
+    '<div class="w">'+e(an(w.active)?T.aktiv:T.bereit)+'</div>'+
+    '<div class="knoepfe"><button data-b="pulse" class="stark">'+e(T.ausloesen)+'</button></div>'};
 };
 
 BAUER.dimmer = function(k, w){
@@ -475,7 +517,7 @@ BAUER.dimmer = function(k, w){
   return {klasse: p>lo?"an":"", inhalt:
     '<div class="w">'+p+'<small>%</small></div>'+ kurve(k.verlauf) +
     '<input type="range" min="'+lo+'" max="'+hi+'" step="'+(st>0?st:1)+'" value="'+p+'" data-w="1">'+
-    '<div class="knoepfe"><button data-b="on">Ein</button><button data-b="off">Aus</button></div>'};
+    '<div class="knoepfe"><button data-b="on">'+e(T.ein)+'</button><button data-b="off">'+e(T.aus)+'</button></div>'};
 };
 
 BAUER.schieber = function(k, w){
@@ -484,7 +526,7 @@ BAUER.schieber = function(k, w){
   var v = w.value==null?lo:parseFloat(w.value);
   if (isNaN(v)) { v = lo; }
   return {klasse:"", inhalt:
-    '<div class="w">'+zahl(v)+'<small>'+e(k.einheit_kurz||"")+'</small></div>'+ kurve(k.verlauf) +
+    '<div class="w">'+e(zahl(v))+'<small>'+e(k.einheit_kurz||"")+'</small></div>'+ kurve(k.verlauf) +
     '<input type="range" min="'+lo+'" max="'+hi+'" step="'+(st>0?st:1)+'" value="'+
       Math.max(lo,Math.min(hi,v))+'" data-w="1">'};
 };
@@ -502,10 +544,10 @@ BAUER.licht = function(k, w){
     kn += '<button data-b="changeTo/'+e(m.id)+'" class="'+(ist?"stark":"")+'">'+e(m.name||m.id)+'</button>';
     gezeigt++;
   }
-  if(!gezeigt){ kn += '<button data-b="on" class="stark">Ein</button>'; }
-  kn += '<button data-b="changeTo/0" class="leise">Aus</button></div>';
+  if(!gezeigt){ kn += '<button data-b="on" class="stark">'+e(T.ein)+'</button>'; }
+  kn += '<button data-b="changeTo/0" class="leise">'+e(T.aus)+'</button></div>';
   var text = aktiv.length ? (moods.filter(function(m){return aktiv.indexOf(m.id)>=0;})
-                                  .map(function(m){return m.name;}).join(", ") || "Ein") : "Aus";
+                                  .map(function(m){return m.name;}).join(", ") || T.ein) : T.aus;
   return {klasse: (aktiv.length && !(aktiv.length===1 && (aktiv[0]===0||aktiv[0]==="0")))?"an":"",
           inhalt:'<div class="w" style="font-size:1.05rem">'+e(text)+'</div>'+kn};
 };
@@ -551,15 +593,15 @@ BAUER.lichtszene = function(k, w){
     gezeigt++;
   }
   if(!gezeigt){
-    kn += '<button data-b="on" class="stark">Ein</button>'+
-          '<button data-b="off">Aus</button>';
+    kn += '<button data-b="on" class="stark">'+e(T.ein)+'</button>'+
+          '<button data-b="off">'+e(T.aus)+'</button>';
   }
   kn += '<button data-b="plus" class="leise">+</button>'+
         '<button data-b="minus" class="leise">&minus;</button></div>';
   var text = szenen.length
       ? (szenen.filter(function(s){return String(s.nr)===String(jetzt);})
-               .map(function(s){return s.name;})[0] || ("Szene "+(jetzt==null?"–":jetzt)))
-      : (jetzt==null ? "–" : "Szene "+jetzt);
+               .map(function(s){return s.name;})[0] || tx(T.szene_nr, (jetzt==null?"–":jetzt)))
+      : (jetzt==null ? "–" : tx(T.szene_nr, jetzt));
   return {klasse: (jetzt!=null && String(jetzt)!=="0")?"an":"",
           inhalt:'<div class="w" style="font-size:1.05rem">'+e(text)+'</div>'+kn};
 };
@@ -569,7 +611,7 @@ BAUER.jalousie = function(k, w){
   var p = w.position==null?0:Math.round(parseFloat(w.position)*100);
   var auto = an(w.autoActive);
   return {klasse:"", inhalt:
-    '<div class="w">'+p+'<small>% zu</small></div>'+
+    '<div class="w">'+p+'<small>'+e(T.prozent_zu)+'</small></div>'+
     '<div class="rollo"><div class="schacht"><i style="height:'+p+'%"></i></div></div>'+
     /* Der Schieberegler fehlte bis 0.9.5, obwohl manualPosition/$wert in der
        Befehlsliste stand und der Regler-Handler ihn behandelte - der Zweig
@@ -578,8 +620,8 @@ BAUER.jalousie = function(k, w){
     '<div class="knoepfe"><button data-b="FullUp">&uarr;</button>'+
     '<button data-b="stop">&#9632;</button>'+
     '<button data-b="FullDown">&darr;</button>'+
-    '<button data-b="shade" class="leise">Beschatten</button>'+
-    '<button data-b="'+(auto?"NoAuto":"auto")+'" class="'+(auto?"stark":"leise")+'">Automatik</button></div>'+
+    '<button data-b="shade" class="leise">'+e(T.beschatten)+'</button>'+
+    '<button data-b="'+(auto?"NoAuto":"auto")+'" class="'+(auto?"stark":"leise")+'">'+e(T.automatik)+'</button></div>'+
     (w.infoText?'<div class="u">'+e(w.infoText)+'</div>':'')};
 };
 
@@ -587,8 +629,8 @@ BAUER.raumregler = function(k, w){
   var ist = w.tempActual, soll = w.tempTarget;
   var offen = an(w.openWindow);
   return {klasse:"", inhalt:
-    '<div class="w">'+zahl(ist)+'<small>&deg;C</small></div>'+ kurve(k.verlauf) +
-    '<div class="u">Soll '+zahl(soll)+'&nbsp;&deg;C'+(offen?' &middot; Fenster offen':'')+'</div>'+
+    '<div class="w">'+e(zahl(ist))+'<small>&deg;C</small></div>'+ kurve(k.verlauf) +
+    '<div class="u">'+e(T.soll)+' '+e(zahl(soll))+'&nbsp;&deg;C'+(offen?' &middot; '+e(T.fenster_offen):'')+'</div>'+
     '<div class="knoepfe">'+
       '<button data-b="setComfortTemperature/'+(Math.round((parseFloat(soll)||20)*2-1)/2)+'">&minus;</button>'+
       '<button data-b="setComfortTemperature/'+(Math.round((parseFloat(soll)||20)*2+1)/2)+'">+</button>'+
@@ -599,21 +641,21 @@ BAUER.tor = function(k, w){
   /* position: 1 = offen, 0 = zu; active: -1 zu, 0 steht, 1 auf  [Structure File, Gate] */
   var p = w.position==null?0:Math.round(parseFloat(w.position)*100);
   var b = parseFloat(w.active)||0;
-  var text = b>0?"faehrt auf":(b<0?"faehrt zu":(p>95?"offen":(p<5?"geschlossen":p+"% offen")));
+  var text = b>0?T.faehrt_auf:(b<0?T.faehrt_zu:(p>95?T.offen:(p<5?T.geschlossen:p+T.prozent_offen)));
   return {klasse: p>5?"an":"", inhalt:
     '<div class="w" style="font-size:1.2rem">'+e(text)+'</div>'+
     '<div class="balken"><i style="width:'+p+'%"></i></div>'+
-    '<div class="knoepfe"><button data-b="open">Auf</button>'+
-    '<button data-b="stop">Stopp</button><button data-b="close">Zu</button></div>'};
+    '<div class="knoepfe"><button data-b="open">'+e(T.auf)+'</button>'+
+    '<button data-b="stop">'+e(T.stopp)+'</button><button data-b="close">'+e(T.zu)+'</button></div>'};
 };
 
 BAUER.treppenlicht = function(k, w){
   var rest = parseFloat(w.deactivationDelay);
-  var text = rest===-1?"dauernd an":(rest>0?Math.round(rest)+" s":"aus");
+  var text = rest===-1?T.dauernd_an:(rest>0?Math.round(rest)+" s":T.aus_klein);
   return {klasse: (rest!==0)?"an":"", inhalt:
     '<div class="w" style="font-size:1.3rem">'+e(text)+'</div>'+
-    '<div class="knoepfe"><button data-b="pulse" class="stark">Start</button>'+
-    '<button data-b="on">Dauer</button><button data-b="off">Aus</button></div>'};
+    '<div class="knoepfe"><button data-b="pulse" class="stark">'+e(T.start)+'</button>'+
+    '<button data-b="on">'+e(T.dauer)+'</button><button data-b="off">'+e(T.aus)+'</button></div>'};
 };
 
 /* Auswahl (Radio buttons). Die Namen der Ausgaenge stehen in den Details des
@@ -642,14 +684,17 @@ BAUER.auswahl = function(k, w){
     kn += '<button data-b="prev" class="leise">&larr;</button>'+
           '<button data-b="next" class="leise">&rarr;</button>';
   }
-  kn += '<button data-b="reset" class="leise">'+e(k.allesaus || "Aus")+'</button></div>';
-  var text = a>0 ? (ausg[String(a)] || ("Nr. "+a)) : (k.allesaus || "Aus");
+  kn += '<button data-b="reset" class="leise">'+e(k.allesaus || T.aus)+'</button></div>';
+  var text = a>0 ? (ausg[String(a)] || tx(T.nr, a)) : (k.allesaus || T.aus);
   return {klasse: a>0?"an":"", inhalt:
     '<div class="w" style="font-size:1.15rem">'+e(text)+'</div>'+kn};
 };
 
 BAUER.wert = function(k, w){
-  return {klasse:"", inhalt:'<div class="w">'+zahl(w.value)+
+  /* C9 (Durchgang 29.09.2026): zahl() gibt einen Wert, der keine Zahl ist,
+     unveraendert zurueck - er ging bis 0.9.25 roh in innerHTML (gemessen:
+     ein onerror lief). Jetzt ueberall e(zahl(...)), wie die Wetterzeile. */
+  return {klasse:"", inhalt:'<div class="w">'+e(zahl(w.value))+
     '<small>'+e(k.einheit_kurz||"")+'</small></div>'+ kurve(k.verlauf)};
 };
 
@@ -659,8 +704,8 @@ BAUER.zustand = function(k, w){
      Kachel, sonst haelt man ihn fuer defekt ([S] PresenceDetector, States
      locked und infoText). */
   var gesperrt = an(w.locked);
-  return {klasse: ein?"an":"", inhalt:'<div class="w">'+(ein?"Ja":"Nein")+'</div>'+
-    (gesperrt ? '<div class="u">gesperrt'+(w.infoText?' · '+e(w.infoText):'')+'</div>' : '')};
+  return {klasse: ein?"an":"", inhalt:'<div class="w">'+e(ein?T.ja:T.nein)+'</div>'+
+    (gesperrt ? '<div class="u">'+e(T.gesperrt)+(w.infoText?' · '+e(w.infoText):'')+'</div>' : '')};
 };
 
 BAUER.text = function(k, w){
@@ -673,10 +718,10 @@ BAUER.text = function(k, w){
    da, statt eine Null vorzutaeuschen. */
 BAUER.zaehler = function(k, w){
   var unten = [];
-  if (w.total != null && w.actual != null) { unten.push("Summe "+zahl(w.total)); }
-  if (w.totalDay != null) { unten.push("heute "+zahl(w.totalDay)); }
-  if (w.totalWeek != null) { unten.push("Woche "+zahl(w.totalWeek)); }
-  return {klasse:"", inhalt:'<div class="w">'+zahl(w.actual!=null?w.actual:w.total)+
+  if (w.total != null && w.actual != null) { unten.push(T.summe+" "+zahl(w.total)); }
+  if (w.totalDay != null) { unten.push(T.heute+" "+zahl(w.totalDay)); }
+  if (w.totalWeek != null) { unten.push(T.woche+" "+zahl(w.totalWeek)); }
+  return {klasse:"", inhalt:'<div class="w">'+e(zahl(w.actual!=null?w.actual:w.total))+
     '<small>'+e(k.einheit_kurz||"")+'</small></div>'+ kurve(k.verlauf) +
     (unten.length ? '<div class="u">'+e(unten.join(" · "))+'</div>' : '')};
 };
@@ -695,12 +740,12 @@ BAUER.alarm = function(k, w){
      ihre Hervorhebung also nie. */
   return {klasse: stufe>0?"alarm":(scharf?"an":""), inhalt:
     '<div class="w" style="font-size:1.2rem;'+(stufe>0?"color:var(--fehl)":"")+'">'+
-      (stufe>0?"ALARM":(scharf?"scharf":"unscharf"))+'</div>'+
-    (rest>0 ? '<div class="u">noch '+Math.round(rest)+'&nbsp;s</div>' : '')+
+      e(stufe>0?T.alarm:(scharf?T.scharf:T.unscharf))+'</div>'+
+    (rest>0 ? '<div class="u">'+e(tx(T.noch, Math.round(rest)))+'</div>' : '')+
     '<div class="knoepfe">'+
-      (stufe>0?'<button data-b="quit" class="warn">Quittieren</button>':
-        (scharf?'<button data-b="off" class="warn">Unscharf</button>':
-                '<button data-b="on" class="warn">Scharf schalten</button>'))+
+      (stufe>0?'<button data-b="quit" class="warn">'+e(T.quittieren)+'</button>':
+        (scharf?'<button data-b="off" class="warn">'+e(T.unscharf_schalten)+'</button>':
+                '<button data-b="on" class="warn">'+e(T.scharf_schalten)+'</button>'))+
     '</div>'};
 };
 
@@ -714,17 +759,17 @@ BAUER.brandmelder = function(k, w){
   var stufe = parseFloat(w.level)||0;
   var ursache = w.alarmCause;
   var akustisch = an(w.acousticAlarm), test = an(w.testAlarm);
-  var text = stufe>0 ? "ALARM" : (test ? "Test laeuft" : "ruhig");
+  var text = stufe>0 ? T.alarm : (test ? T.test_laeuft : T.ruhig);
   var unten = [];
-  if (stufe>0 && ursache!=null && ursache!=="") { unten.push("Ursache "+ursache); }
-  if (akustisch) { unten.push("Sirene an"); }
+  if (stufe>0 && ursache!=null && ursache!=="") { unten.push(tx(T.ursache, ursache)); }
+  if (akustisch) { unten.push(T.sirene); }
   return {klasse: stufe>0?"alarm":"", inhalt:
     '<div class="w" style="font-size:1.2rem;'+(stufe>0?"color:var(--fehl)":"")+'">'+e(text)+'</div>'+
     (unten.length?'<div class="u">'+e(unten.join(" · "))+'</div>':'')+
     '<div class="knoepfe">'+
       (stufe>0||akustisch
-        ? '<button data-b="quit" class="warn">Quittieren</button>'
-        : '<button disabled title="Ein Brandmelder kennt nur Quittieren.">Quittieren</button>')+
+        ? '<button data-b="quit" class="warn">'+e(T.quittieren)+'</button>'
+        : '<button disabled title="'+e(T.nur_quittieren)+'">'+e(T.quittieren)+'</button>')+
     '</div>'};
 };
 
@@ -770,16 +815,16 @@ BAUER.farbe = function(k, w){
 
   var regler = '';
   if (kannFarbe) {
-    regler += '<span>Farbe</span><input type="range" min="0" max="360" step="1" value="'+h+'" data-farbe="h">'+
-              '<span>Saett.</span><input type="range" min="0" max="100" step="1" value="'+s+'" data-farbe="s">';
+    regler += '<span>'+e(T.farbe)+'</span><input type="range" min="0" max="360" step="1" value="'+h+'" data-farbe="h">'+
+              '<span>'+e(T.saettigung)+'</span><input type="range" min="0" max="100" step="1" value="'+s+'" data-farbe="s">';
   }
-  regler += '<span>Hell</span><input type="range" min="0" max="100" step="1" value="'+v+'" data-farbe="v">'+
-            '<span>Weiss</span><input type="range" min="'+twmin+'" max="'+twmax+'" step="50" value="'+kelvin+'" data-weiss="1">';
+  regler += '<span>'+e(T.hell)+'</span><input type="range" min="0" max="100" step="1" value="'+v+'" data-farbe="v">'+
+            '<span>'+e(T.weiss)+'</span><input type="range" min="'+twmin+'" max="'+twmax+'" step="50" value="'+kelvin+'" data-weiss="1">';
 
   var kn = '<div class="knoepfe">';
-  if (bef.indexOf("off") >= 0) { kn += '<button data-b="off">Aus</button>'; }
-  else { kn += '<button data-dunkel="1">Aus</button>'; }
-  if (bef.indexOf("on") >= 0) { kn += '<button data-b="on">Ein</button>'; }
+  if (bef.indexOf("off") >= 0) { kn += '<button data-b="off">'+e(T.aus)+'</button>'; }
+  else { kn += '<button data-dunkel="1">'+e(T.aus)+'</button>'; }
+  if (bef.indexOf("on") >= 0) { kn += '<button data-b="on">'+e(T.ein)+'</button>'; }
   kn += '</div>';
 
   return {klasse: v>0?"an":"", inhalt:
@@ -793,10 +838,10 @@ BAUER.farbe = function(k, w){
    Nummer der Kachel auf dieser Seite und prueft JEDEN Schritt einzeln. */
 BAUER.szene = function(k, w){
   return {klasse:"", inhalt:
-    '<div class="w" style="font-size:1.05rem">'+(k.schritte||0)+' Schritte</div>'+
+    '<div class="w" style="font-size:1.05rem">'+e(tx(T.schritte, (k.schritte||0)))+'</div>'+
     ((k.beschreibung&&k.beschreibung.length)
       ? '<div class="u">'+e(k.beschreibung.slice(0,2).join(" · "))+'</div>' : '')+
-    '<div class="knoepfe"><button data-szene="1" class="stark">Ausloesen</button></div>'};
+    '<div class="knoepfe"><button data-szene="1" class="stark">'+e(T.ausloesen)+'</button></div>'};
 };
 
 /* Wetter. Die Werte kommen als eigene Ereignistabelle (Kennung 7), nicht als
@@ -810,16 +855,17 @@ BAUER.wetter = function(k, w){
   if (!jetzt && vor.length) { jetzt = vor[0]; }
   if (!jetzt) {
     return {klasse:"", inhalt:'<div class="u" style="margin-top:auto">'+
-      'Noch keine Wetterdaten empfangen.</div>'};
+      e(T.keine_wetterdaten)+'</div>'};
   }
   function lage(nr){
     var t = k.wettertexte || {};
     if (t[nr] != null) { return String(t[nr]); }
     if (t[String(nr)] != null) { return String(t[String(nr)]); }
-    return "Lage " + nr;
+    return tx(T.lage, nr);
   }
   function windrose(grad){
-    var r = ["N","NO","O","SO","S","SW","W","NW"];
+    var r = String(T.windrose).split(",");
+    if (r.length !== 8) { r = ["N","NO","O","SO","S","SW","W","NW"]; }
     return r[Math.round(((parseFloat(grad)||0) % 360) / 45) % 8];
   }
   /* Die Vorhersage als Reihe kleiner Saeulen: Temperatur als Hoehe,
@@ -840,13 +886,13 @@ BAUER.wetter = function(k, w){
       }).join("") + '</div>';
   }
   return {klasse:"", inhalt:
-    '<div class="w">'+zahl(jetzt.temperatur)+'<small>&deg;C</small></div>'+
+    '<div class="w">'+e(zahl(jetzt.temperatur))+'<small>&deg;C</small></div>'+
     '<div class="u">'+e(lage(jetzt.art))+
-      ' &middot; gefuehlt '+zahl(jetzt.gefuehlt)+'&nbsp;&deg;C'+
-      ' &middot; '+zahl(jetzt.feuchte,0)+'&nbsp;% rF</div>'+
-    '<div class="u">Wind '+zahl(jetzt.wind)+'&nbsp;km/h aus '+e(windrose(jetzt.windrichtung))+
-      ' &middot; '+zahl(jetzt.niederschlag)+'&nbsp;mm'+
-      ' &middot; '+zahl(jetzt.druck,0)+'&nbsp;hPa</div>'+ reihe};
+      ' &middot; '+e(tx(T.gefuehlt, zahl(jetzt.gefuehlt)))+'&nbsp;&deg;C'+
+      ' &middot; '+e(tx(T.rf, zahl(jetzt.feuchte,0)))+'</div>'+
+    '<div class="u">'+e(tx(T.wind, zahl(jetzt.wind)))+' '+e(tx(T.wind_aus, windrose(jetzt.windrichtung)))+
+      ' &middot; '+e(zahl(jetzt.niederschlag))+'&nbsp;mm'+
+      ' &middot; '+e(zahl(jetzt.druck,0))+'&nbsp;hPa</div>'+ reihe};
 };
 
 /* Zeitschaltuhr. Die Eintraege kommen als Tageszeit-Ereignistabelle
@@ -872,7 +918,7 @@ BAUER.tageszeit = function(k, w){
   var wert = w.value;
   return {klasse: aktiv?"an":"", inhalt:
     '<div class="w" style="font-size:1.2rem">'+
-      (wert==null ? (aktiv?"aktiv":"aus") : zahl(wert))+'</div>'+
+      e(wert==null ? (aktiv?T.aktiv_klein:T.aus_klein) : zahl(wert))+'</div>'+
     '<div style="position:relative;height:12px;border-radius:4px;background:var(--kachel2);'+
       'overflow:hidden;margin-top:6px">'+balken+
       '<i style="position:absolute;left:'+(100*jetzt/1440).toFixed(2)+
@@ -880,8 +926,8 @@ BAUER.tageszeit = function(k, w){
     '<div class="u">'+(eintraege.length
         ? e(eintraege.slice(0,2).map(function(x){ return uhr(x.von)+"–"+uhr(x.bis); }).join(", ")
             + (eintraege.length>2 ? " …" : ""))
-        : "keine Eintraege")+'</div>'+
-    (w.override ? '<div class="u">Handbetrieb noch '+zahl(w.override,0)+'&nbsp;s</div>' : '')};
+        : e(T.keine_eintraege))+'</div>'+
+    (w.override ? '<div class="u">'+e(tx(T.handbetrieb, zahl(w.override,0)))+'</div>' : '')};
 };
 
 BAUER.generisch = function(k, w){
@@ -889,14 +935,13 @@ BAUER.generisch = function(k, w){
   for (var n in w) { if(Object.prototype.hasOwnProperty.call(w,n)) {
     zeilen.push('<div class="u">'+e(n)+': <b>'+e(typeof w[n]==="number"?zahl(w[n]):w[n])+'</b></div>');
   } }
-  if (!zeilen.length) zeilen.push('<div class="u">keine Werte</div>');
+  if (!zeilen.length) zeilen.push('<div class="u">'+e(T.keine_werte)+'</div>');
   return {klasse:"", inhalt:'<div style="margin-top:auto">'+zeilen.slice(0,4).join("")+'</div>'};
 };
 
 BAUER.fehlt = function(k, w){
   return {klasse:"fehlt", inhalt:
-    '<div class="u" style="margin-top:auto">Dieser Baustein steht nicht mehr in der '+
-    'Loxone-Konfiguration.</div>'};
+    '<div class="u" style="margin-top:auto">'+e(T.fehlt)+'</div>'};
 };
 
 /* ---------- Zeichnen ---------- */
@@ -938,8 +983,7 @@ function zeichnen(){
     var f = BAUER[k.kachel] || BAUER.generisch;
     var r;
     try { r = f(k, k.werte||{}); }
-    catch(x){ r = {klasse:"", inhalt:'<div class="u">Diese Kachel liess sich nicht '+
-                   'darstellen.</div>'}; }
+    catch(x){ r = {klasse:"", inhalt:'<div class="u">'+e(T.nicht_darstellbar)+'</div>'}; }
     var g = (k.groesse||"1x1").split("x");
     var d = document.createElement("div");
     d.className = "k "+(r.klasse||"");
@@ -951,10 +995,8 @@ function zeichnen(){
        die Anzeige wertete keines aus: ein gesicherter Baustein bekam volle
        Knoepfe, die dann am Miniserver scheiterten. */
     var marke = "";
-    if (k.gesichert) { marke = '<span class="marke" title="In Loxone Config gesichert - '+
-      'verlangt das Visualisierungs-Passwort">&#128274;</span>'; }
-    else if (k.nurlesen) { marke = '<span class="marke" title="In Loxone auf nur lesen '+
-      'gesetzt">&#128065;</span>'; }
+    if (k.gesichert) { marke = '<span class="marke" title="'+e(T.marke_gesichert)+'">&#128274;</span>'; }
+    else if (k.nurlesen) { marke = '<span class="marke" title="'+e(T.marke_nurlesen)+'">&#128065;</span>'; }
     d.innerHTML = '<div class="t">'+e(k.titel)+'</div>'+ marke + r.inhalt;
     /* Das Schloss bleibt stehen, auch wenn geschaltet werden darf - man soll
        sehen, dass der Baustein gesichert ist. Gesperrt wird nur, was wirklich
@@ -1131,7 +1173,7 @@ function strom_starten(){
       ersatzweg = true;
       try { strom.close(); } catch(x){}
       strom = null;
-      blase("Der Werte-Schub kam nicht durch. Es wird wieder im Takt abgefragt.", true);
+      blase(T.schub_fehl, true);
       abfrage_starten();
     }
   };
@@ -1146,32 +1188,50 @@ function stoerung(an, text){
 function stand_zeigen(d){
   var p = document.getElementById("punkt");
   var t = document.getElementById("stand");
-  var weg = ersatzweg ? " – Ersatzweg: Abfrage im Takt" : "";
+  var weg = ersatzweg ? " – "+T.ersatzweg : "";
   if(!d){
     p.className = "punkt tot";
-    t.textContent = "Der LoxBerry antwortet nicht ("+fehlversuche+" Versuche)."+weg;
+    t.textContent = tx(T.lb_antwortet_nicht, fehlversuche)+weg;
     /* Erst nach dem ZWEITEN Fehlversuch abdunkeln. Ein einzelner Aussetzer
        - ein WLAN-Paket, das verloren geht - ist Alltag; das Tablet soll
        deswegen nicht bei jedem Takt aufblinken. */
-    stoerung(fehlversuche >= 2,
-             "Keine Verbindung zum LoxBerry – die Werte sind nicht aktuell.");
+    stoerung(fehlversuche >= 2, T.band_lb);
+    return;
+  }
+  /* O11 (Durchgang 29.09.2026): ueber der Frist aus Entscheidung 4 dunkelt
+     die Tafel ab und zeigt das Stoerband. Bis 0.9.25 stand dann nur die
+     kleine Zeile "Die Werte sind 7205 Sekunden alt", und die Kachel "Ein"
+     leuchtete in voller Farbe (gemessen, Befund 11 des Oberflaechen-
+     Pruefers). Ohne Abbild (Alter -1) ebenso. */
+  var frist = (d.frist > 0) ? d.frist : 90;
+  if(d.alter == null || d.alter < 0){
+    p.className = "punkt tot";
+    t.textContent = T.keine_werte_da+weg;
+    stoerung(true, T.band_keine);
+    return;
+  }
+  if(d.alter > frist){
+    p.className = "punkt tot";
+    t.textContent = tx(T.werte_zu_alt, d.alter, frist)+weg;
+    stoerung(true, tx(T.band_alt, d.alter));
     return;
   }
   if(!d.ok){
     p.className = "punkt tot";
-    t.textContent = "Der Dienst hat keine Verbindung zum Miniserver.";
-    stoerung(true, "Keine Verbindung zum Miniserver – die Werte sind nicht aktuell.");
+    t.textContent = T.keine_ms;
+    stoerung(true, T.band_ms);
     return;
   }
   if(d.alter > 60){
     p.className = "punkt alt";
-    t.textContent = "Die Werte sind "+d.alter+" Sekunden alt."+weg;
-    /* Alte Werte sind noch keine Stoerung - sie werden nur benannt. */
+    t.textContent = tx(T.werte_alt, d.alter)+weg;
+    /* Alte Werte innerhalb der Frist sind noch keine Stoerung - sie werden
+       nur benannt. */
     stoerung(false);
     return;
   }
   p.className = "punkt gut";
-  t.textContent = "Verbunden"+(d.weg==="http"?" – ueber HTTP-Abfrage, nicht ueber WebSocket":"")+"."+weg;
+  t.textContent = T.verbunden+(d.weg==="http"?" – "+T.ueber_http:"")+"."+weg;
   stoerung(false);
 }
 
@@ -1204,7 +1264,7 @@ function tafel_befolgen(t){
   if (t.ruhe === 1) { ruhe_zeigen(); }
   if (t.ruhe === 0) { ruhe_sperre_bis = 0; ruhe_wegnehmen(); ruhe_frist_neu(); }
   if (t.seite && t.seite !== SEITE) {
-    location.href = "?token="+encodeURIComponent(<?= json_encode($ist, JSON_UNESCAPED_UNICODE) ?>)
+    location.href = "?token="+encodeURIComponent(<?= json_encode($ist, $db_jf) ?>)
                   + "&seite="+encodeURIComponent(t.seite);
   }
 }
@@ -1318,7 +1378,7 @@ if (KONF.rotation > 0 && LISTE.length > 1) {
     for (var n=0; n<LISTE.length; n++) { if (LISTE[n].schluessel === SEITE) { i = n; break; } }
     var naechste = LISTE[(i+1) % LISTE.length].schluessel;
     if (naechste && naechste !== SEITE) {
-      location.href = "?token="+encodeURIComponent(<?= json_encode($ist, JSON_UNESCAPED_UNICODE) ?>)
+      location.href = "?token="+encodeURIComponent(<?= json_encode($ist, $db_jf) ?>)
                     + "&seite="+encodeURIComponent(naechste);
     }
   }, KONF.rotation * 1000);
@@ -1457,17 +1517,17 @@ function wetterzeile_dienst(){
      Beschreibung. Dieselbe Regel wie in der Wetterkachel. */
   var lage = (nr == null) ? "" :
              (t[nr] != null ? String(t[nr])
-              : (t[String(nr)] != null ? String(t[String(nr)]) : "Lage " + nr));
+              : (t[String(nr)] != null ? String(t[String(nr)]) : tx(T.lage, nr)));
   var stuecke = [];
   if (WETTER.temperatur != null) {
     stuecke.push("<b>" + e(zahl(WETTER.temperatur)) + "&nbsp;&deg;C</b>");
   }
   if (lage !== "") { stuecke.push(e(lage)); }
   if (WETTER.gefuehlt != null) {
-    stuecke.push("gefuehlt " + e(zahl(WETTER.gefuehlt)) + "&nbsp;&deg;C");
+    stuecke.push(e(tx(T.gefuehlt, zahl(WETTER.gefuehlt))) + "&nbsp;&deg;C");
   }
-  if (WETTER.feuchte != null) { stuecke.push(e(zahl(WETTER.feuchte,0)) + "&nbsp;% rF"); }
-  if (WETTER.wind != null) { stuecke.push("Wind " + e(zahl(WETTER.wind)) + "&nbsp;km/h"); }
+  if (WETTER.feuchte != null) { stuecke.push(e(tx(T.rf, zahl(WETTER.feuchte,0)))); }
+  if (WETTER.wind != null) { stuecke.push(e(tx(T.wind, zahl(WETTER.wind)))); }
   return stuecke;
 }
 
@@ -1568,48 +1628,48 @@ var RUHE_OHNE = {
 
 var RUHE_KURZ = {
   schalter:     function(k, w){ var e2 = an(w.active);
-                                return {text: e2 ? "Ein" : "Aus", ein: e2}; },
+                                return {text: e2 ? T.ein : T.aus, ein: e2}; },
   taster:       function(k, w){ var e2 = an(w.active);
-                                return {text: e2 ? "Aktiv" : "Bereit", ein: e2}; },
+                                return {text: e2 ? T.aktiv : T.bereit, ein: e2}; },
   zustand:      function(k, w){ var e2 = an(w.active);
-                                return {text: e2 ? "Ja" : "Nein", ein: e2}; },
+                                return {text: e2 ? T.ja : T.nein, ein: e2}; },
   dimmer:       function(k, w){ var p2 = parseFloat(w.position);
                                 if (isNaN(p2)) { return null; }
                                 return {text: Math.round(p2) + " %", ein: p2 > 0}; },
   jalousie:     function(k, w){ var p2 = parseFloat(w.position);
                                 if (isNaN(p2)) { return null; }
                                 p2 = Math.round(p2 * 100);
-                                return {text: p2 > 95 ? "geschlossen"
-                                              : (p2 < 5 ? "offen" : p2 + " % zu"),
+                                return {text: p2 > 95 ? T.geschlossen
+                                              : (p2 < 5 ? T.offen : p2 + " " + T.prozent_zu),
                                         ein: p2 < 5}; },
   tor:          function(k, w){ var p2 = parseFloat(w.position);
                                 if (isNaN(p2)) { return null; }
                                 p2 = Math.round(p2 * 100);
-                                return {text: p2 > 95 ? "offen"
-                                              : (p2 < 5 ? "geschlossen" : p2 + " % offen"),
+                                return {text: p2 > 95 ? T.offen
+                                              : (p2 < 5 ? T.geschlossen : p2 + " " + T.prozent_offen),
                                         ein: p2 > 95}; },
   treppenlicht: function(k, w){ var r = parseFloat(w.deactivationDelay);
                                 if (isNaN(r)) { return null; }
-                                return {text: r === -1 ? "dauernd an"
-                                              : (r > 0 ? Math.round(r) + " s" : "Aus"),
+                                return {text: r === -1 ? T.dauernd_an
+                                              : (r > 0 ? Math.round(r) + " s" : T.aus),
                                         ein: r !== 0}; },
   alarm:        function(k, w){ var st = parseFloat(w.level) || 0;
-                                if (st > 0) { return {text: "ALARM", ein: true}; }
+                                if (st > 0) { return {text: T.alarm, ein: true}; }
                                 var sch = an(w.armed);
-                                return {text: sch ? "scharf" : "unscharf", ein: sch}; },
+                                return {text: sch ? T.scharf : T.unscharf, ein: sch}; },
   brandmelder:  function(k, w){ var st = parseFloat(w.level) || 0;
-                                return {text: st > 0 ? "ALARM" : "ruhig", ein: st > 0}; },
+                                return {text: st > 0 ? T.alarm : T.ruhig, ein: st > 0}; },
   auswahl:      function(k, w){ var a2 = parseInt(w.activeOutput || 0, 10);
                                 var g = k.ausgaenge || {};
-                                if (!a2) { return {text: k.allesaus || "Aus", ein: false}; }
-                                return {text: g[String(a2)] || ("Nr. " + a2), ein: true}; },
+                                if (!a2) { return {text: k.allesaus || T.aus, ein: false}; }
+                                return {text: g[String(a2)] || tx(T.nr, a2), ein: true}; },
   lichtszene:   function(k, w){ var j = w.activescene;
                                 if (j == null || j === "") { return null; }
                                 var nm = ruhe_szenenname(w, j);
                                 return {text: nm, ein: String(j) !== "778"}; },
   licht:        function(k, w){ var nm = ruhe_stimmungen(w);
                                 if (nm === null) { return null; }
-                                return {text: nm, ein: nm !== "Aus"}; },
+                                return {text: nm, ein: nm !== T.aus}; },
   raumregler:   function(k, w){ var t2 = parseFloat(w.tempActual);
                                 if (isNaN(t2)) { return null; }
                                 return {text: zahl(t2) + " \u00b0C", ein: false}; },
@@ -1648,7 +1708,7 @@ function ruhe_szenenname(w, jetzt){
       return String(s2.name != null ? s2.name : jetzt);
     }
   }
-  return String(jetzt) === "778" ? "Aus" : ("Nr. " + jetzt);
+  return String(jetzt) === "778" ? T.aus : tx(T.nr, jetzt);
 }
 
 /* Die laufenden Stimmungen - dieselbe Quelle wie BAUER.licht. */
@@ -1665,9 +1725,9 @@ function ruhe_stimmungen(w){
         gefunden = String(moods[j].name); break;
       }
     }
-    namen.push(gefunden !== null ? gefunden : ("Nr. " + aktiv[i]));
+    namen.push(gefunden !== null ? gefunden : tx(T.nr, aktiv[i]));
   }
-  return namen.length ? namen.join(", ") : "Aus";
+  return namen.length ? namen.join(", ") : T.aus;
 }
 
 /* Ein Wert je Kachel - oder null, dann wird die Kachel uebergangen. */
@@ -1751,7 +1811,7 @@ if (ruhe_moeglich()) {
       ev.stopPropagation();
       ruhe_wegnehmen();
       if (ruhe_ziel) {
-        location.href = "?token="+encodeURIComponent(<?= json_encode($ist, JSON_UNESCAPED_UNICODE) ?>)
+        location.href = "?token="+encodeURIComponent(<?= json_encode($ist, $db_jf) ?>)
                       + "&seite="+encodeURIComponent(ruhe_ziel);
         return;
       }
@@ -1775,7 +1835,7 @@ if (ruhe_moeglich()) {
 }
 
 zeichnen();
-stand_zeigen({ok:DATEN.ok, weg:DATEN.weg, alter:DATEN.alter});
+stand_zeigen({ok:DATEN.ok, weg:DATEN.weg, alter:DATEN.alter, frist:DATEN.frist});
 schleier_setzen();
 if (KONF.sse) { strom_starten(); } else { abfrage_starten(); }
 </script>

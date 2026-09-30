@@ -21,15 +21,35 @@ function db_pruefungen()
     $zeilen = array();
     $cfg = db_config();
 
-    $pid = db_dienst_pid();
+    /* O8 (Durchgang 29.09.2026): ALLE Dienste, argumentweise ueber /proc
+     * (db_dienst_pids), ein Kreuz bei mehr als einem. Bis 0.9.25 nannte die
+     * Zeile nur die Nummer aus der PID-Datei: "Ja, PID 15202", waehrend zwei
+     * liefen (gemessen, Befund 8 des Oberflaechen-Pruefers). */
+    $pids = db_dienst_pids();
     $soll = db_dienst_soll();
-    if ($pid > 0) {
+    if (count($pids) > 1) {
+        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_DIENST'),
+            sprintf(db_t('TEST.A_DIENST_MEHRERE'), count($pids), db_e(implode(', ', $pids))));
+    } elseif ($pids) {
         $zeilen[] = db_pruefzeile(1, db_t('TEST.F_DIENST'),
-            db_e(db_t('TEST.A_DIENST_LAEUFT')) . ' ' . (int) $pid);
+            db_e(db_t('TEST.A_DIENST_LAEUFT')) . ' ' . (int) $pids[0]);
     } elseif ($soll) {
         $zeilen[] = db_pruefzeile(0, db_t('TEST.F_DIENST'), db_t('TEST.A_DIENST_SOLL_TOT'));
     } else {
         $zeilen[] = db_pruefzeile(0, db_t('TEST.F_DIENST'), db_t('TEST.A_DIENST_GESTOPPT'));
+    }
+
+    /* O9: steht der Cron-Eintrag des Waechters? glob ueber ALLE cron.*min
+     * (Regeln/04, Raumklima 0.11.8); findet sich nichts, ist das ein Kreuz. */
+    $cron = db_cron_eintraege();
+    if ($cron === null) {
+        $zeilen[] = db_pruefzeile(-1, db_t('TEST.F_CRON'), db_t('TEST.A_CRON_NICHT_PRUEFBAR'));
+    } elseif (!$cron) {
+        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_CRON'),
+            sprintf(db_t('TEST.A_CRON_FEHLT'), db_e(db_paths()['home'] . '/system/cron/cron.*min/' . db_paths()['plugin'])));
+    } else {
+        $zeilen[] = db_pruefzeile(1, db_t('TEST.F_CRON'),
+            sprintf(db_t('TEST.A_CRON'), db_e(implode(', ', $cron))));
     }
 
     // Die Marke "Aktualisierung laeuft". Zu jeder Regel gehoert das Werkzeug,
@@ -105,11 +125,20 @@ function db_pruefungen()
                     db_e((string) (isset($s['lastModified']) ? $s['lastModified'] : '?'))));
     }
 
+    /* O10 (Durchgang 29.09.2026, Klasse 8): ist der Dienst BEWUSST
+     * angehalten (kein Dienst, kein Sollmerker), sind alte Werte kein Befund -
+     * die Zeile ist grau. Bis 0.9.25 stand dann ein zweites Kreuz "Dienst hat
+     * wohl die Verbindung verloren". Die Grenze ist die Frist aus
+     * Entscheidung 4, nicht mehr fest 120 s. */
     $alter = db_alter();
+    $frist = db_frist();
+    $angehalten = !$pids && !$soll;
     if ($alter < 0) {
-        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_WERTE'), db_t('TEST.A_KEINE_WERTE'));
-    } elseif ($alter > 120) {
-        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_WERTE'), sprintf(db_t('TEST.A_WERTE_ALT'), $alter));
+        $zeilen[] = db_pruefzeile($angehalten ? -1 : 0, db_t('TEST.F_WERTE'), db_t('TEST.A_KEINE_WERTE'));
+    } elseif ($alter > $frist && $angehalten) {
+        $zeilen[] = db_pruefzeile(-1, db_t('TEST.F_WERTE'), sprintf(db_t('TEST.A_WERTE_ANGEHALTEN'), $alter));
+    } elseif ($alter > $frist) {
+        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_WERTE'), sprintf(db_t('TEST.A_WERTE_ALT'), $alter, $frist));
     } else {
         $a = db_abbild();
         $zeilen[] = db_pruefzeile(1, db_t('TEST.F_WERTE'),
@@ -206,7 +235,14 @@ function db_pruefungen()
             $zeilen[] = db_pruefzeile($fehlt ? 0 : 1, db_t('TEST.F_VORGABEN'),
                 $fehlt ? sprintf(db_t('TEST.A_VORGABEN_FEHL'), db_e(implode(', ', $fehlt)))
                        : sprintf(db_t('TEST.A_VORGABEN'), count($hier)));
+        } else {
+            $zeilen[] = db_pruefzeile(0, db_t('TEST.F_VORGABEN'),
+                sprintf(db_t('TEST.A_DATEI_UNLESBAR'), db_e($py)));
         }
+    } else {
+        /* O10: eine fehlende Datei nennt sich selbst - bis 0.9.25 entfiel die
+         * Zeile dann spurlos (14 statt 15 Zeilen, gemessen). */
+        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_VORGABEN'), sprintf(db_t('TEST.A_DATEI_FEHLT'), db_e($py)));
     }
 
     // Jede Kachel, die eine Seite benutzt, muss es in tafel.php auch geben -
@@ -223,9 +259,16 @@ function db_pruefungen()
             $gebraucht[isset($z2['kachel']) ? $z2['kachel'] : 'generisch'] = 1;
         }
         $ohne = array_keys(array_diff_key($gebraucht, $gebaut));
-        $zeilen[] = db_pruefzeile($ohne ? 0 : 1, db_t('TEST.F_KACHELN'),
-            $ohne ? sprintf(db_t('TEST.A_KACHELN_FEHL'), db_e(implode(', ', $ohne)))
-                  : sprintf(db_t('TEST.A_KACHELN'), count($gebraucht)));
+        if (!$gebraucht) {
+            /* O10 (Klasse 8): eine leere Menge ist kein Haken - bis 0.9.25
+             * stand ohne kacheln.json "Alle 0 Kachelarten sind gebaut". */
+            $zeilen[] = db_pruefzeile(0, db_t('TEST.F_KACHELN'),
+                sprintf(db_t('TEST.A_KACHELN_LEER'), db_e(db_paths()['kacheln'])));
+        } else {
+            $zeilen[] = db_pruefzeile($ohne ? 0 : 1, db_t('TEST.F_KACHELN'),
+                $ohne ? sprintf(db_t('TEST.A_KACHELN_FEHL'), db_e(implode(', ', $ohne)))
+                      : sprintf(db_t('TEST.A_KACHELN'), count($gebraucht)));
+        }
 
         /* Dasselbe fuer das Ruhebild: jede Kachelart braucht dort entweder
          * einen Kurzwert (RUHE_KURZ) oder einen ausdruecklichen Grund, warum
@@ -250,11 +293,20 @@ function db_pruefungen()
         }
         $ruhe_fehlt = array_keys(array_diff_key($gebraucht,
                                                 $ruhe_kurz + $ruhe_ohne));
-        $zeilen[] = db_pruefzeile($ruhe_fehlt ? 0 : 1, db_t('TEST.F_RUHE_KACHELN'),
-            $ruhe_fehlt
-                ? sprintf(db_t('TEST.A_RUHE_KACHELN_FEHL'), db_e(implode(', ', $ruhe_fehlt)))
-                : sprintf(db_t('TEST.A_RUHE_KACHELN'),
-                          count($ruhe_kurz), count($ruhe_ohne)));
+        if (!$gebraucht || !$ruhe_kurz) {
+            // O10 (Klasse 8): nichts verglichen ist kein Haken.
+            $zeilen[] = db_pruefzeile(0, db_t('TEST.F_RUHE_KACHELN'),
+                sprintf(db_t('TEST.A_KACHELN_LEER'), db_e(!$gebraucht ? db_paths()['kacheln'] : $tafel)));
+        } else {
+            $zeilen[] = db_pruefzeile($ruhe_fehlt ? 0 : 1, db_t('TEST.F_RUHE_KACHELN'),
+                $ruhe_fehlt
+                    ? sprintf(db_t('TEST.A_RUHE_KACHELN_FEHL'), db_e(implode(', ', $ruhe_fehlt)))
+                    : sprintf(db_t('TEST.A_RUHE_KACHELN'),
+                              count($ruhe_kurz), count($ruhe_ohne)));
+        }
+    } else {
+        // O10: eine fehlende Datei nennt sich selbst.
+        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_KACHELN'), sprintf(db_t('TEST.A_DATEI_FEHLT'), db_e($tafel)));
     }
 
     // Reiterleiste, Bereiche und Positivliste muessen dieselben Namen
@@ -286,6 +338,32 @@ function db_pruefungen()
                               db_e(implode(', ', $liste))));
     }
 
+    /* O9 (Durchgang 29.09.2026): Pflichtzeilen, jede mit Kreuz, Haken oder
+     * grau "nicht pruefbar". */
+    // Ist die Konfiguration heil? Drei Dateien, jede streng gelesen (C12).
+    $kaputt = array();
+    $fehlt = array();
+    foreach (array('config', 'seiten', 'geheim') as $d) {
+        db_json_lesen_streng(db_paths()[$d], $lage);
+        if ($lage === 'kaputt' || $lage === 'unlesbar') { $kaputt[] = db_paths()[$d]; }
+        if ($lage === 'fehlt') { $fehlt[] = db_paths()[$d]; }
+    }
+    if ($kaputt) {
+        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_KONFIG'),
+            sprintf(db_t('TEST.A_KONFIG_KAPUTT'), db_e(implode(', ', $kaputt))));
+    } elseif ($fehlt) {
+        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_KONFIG'),
+            sprintf(db_t('TEST.A_KONFIG_FEHLT'), db_e(implode(', ', $fehlt))));
+    } else {
+        $zeilen[] = db_pruefzeile(1, db_t('TEST.F_KONFIG'), db_t('TEST.A_KONFIG'));
+    }
+    // Antwortet der eigene Endpunkt? Ein echter Aufruf, drei Ausgaenge.
+    list($st, $text) = db_endpunkt_probe(db_token_soll(db_config()));
+    $zeilen[] = db_pruefzeile($st, db_t('TEST.F_ENDPUNKT'), $text);
+    // Tragen alle POST-Formulare das Merkmal? Gezaehlt am gerenderten HTML;
+    // index.php ersetzt diesen Platzhalter, sobald die Seite fertig ist.
+    $zeilen[] = '<!--DB_FORMMERKMAL-->';
+
     return $zeilen;
 }
 
@@ -304,12 +382,9 @@ function db_pruefungen_html()
 function db_test_aktion($was)
 {
     if ($was === 'status') {
-        $a = db_abbild();
-        $seiten = db_seiten();
-        $kacheln = 0;
-        foreach ($seiten as $s) { $kacheln += count(isset($s['kacheln']) ? $s['kacheln'] : array()); }
-        return array(1, sprintf('DASHBOARD;OK=%d;BAUSTEINE=%d;SEITEN=%d;KACHELN=%d;ALTER=%d',
-            (int) (!empty($a['ok'])), count(db_bausteine()), count($seiten), $kacheln, db_alter()));
+        // H8 (Durchgang 29.09.2026): dieselbe Zeile wie der Endpunkt, aus
+        // db_status_felder() - bis 0.9.25 eine eigene Abschrift.
+        return array(1, db_status_zeile());
     }
     if ($was === 'roh') {
         $a = db_abbild();

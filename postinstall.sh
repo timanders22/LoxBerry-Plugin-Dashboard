@@ -21,9 +21,10 @@ BASE="${ARGV5:-$LBHOMEDIR}"
 
 # Aufwaerts suchen, bis ein Verzeichnis gefunden ist, das nachweislich eine
 # LoxBerry-Wurzel IST. Bis 0.9.21 stand hier 'cd "$SELF/../.."' ohne jede
-# Pruefung - eine feste Zahl '..' ist nur die naechste Wette. preupgrade.sh,
-# uninstall.sh und uninstall/uninstall tragen die geprueften Stufen seit
-# 0.9.13; dieses Skript war der letzte Ausreisser.
+# Pruefung - eine feste Zahl '..' ist nur die naechste Wette. preupgrade.sh
+# und uninstall/uninstall tragen die geprueften Stufen seit 0.9.13 (bis 0.9.24
+# auch das uninstall.sh im Wurzelordner, seit 0.9.25 entfernt, I7); dieses
+# Skript war der letzte Ausreisser.
 #
 # Gemessen am 18.09.2026 (Pruefung-Dashboard-0.9.22, Fall 16): von Hand ohne
 # Argumente aus <Wurzel>/pruefung/tief/dashboard aufgerufen, legte das Skript
@@ -94,7 +95,10 @@ mkdir -p "$PDATA/befehle" "$PDATA/antworten" "$PLOG" "$PCONFIG" || {
 chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 
 [ -f "$PCONFIG/dashboard.json" ] || echo '{}' > "$PCONFIG/dashboard.json"
-chmod 644 "$PCONFIG/dashboard.json"
+# C11/I6 (Durchgang 29.09.2026): 0600 statt 0644 - die Datei traegt das
+# Aktionstoken (Regeln/05). Gemessen vorher: 644 nach Neuinstallation und
+# Upgrade (Installer-Pruefer, Befund 6).
+chmod 600 "$PCONFIG/dashboard.json"
 
 # zugang.json enthaelt Zugangsdaten - Rechte 0600, und nur anlegen, nie
 # ueberschreiben.
@@ -103,6 +107,8 @@ chmod 600 "$PCONFIG/zugang.json"
 
 # seiten.json ist Nutzerinhalt (die geordneten Kacheln): nie ueberschreiben.
 [ -f "$PCONFIG/seiten.json" ] || echo '{"seiten":[]}' > "$PCONFIG/seiten.json"
+# C11: seiten.json traegt die PIN-Pruefwerte - ebenfalls 0600.
+chmod 600 "$PCONFIG/seiten.json"
 
 # ---------- Zurueckspielen: nach INHALT, nicht nach GROESSE ----------
 #
@@ -158,10 +164,19 @@ sys.exit(0 if len(d) > 0 else 1)' "$1" "$2" 2>/dev/null
     return "$DB_RC"
 }
 
+# I1 (Durchgang 29.09.2026, Entscheidung 1): eingespielt wird NUR bei einer
+# Aktualisierung, erkannt an der Marke (kein Altersvergleich). Sie wird hier
+# gelesen, bevor der trap sie am Ende entfernt. Bei einer Neuinstallation hat
+# preinstall.sh liegengebliebene Sicherungen schon nach .alt gelegt; was
+# trotzdem noch liegt, wird nicht angefasst. Gemessen vorher (Fall B): eine
+# Neuinstallation spielte Token, Zugang und Seiten einer frueheren ein.
+DB_UPGRADE=0
+[ -f "$MARKE" ] && DB_UPGRADE=1
 for f in dashboard.json seiten.json zugang.json; do
     BK="$BASE/config/plugins/$PFOLDER.backup.$f"
     CF="$PCONFIG/$f"
     [ -f "$BK" ] || continue
+    [ "$DB_UPGRADE" = 1 ] || continue
     case "$f" in
         seiten.json) ART=seiten ;;
         zugang.json) ART=zugang ;;
@@ -186,8 +201,9 @@ for f in dashboard.json seiten.json zugang.json; do
     # alte Konfiguration samt altem Aktionstoken zurueck, und
     # dashboard.backup.zugang.json mit dem Miniserver-Kennwort lag unbegrenzt
     # im Dateisystem. Deshalb wird sie weiterhin weggeraeumt, nur eben nicht
-    # mehr blind: uninstall.sh und uninstall/uninstall entfernen die
-    # liegengebliebene ohnehin mit.
+    # mehr blind: uninstall/uninstall entfernt die liegengebliebene ohnehin
+    # mit. (Bis 0.9.24 stand hier zusaetzlich "uninstall.sh" - die Datei rief
+    # der Installer nie auf; seit 0.9.25 ist sie entfernt, I7.)
     if [ "$RC_CF" = 0 ]; then
         rm -f "$BK"
     elif [ "$RC_CF" = 2 ] || [ "$RC_BK" = 2 ]; then
@@ -203,6 +219,8 @@ for f in dashboard.json seiten.json zugang.json; do
     fi
 done
 chmod 600 "$PCONFIG/zugang.json"
+# C11: 'cp -p' bringt die Rechte der Zweitschrift mit - danach nachziehen.
+chmod 600 "$PCONFIG/dashboard.json" "$PCONFIG/seiten.json"
 
 # ---------- Python ----------
 PY3=$(command -v python3)
@@ -251,14 +269,42 @@ done
 
 # Die venv sieht die Systempakete. Ohne --system-site-packages waere sie
 # abgeschottet, und alles oben waere umsonst gewesen.
+#
+# I4 (Durchgang 29.09.2026): fehlt python3-venv, scheitert 'venv' (rc=1),
+# hinterlaesst aber eine ausfuehrbare venv/bin/python3 OHNE Zugriff auf die
+# Systempakete. Bis 0.9.25 folgten darauf "laeuft trotzdem", "<OK> ... sieht
+# die Systempakete" und "<FAIL> cryptography fehlt" mit rc=1 - obwohl das
+# System-Python cryptography hat (gemessen in WSL, Installer-Pruefer Befund 4).
+# Jetzt: eine halb angelegte venv wird entfernt, und der zugesagte Rueckfall
+# auf das System-Python greift wirklich (dienst.sh nimmt es, wenn es keine
+# venv/bin/python3 gibt). "vorhanden" steht nur da, wenn die venv die Module
+# tatsaechlich sieht.
+venv_wegraeumen() {
+    case "$VENV" in
+        */bin/plugins/"$PFOLDER"/venv) rm -rf "${VENV:?}" 2>/dev/null ;;
+        *) echo "<WARNING> Unerwarteter Pfad der virtuellen Umgebung ($VENV) - nicht entfernt." ;;
+    esac
+}
 if [ ! -x "$VENV/bin/python3" ]; then
-    "$PY3" -m venv --system-site-packages "$VENV" || {
+    if ! "$PY3" -m venv --system-site-packages "$VENV"; then
         echo "<INFO> Die virtuelle Umgebung liess sich nicht anlegen (fehlt python3-venv?)."
-        echo "<INFO> Das Plugin laeuft trotzdem, solange die Module systemweit da sind."
-    }
+        if [ -e "$VENV" ]; then
+            venv_wegraeumen
+            echo "<INFO> Die halb angelegte Umgebung wurde entfernt."
+        fi
+        echo "<INFO> Der Dienst benutzt das System-Python $PY3."
+    fi
 fi
-if [ -x "$VENV/bin/python3" ]; then
-    echo "<OK> Virtuelle Umgebung vorhanden (sieht die Systempakete)."
+if [ -x "$VENV/bin/python3" ] && [ "$BRAUCHT_PIP" = "0" ]; then
+    if "$VENV/bin/python3" -c "import websockets, cryptography" >/dev/null 2>&1; then
+        echo "<OK> Virtuelle Umgebung vorhanden (sieht die Systempakete)."
+    else
+        echo "<INFO> Die virtuelle Umgebung sieht die Systempakete nicht - sie wird entfernt,"
+        echo "<INFO> und der Dienst benutzt das System-Python $PY3."
+        venv_wegraeumen
+    fi
+elif [ -x "$VENV/bin/python3" ]; then
+    echo "<INFO> Virtuelle Umgebung vorhanden; die fehlenden Module werden ueber pip versucht."
 fi
 
 if [ "$BRAUCHT_PIP" = "1" ] && [ -x "$VENV/bin/pip" ]; then
@@ -318,11 +364,17 @@ PYTHONDONTWRITEBYTECODE=1 "$PYTEST" "$PBIN/dashboard_dienst.py" --selbsttest 2>&
 # Kein __pycache__ ausliefern und keines zuruecklassen.
 rm -rf "$PBIN/__pycache__" 2>/dev/null
 
-echo "<INFO> Naechste Schritte:"
-echo "<INFO>   1. Plugin oeffnen, Reiter Einstellungen, Dienst starten"
-echo "<INFO>   2. Reiter Dashboards, 'Entwurf erzeugen' - danach steht schon etwas da"
-echo "<INFO>   3. Reiter Designer, Kacheln ordnen"
-echo "<INFO>   4. Reiter Dashboards, Adresse auf dem Tablet oeffnen"
+# I5 (Durchgang 29.09.2026): die Schritte der Ersteinrichtung nur bei einer
+# Neuinstallation. Bis 0.9.25 riet jedes Upgrade-Protokoll "Dienst starten"
+# und meldete gleich darauf, der Dienst sei wieder gestartet (gemessen,
+# Faelle C, D, F des Installer-Pruefers; Regeln/06).
+if [ "$DB_UPGRADE" = 0 ]; then
+    echo "<INFO> Naechste Schritte:"
+    echo "<INFO>   1. Plugin oeffnen, Reiter Einstellungen, Dienst starten"
+    echo "<INFO>   2. Reiter Dashboards, 'Entwurf erzeugen' - danach steht schon etwas da"
+    echo "<INFO>   3. Reiter Designer, Kacheln ordnen"
+    echo "<INFO>   4. Reiter Dashboards, Adresse auf dem Tablet oeffnen"
+fi
 echo "<OK> Installation abgeschlossen."
 
 # ---------- Langzeitwerte zurueckholen ----------
@@ -331,7 +383,9 @@ echo "<OK> Installation abgeschlossen."
 # ueberstanden. Zurueckgeholt wird nur, was fehlt - eine Neuinstallation
 # findet nichts vor und faengt sauber bei null an.
 LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
-if [ -d "$LANG_SICHER" ]; then
+# I1/I3: Langzeitwerte und "lief vorher" gelten nur bei einer Aktualisierung
+# (Marke), nie aus einem frueheren Vorgang.
+if [ "$DB_UPGRADE" = 1 ] && [ -d "$LANG_SICHER" ]; then
     for LANG_F in verlauf.json; do
         if [ -f "$LANG_SICHER/$LANG_F" ] \
            && [ ! -s "$BASE/data/plugins/$PFOLDER/$LANG_F" ]; then

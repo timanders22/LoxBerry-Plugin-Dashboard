@@ -83,21 +83,23 @@ fi
 # erst hinter der Wirkung greift, ist keiner.
 LBH_R=$(readlink -f "$LBHOMEDIR" 2>/dev/null)
 if [ -z "$LBHOMEDIR" ] || [ ! -d "$LBHOMEDIR" ]; then
-    echo "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden."
-    echo "        \$LBHOMEDIR ist nicht gesetzt, und oberhalb von"
-    echo "        $SELF traegt kein Verzeichnis config/plugins, data/plugins"
-    echo "        und config/system/general.json."
-    echo "        Es wurde nichts angelegt und nichts gestartet."
+    # C14 (Durchgang 29.09.2026): die Abbruchmeldungen gehen nach stderr - der
+    # Minutentakt lenkt stderr nach cron.err, stdout verwirft er.
+    echo "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden." >&2
+    echo "        \$LBHOMEDIR ist nicht gesetzt, und oberhalb von" >&2
+    echo "        $SELF traegt kein Verzeichnis config/plugins, data/plugins" >&2
+    echo "        und config/system/general.json." >&2
+    echo "        Es wurde nichts angelegt und nichts gestartet." >&2
     exit 1
 fi
 if [ "$SELF" != "$LBH_R/bin/plugins/$PNAME" ] \
    && [ ! -d "$LBHOMEDIR/config/plugins/$PNAME" ]; then
-    echo "FEHLER: '$PNAME' ist unter $LBHOMEDIR kein eingerichtetes Plugin,"
-    echo "        und $SELF ist nicht dessen bin-Ordner."
-    echo "        Der Aufruf kommt offenbar aus einem ausgepackten Archiv oder"
-    echo "        einem Pruefordner. Es wurde nichts angelegt."
-    echo "        Abhilfe: LBHOMEDIR und LBPPLUGINDIR setzen oder dienst.sh"
-    echo "        aus <LoxBerry-Wurzel>/bin/plugins/<ordner> aufrufen."
+    echo "FEHLER: '$PNAME' ist unter $LBHOMEDIR kein eingerichtetes Plugin," >&2
+    echo "        und $SELF ist nicht dessen bin-Ordner." >&2
+    echo "        Der Aufruf kommt offenbar aus einem ausgepackten Archiv oder" >&2
+    echo "        einem Pruefordner. Es wurde nichts angelegt." >&2
+    echo "        Abhilfe: LBHOMEDIR und LBPPLUGINDIR setzen oder dienst.sh" >&2
+    echo "        aus <LoxBerry-Wurzel>/bin/plugins/<ordner> aufrufen." >&2
     exit 1
 fi
 
@@ -274,8 +276,68 @@ marke_sperrt() {
     [ "$ALTER" -le 3600 ]
 }
 
+# ---------- C1: Startsperre (Durchgang 29.09.2026) ----------
+#
+# Zwei Waechter in derselben Sekunde (cron holt nach einem Uhrsprung beim
+# Booten verpasste Minuten nach; am Geraet am 28.09.2026 gemessen) sahen beide
+# "laeuft nicht" und starteten je einen Dienst: 18 von 20 Laeufen mit zwei
+# Diensten (Installer-Pruefer, Fall H), 8 von 10 (Code-Pruefer). Wer startet,
+# nimmt deshalb zuerst diese Sperre und fragt DANACH, ob schon einer laeuft.
+# Wer sie binnen 15 s nicht bekommt, tut nichts - gerade startet ein anderer.
+# Der Dienst erbt den Deskriptor NICHT (9>&- beim Start), sonst hielte er die
+# Sperre fuer immer, und kein spaeterer Start kaeme je durch. Der Dienst nimmt
+# zusaetzlich seine eigene Sperre (dienst.lock, dashboard_dienst.py).
+# In einem Aufruf wird sie genau einmal genommen: ein zweites 'exec 9>>'
+# oeffnete die Datei neu und gaebe die Sperre dabei kurz frei.
+DB_STARTSPERRE=0
+startsperre_nehmen() {
+    [ "$DB_STARTSPERRE" = 1 ] && return 0
+    if ! command -v flock >/dev/null 2>&1; then
+        DB_STARTSPERRE=1
+        return 0
+    fi
+    exec 9>>"$PDATA/.start.sperre" || return 1
+    if ! flock -w 15 9; then
+        DB_STARTSPERRE=belegt
+        echo "Ein anderer Start laeuft gerade - nichts getan."
+        return 1
+    fi
+    DB_STARTSPERRE=1
+    return 0
+}
+
+# Laufen mehrere Dienste, bleibt einer: der aus der PID-Datei, sonst der
+# erste gefundene. Die uebrigen bekommen TERM und nach fuenf Sekunden KILL;
+# vor jedem Signal wird neu geprueft, ob die Nummer noch ein eigener Dienst
+# ist (C1: "Der Waechter beendet ueberzaehlige Dienste").
+ueberzaehlige_beenden() {
+    DB_P=""
+    [ -f "$PID" ] && IFS= read -r DB_P < "$PID" 2>/dev/null
+    BLEIBT=""
+    for DB_X in $1; do [ "$DB_X" = "$DB_P" ] && BLEIBT="$DB_X"; done
+    [ -n "$BLEIBT" ] || BLEIBT=$(printf '%s\n' $1 | head -n 1)
+    WEG=""
+    for DB_X in $1; do [ "$DB_X" = "$BLEIBT" ] || WEG="$WEG $DB_X"; done
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: mehrere Dienste liefen ($(printf '%s' "$1" | tr '\n' ' ')) - PID $BLEIBT bleibt, beendet werden:$WEG" >> "$LOGDATEI"
+    for DB_X in $WEG; do ist_dienst "$DB_X" && kill "$DB_X" 2>/dev/null; done
+    REST=""
+    for i in 1 2 3 4 5; do
+        REST=""
+        for DB_X in $WEG; do ist_dienst "$DB_X" && REST="$REST $DB_X"; done
+        [ -n "$REST" ] || break
+        sleep 1
+    done
+    for DB_X in $REST; do ist_dienst "$DB_X" && kill -9 "$DB_X" 2>/dev/null; done
+    echo "$BLEIBT" > "$PID" 2>/dev/null
+}
+
 starten() {
     ordner_anlegen
+    if ! startsperre_nehmen; then
+        [ "$DB_STARTSPERRE" = belegt ] && return 0
+        echo "FEHLER: Die Startsperre $PDATA/.start.sperre laesst sich nicht anlegen."
+        return 1
+    fi
     LAUFEND=$(dienste)
     if [ -n "$LAUFEND" ]; then
         ERSTE=$(printf '%s\n' "$LAUFEND" | head -n 1)
@@ -321,7 +383,7 @@ starten() {
     # Umbenennen durch die Rotation schrieb dieser Deskriptor in die
     # umbenannte (spaeter geloeschte) Datei weiter, die dadurch den Platz auf
     # der SD-Karte unsichtbar belegte.
-    nohup "$PY" "$SKRIPT" >/dev/null 2>&1 &
+    nohup "$PY" "$SKRIPT" >/dev/null 2>&1 9>&- &
     echo $! > "$PID"
     sleep 1
     if laeuft; then
@@ -378,7 +440,15 @@ anhalten() {
 case "$1" in
     start)   starten ;;
     stop)    anhalten ;;
-    restart) anhalten; sleep 1; starten ;;
+    restart)
+        # O18 (Durchgang 29.09.2026): scheitert das Anhalten, wird nicht
+        # gestartet, und der Aufruf endet mit 1. Bis 0.9.25 meldete starten()
+        # danach "laeuft bereits" mit Rueckgabewert 0, und die Oberflaeche
+        # zeigte eine gruene Meldung ueber der Fehlerzeile.
+        anhalten || exit 1
+        sleep 1
+        starten
+        ;;
     status)
         # Gemeldet werden die gefundenen Nummern, nicht der Inhalt der
         # PID-Datei: liegt dort eine fremde oder veraltete Nummer, waere sie
@@ -419,10 +489,27 @@ case "$1" in
     waechter)
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten.
-        if [ -f "$SOLL" ] && ! laeuft; then
-            # Erst hier anlegen: der Waechter laeuft minuetlich, und ohne
-            # Sollmerker hat er nichts zu schreiben.
-            ordner_anlegen
+        #
+        # C1 (Durchgang 29.09.2026): erst ein Schnellweg ohne Sperre - laeuft
+        # genau einer, oder soll keiner laufen und laeuft keiner, ist nichts zu
+        # tun, und der minuetliche Waechter legt nichts an. Sonst unter der
+        # Startsperre NEU fragen: ein zweiter Waechter in derselben Sekunde
+        # wartet hier und findet danach den Dienst des ersten.
+        LAUFEND=$(dienste)
+        ANZAHL=$(printf '%s\n' "$LAUFEND" | grep -c '[0-9]')
+        if [ "$ANZAHL" -le 1 ] && { [ -n "$LAUFEND" ] || [ ! -f "$SOLL" ]; }; then
+            exit 0
+        fi
+        # Erst hier anlegen: ohne Arbeit hat der Waechter nichts zu schreiben.
+        ordner_anlegen
+        startsperre_nehmen || exit 0
+        LAUFEND=$(dienste)
+        ANZAHL=$(printf '%s\n' "$LAUFEND" | grep -c '[0-9]')
+        if [ "$ANZAHL" -gt 1 ]; then
+            ueberzaehlige_beenden "$LAUFEND"
+            exit 0
+        fi
+        if [ -f "$SOLL" ] && [ -z "$LAUFEND" ]; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
             starten >> "$LOGDATEI" 2>&1
         fi

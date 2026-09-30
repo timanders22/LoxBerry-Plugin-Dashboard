@@ -160,12 +160,30 @@ if ($db_zugross) {
 
 $db_ausgabe = '';
 $db_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
+/* O1 (Durchgang 29.09.2026): das Ergebnis der vorigen Anfrage - NUR beim GET.
+ * Jeder POST endet weiter unten mit 303; seine Meldungen reisen als
+ * Einmalmeldung (db_einmal_schreiben) zu dieser Seite. */
+if (!$db_post) {
+    $db_einmal = db_einmal_lesen();
+    if ($db_einmal !== null) {
+        $db_meldungen = $db_einmal['meldungen'];
+        $db_fehler = array_merge($db_fehler, $db_einmal['fehler']);
+        $db_ausgabe = $db_einmal['ausgabe'];
+    }
+}
+/* O17: aendert sich etwas, das der Dienst beim Start liest, wird er
+ * nachgezogen (weiter unten, vor der Umleitung). */
+$db_nachziehen = false;
 
 $db_sauber = function ($feld) {
-    // Nur Steuerzeichen und Anfuehrungszeichen entfernen - ein hartes Filtern
-    // auf eine Positivliste zerstoert gueltige Eingaben.
-    return trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
-        (string) (isset($_POST[$feld]) ? $_POST[$feld] : '')));
+    /* Fehlerklasse 4 (Durchgang 29.09.2026): es wird NICHTS mehr entfernt.
+     * Bis 0.9.25 verschwanden Steuer- und Anfuehrungszeichen still
+     * (aus 'haus"admin' wurde 'hausadmin', gemeldet als "gespeichert").
+     * Jetzt wird nur getrimmt; was nicht zum Muster des Feldes passt, weist
+     * die Pruefung ab und nennt es. Eine Liste statt eines Wertes wird zu
+     * einem Steuerzeichen und faellt damit durch jede Pruefung (C5). */
+    if (!isset($_POST[$feld])) { return ''; }
+    return is_string($_POST[$feld]) ? trim($_POST[$feld]) : "\x00";
 };
 
 /* ==================================================================
@@ -200,6 +218,16 @@ if ($db_post && (isset($_POST['vorlage']) || isset($_POST['vorlage_out']))) {
 /* ---------------- Einstellungen speichern ---------------- */
 if ($db_post && isset($_POST['speichern'])) {
     $db_cfg = db_config();
+    $db_cfg_vorher = $db_cfg;
+    /* C12/C3 (Durchgang 29.09.2026): eine beschaedigte dashboard.json oder
+     * zugang.json wird nicht still ueberschrieben. Die Seite sagt oben, was
+     * zu tun ist. */
+    foreach (array('config', 'geheim') as $db_d) {
+        db_json_lesen_streng($db_p[$db_d], $db_lage);
+        if ($db_lage === 'kaputt' || $db_lage === 'unlesbar') {
+            $db_fehler[] = sprintf(db_t('EINST.KAPUTT_GESPERRT'), db_e($db_p[$db_d]));
+        }
+    }
 
     $db_ms = $db_sauber('miniserver');
     if (!preg_match('/^[0-9]{1,3}$/', $db_ms)) {
@@ -327,39 +355,34 @@ if ($db_post && isset($_POST['speichern'])) {
     }
 
     /* Eigene Zugangsdaten. Sie landen in zugang.json mit Rechten 0600 und
-     * NIE in der Konfiguration, die diese Seite anzeigt. */
+     * NIE in der Konfiguration, die diese Seite anzeigt.
+     *
+     * O4 (Durchgang 29.09.2026): hier wird nur GEPRUEFT; geschrieben wird erst
+     * unten, wenn es keine einzige Beanstandung gibt. Bis 0.9.25 schrieb ein
+     * abgewiesenes Formular zugang.json doch - gemessen: nach "Bitte
+     * pruefen" (Bild kein Bild) standen neue Adresse, Benutzer, Kennwort und
+     * Visualisierungs-Passwort darin (Befund 4 des Oberflaechen-Pruefers). */
     $db_zadr = $db_sauber('z_adresse');
+    $db_zport = $db_sauber('z_port');
+    $db_zben = $db_sauber('z_benutzer');
+    $db_zpw = isset($_POST['z_passwort']) ? $_POST['z_passwort'] : '';
+    $db_vpw = isset($_POST['visu_pw']) ? $_POST['visu_pw'] : '';
     if ($db_zadr !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-]{0,80}$/', $db_zadr)) {
         $db_fehler[] = db_t('EINST.FEHLER_ZADRESSE');
-    } else {
-        $db_zport = $db_sauber('z_port');
-        if ($db_zadr !== '' && (!preg_match('/^[0-9]+$/', $db_zport)
-                || (int) $db_zport < 1 || (int) $db_zport > 65535)) {
-            $db_fehler[] = db_t('EINST.FEHLER_ZPORT');
-        } else {
-            // Das Kennwort wird NICHT durch $db_sauber gejagt: darin duerfen
-            // Anfuehrungszeichen stehen.
-            $db_zpw = (string) (isset($_POST['z_passwort']) ? $_POST['z_passwort'] : '');
-            if (!$db_fehler) {
-                db_zugang_speichern($db_zadr, $db_zport !== '' ? $db_zport : 80,
-                                    $db_sauber('z_benutzer'), $db_zpw);
-            }
-        }
+    } elseif ($db_zadr !== '' && (!preg_match('/^[0-9]+$/', $db_zport)
+            || (int) $db_zport < 1 || (int) $db_zport > 65535)) {
+        $db_fehler[] = db_t('EINST.FEHLER_ZPORT');
     }
-
-    // Das Visualisierungs-Passwort steht fuer sich: es gilt fuer den Benutzer,
-    // mit dem sich der Dienst anmeldet, unabhaengig davon, ob das der
-    // LoxBerry-Zugang oder ein abweichender ist. Auch hier gilt: ein leeres
-    // Feld behaelt das bisherige, sonst loescht jedes Speichern es weg.
-    //
-    // Bis 0.9.12 stand dieser Aufruf als einzige Schreibstelle AUSSERHALB der
-    // Klammer. Ein Formular mit einem ungueltigen Takt und einem neuen
-    // Visualisierungs-Passwort wurde am Bildschirm abgewiesen ("Bitte
-    // pruefen: …", kein "Gespeichert") - und hatte das Passwort trotzdem
-    // schon geschrieben. Ein abgewiesenes Formular schreibt gar nichts;
-    // sonst weiss hinterher niemand, was von der Eingabe angekommen ist.
-    if (!$db_fehler) {
-        db_visu_speichern((string) (isset($_POST['visu_pw']) ? $_POST['visu_pw'] : ''));
+    /* Ein Anfuehrungszeichen im Benutzernamen wird abgewiesen und gemeldet,
+     * nicht still entfernt (Hinweis der Bauliste, Durchgang 29.09.2026). */
+    if (db_steuerzeichen($db_zben) || strpbrk($db_zben, "\"'") !== false) {
+        $db_fehler[] = db_t('EINST.FEHLER_ZBENUTZER');
+    }
+    // Kennwoerter duerfen Anfuehrungszeichen tragen; nur eine Liste ist falsch.
+    if (!is_string($db_zpw) || !is_string($db_vpw)) {
+        $db_fehler[] = db_t('EINST.FEHLER_KENNWORT_FORM');
+        $db_zpw = '';
+        $db_vpw = '';
     }
 
     /* Das Hintergrundbild des Ruhebilds.
@@ -416,55 +439,102 @@ if ($db_post && isset($_POST['speichern'])) {
         $db_fehler[] = db_t('EINST.RUHE_BILD_VERWORFEN');
     }
 
-    if (!$db_fehler) {
-        $db_bp = db_paths()['ruhebild'];
-        if ((string) (isset($_POST['ruhe_bild_weg']) ? $_POST['ruhe_bild_weg'] : '') === '--') {
-            /* '--' schlaegt eine gleichzeitig gewaehlte Datei - und sagt es. */
-            @unlink($db_bp);
-            $db_cfg['ruhe_bild'] = '';
-            $db_meldungen[] = $db_bildda
-                ? db_t('EINST.RUHE_BILD_WEG_STATT')
-                : db_t('EINST.RUHE_BILD_WEG');
-        } elseif ($db_bildda) {
-            if ((int) $_FILES['ruhe_bild']['size'] > DB_RUHE_BILD_MAX) {
-                $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_GROSS'),
-                                       (int) (DB_RUHE_BILD_MAX / 1048576));
+    /* O4: auch das Bild wird ZUERST geprueft (Groesse, Inhalt, Kanten) und
+     * erst unten abgelegt. */
+    $db_bild_weg = ($db_sauber('ruhe_bild_weg') === '--');
+    $db_bild_endung = '';
+    $db_masse = null;
+    if (!$db_fehler && !$db_bild_weg && $db_bildda) {
+        if ((int) $_FILES['ruhe_bild']['size'] > DB_RUHE_BILD_MAX) {
+            $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_GROSS'),
+                                   (int) (DB_RUHE_BILD_MAX / 1048576));
+        } else {
+            $db_masse = @getimagesize($_FILES['ruhe_bild']['tmp_name']);
+            $db_endungen = array(IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png',
+                                 IMAGETYPE_WEBP => 'webp');
+            if (!is_array($db_masse) || !isset($db_masse[2])
+                    || !isset($db_endungen[$db_masse[2]])) {
+                $db_fehler[] = db_t('EINST.FEHLER_RUHE_BILD_TYP');
+            } elseif ((int) $db_masse[0] > DB_RUHE_BILD_KANTE
+                      || (int) $db_masse[1] > DB_RUHE_BILD_KANTE) {
+                /* Die Bytegrenze allein reicht nicht: ein gut gepacktes
+                 * PNG mit 25000 Punkten Kantenlaenge bleibt weit unter
+                 * 4 MB, und dekodieren muss es das Tablet, nicht der
+                 * Server. */
+                $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_KANTE'),
+                                       (int) $db_masse[0], (int) $db_masse[1],
+                                       DB_RUHE_BILD_KANTE);
             } else {
-                $db_masse = @getimagesize($_FILES['ruhe_bild']['tmp_name']);
-                $db_endungen = array(IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png',
-                                     IMAGETYPE_WEBP => 'webp');
-                if (!is_array($db_masse) || !isset($db_masse[2])
-                        || !isset($db_endungen[$db_masse[2]])) {
-                    $db_fehler[] = db_t('EINST.FEHLER_RUHE_BILD_TYP');
-                } elseif ((int) $db_masse[0] > DB_RUHE_BILD_KANTE
-                          || (int) $db_masse[1] > DB_RUHE_BILD_KANTE) {
-                    /* Die Bytegrenze allein reicht nicht: ein gut gepacktes
-                     * PNG mit 25000 Punkten Kantenlaenge bleibt weit unter
-                     * 4 MB, und dekodieren muss es das Tablet, nicht der
-                     * Server. */
-                    $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_KANTE'),
-                                           (int) $db_masse[0], (int) $db_masse[1],
-                                           DB_RUHE_BILD_KANTE);
-                } elseif (!@is_dir(dirname($db_bp)) && !@mkdir(dirname($db_bp), 0775, true)) {
-                    $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_SCHREIBEN'),
-                                           db_e(dirname($db_bp)));
-                } elseif (!@move_uploaded_file($_FILES['ruhe_bild']['tmp_name'], $db_bp)) {
-                    $db_fehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_SCHREIBEN'),
-                                           db_e($db_bp));
-                } else {
-                    @chmod($db_bp, 0644);
-                    $db_cfg['ruhe_bild'] = $db_endungen[$db_masse[2]];
-                    $db_meldungen[] = sprintf(db_t('EINST.RUHE_BILD_UEBERNOMMEN'),
-                                              db_e(strtoupper($db_endungen[$db_masse[2]])),
-                                              (int) $db_masse[0], (int) $db_masse[1]);
-                }
+                $db_bild_endung = $db_endungen[$db_masse[2]];
             }
         }
     }
 
+    /* O4/O5 (Durchgang 29.09.2026): erst ALLES pruefen, dann schreiben - und
+     * jede Erfolgsmeldung haengt am Rueckgabewert. Bis 0.9.25 meldete ein
+     * unschreibbares zugang.json "Die Einstellungen wurden gespeichert"
+     * (gemessen, Befund 5 des Oberflaechen-Pruefers). */
     if (!$db_fehler) {
-        if (db_config_speichern($db_cfg)) { $db_meldungen[] = db_t('EINST.GESPEICHERT'); }
-        else { $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), $db_p['config']); }
+        $db_schreibfehler = array();
+        // 1. das Hintergrundbild
+        $db_bp = db_paths()['ruhebild'];
+        if ($db_bild_weg) {
+            /* '--' schlaegt eine gleichzeitig gewaehlte Datei - und sagt es. */
+            @unlink($db_bp);
+            clearstatcache(true, $db_bp);
+            if (is_file($db_bp)) {
+                $db_schreibfehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_SCHREIBEN'), db_e($db_bp));
+            } else {
+                $db_cfg['ruhe_bild'] = '';
+                $db_meldungen[] = $db_bildda
+                    ? db_t('EINST.RUHE_BILD_WEG_STATT')
+                    : db_t('EINST.RUHE_BILD_WEG');
+            }
+        } elseif ($db_bild_endung !== '') {
+            if (!@is_dir(dirname($db_bp)) && !@mkdir(dirname($db_bp), 0775, true)) {
+                $db_schreibfehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_SCHREIBEN'),
+                                              db_e(dirname($db_bp)));
+            } elseif (!@move_uploaded_file($_FILES['ruhe_bild']['tmp_name'], $db_bp)) {
+                $db_schreibfehler[] = sprintf(db_t('EINST.FEHLER_RUHE_BILD_SCHREIBEN'),
+                                              db_e($db_bp));
+            } else {
+                @chmod($db_bp, 0644);
+                $db_cfg['ruhe_bild'] = $db_bild_endung;
+                $db_meldungen[] = sprintf(db_t('EINST.RUHE_BILD_UEBERNOMMEN'),
+                                          db_e(strtoupper($db_bild_endung)),
+                                          (int) $db_masse[0], (int) $db_masse[1]);
+            }
+        }
+        // 2. eigener Zugang und Visualisierungs-Passwort (0600, unter der
+        //    gemeinsamen Sperre mit dem Dienst)
+        $db_zug_vorher = db_zugang();
+        if (!db_zugang_speichern($db_zadr, $db_zport !== '' ? $db_zport : 80, $db_zben, $db_zpw)
+                || !db_visu_speichern($db_vpw)) {
+            $db_schreibfehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_p['geheim']));
+        }
+        // 3. die Einstellungen
+        if (!db_config_speichern($db_cfg)) {
+            $db_schreibfehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_p['config']));
+        }
+        if ($db_schreibfehler) {
+            $db_fehler = array_merge($db_fehler, $db_schreibfehler);
+        } else {
+            $db_meldungen[] = db_t('EINST.GESPEICHERT');
+            // O17: was der Dienst beim Start liest
+            foreach (array('miniserver', 'tls', 'takt', 'http_rueckfall', 'http_takt',
+                           'verlauf', 'verlauf_punkte') as $db_k) {
+                if (json_encode($db_cfg_vorher[$db_k]) !== json_encode($db_cfg[$db_k])) {
+                    $db_nachziehen = true;
+                }
+            }
+            $db_zug_nachher = db_zugang();
+            foreach (array('adresse', 'port', 'benutzer', 'passwort') as $db_k) {
+                if ((isset($db_zug_vorher[$db_k]) ? $db_zug_vorher[$db_k] : null)
+                        !== (isset($db_zug_nachher[$db_k]) ? $db_zug_nachher[$db_k] : null)) {
+                    $db_nachziehen = true;
+                }
+            }
+        }
     }
     $db_tab = 'tab-settings';
 }
@@ -507,128 +577,91 @@ if ($db_post && isset($_POST['entwurf'])) {
 
 /* ---------------- Seiten verwalten ---------------- */
 if ($db_post && isset($_POST['seiten_speichern'])) {
+    db_json_lesen_streng($db_p['seiten'], $db_lage);
+    if ($db_lage === 'kaputt' || $db_lage === 'unlesbar') {
+        $db_fehler[] = sprintf(db_t('EINST.KAPUTT_GESPERRT'), db_e($db_p['seiten']));
+    }
     $db_seiten = db_seiten();
-    $db_namen = isset($_POST['s_name']) ? (array) $_POST['s_name'] : array();
-    $db_spalten = isset($_POST['s_spalten']) ? (array) $_POST['s_spalten'] : array();
-    $db_pins = isset($_POST['s_pin']) ? (array) $_POST['s_pin'] : array();
-    $db_weg = isset($_POST['s_weg']) ? (array) $_POST['s_weg'] : array();
+    $db_namen = isset($_POST['s_name']) && is_array($_POST['s_name']) ? $_POST['s_name'] : array();
+    $db_spalten = isset($_POST['s_spalten']) && is_array($_POST['s_spalten']) ? $_POST['s_spalten'] : array();
+    $db_pins = isset($_POST['s_pin']) && is_array($_POST['s_pin']) ? $_POST['s_pin'] : array();
+    $db_weg = isset($_POST['s_weg']) && is_array($_POST['s_weg']) ? $_POST['s_weg'] : array();
+    $db_pinweg = isset($_POST['s_pinweg']) && is_array($_POST['s_pinweg']) ? $_POST['s_pinweg'] : array();
+    /* O7 (Durchgang 29.09.2026): dieselbe Regel wie im Designer
+     * (db_seiten_pruefen in db_lib.php) - ein Name mit Steuerzeichen und eine
+     * Spaltenzahl, die keine ganze Zahl von 2 bis 12 ist, werden abgewiesen.
+     * Bis 0.9.25 entfernte dieser Reiter Anfuehrungszeichen still aus dem
+     * Namen, und "12abc" Spalten wurden 12. Anfuehrungszeichen sind erlaubt -
+     * jede Ausgabe maskiert sie.
+     * C11: die PIN wird als Pruefwert gespeichert (password_hash). */
     $db_neu = array();
     foreach ($db_seiten as $db_i => $db_s) {
         if (!empty($db_weg[$db_i])) { continue; }
-        $db_n = isset($db_namen[$db_i])
-            ? trim(preg_replace('/[\x00-\x1F\x7F"]/', '', (string) $db_namen[$db_i])) : '';
+        $db_n = isset($db_namen[$db_i]) && is_string($db_namen[$db_i]) ? trim($db_namen[$db_i]) : '';
         if ($db_n === '') {
             $db_fehler[] = sprintf(db_t('BOARD.FEHLER_NAME'), (int) $db_i + 1);
             continue;
         }
-        $db_sp = isset($db_spalten[$db_i]) ? (int) $db_spalten[$db_i] : 6;
-        if ($db_sp < 2 || $db_sp > 12) {
+        if (db_steuerzeichen($db_n)) {
+            $db_fehler[] = sprintf(db_t('DESIGN.FEHLER_ZEICHEN'),
+                                   db_e((string) (isset($db_s['schluessel']) ? $db_s['schluessel'] : '')));
+            continue;
+        }
+        $db_sp = isset($db_spalten[$db_i]) && is_string($db_spalten[$db_i]) ? trim($db_spalten[$db_i]) : '6';
+        if (!preg_match('/^[0-9]{1,2}$/', $db_sp) || (int) $db_sp < 2 || (int) $db_sp > 12) {
             $db_fehler[] = sprintf(db_t('BOARD.FEHLER_SPALTEN'), db_e($db_n));
             continue;
         }
-        $db_pin = isset($db_pins[$db_i]) ? trim((string) $db_pins[$db_i]) : '';
+        $db_pin = isset($db_pins[$db_i]) && is_string($db_pins[$db_i]) ? trim($db_pins[$db_i]) : '';
         if ($db_pin !== '' && !preg_match('/^[0-9]{4,10}$/', $db_pin)) {
             $db_fehler[] = sprintf(db_t('BOARD.FEHLER_PIN'), db_e($db_n));
             continue;
         }
         $db_s['name'] = $db_n;
-        $db_s['spalten'] = $db_sp;
+        $db_s['spalten'] = (int) $db_sp;
         // Leere PIN heisst: die bisherige beibehalten. Zum Loeschen gibt es
         // das Haekchen daneben.
-        if ($db_pin !== '') { $db_s['pin'] = $db_pin; }
-        if (!empty($_POST['s_pinweg'][$db_i])) { $db_s['pin'] = ''; }
+        if ($db_pin !== '') {
+            $db_h = db_pin_hash($db_pin);
+            if ($db_h === false) {
+                $db_fehler[] = sprintf(db_t('BOARD.FEHLER_PIN'), db_e($db_n));
+                continue;
+            }
+            $db_s['pin'] = $db_h;
+        }
+        if (!empty($db_pinweg[$db_i])) { $db_s['pin'] = ''; }
         $db_neu[] = $db_s;
     }
     if (!$db_fehler) {
         if (db_seiten_speichern($db_neu)) { $db_meldungen[] = db_t('BOARD.GESPEICHERT'); }
-        else { $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), $db_p['seiten']); }
+        else { $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_p['seiten'])); }
     }
     $db_tab = 'tab-boards';
 }
 
 /* ---------------- Designer speichert ---------------- */
 if ($db_post && isset($_POST['designer_speichern'])) {
-    $db_roh = (string) (isset($_POST['aufbau']) ? $_POST['aufbau'] : '');
+    $db_roh = isset($_POST['aufbau']) && is_string($_POST['aufbau']) ? $_POST['aufbau'] : '';
     $db_d = json_decode($db_roh, true);
-    if (!is_array($db_d) || !isset($db_d['seiten']) || !is_array($db_d['seiten'])) {
+    db_json_lesen_streng($db_p['seiten'], $db_lage);
+    if ($db_lage === 'kaputt' || $db_lage === 'unlesbar') {
+        $db_fehler[] = sprintf(db_t('EINST.KAPUTT_GESPERRT'), db_e($db_p['seiten']));
+    } elseif (!is_array($db_d) || !isset($db_d['seiten']) || !is_array($db_d['seiten'])) {
         // Kaputte Daten werden NICHT gespeichert und NICHT zurechtgebogen.
         $db_fehler[] = db_t('DESIGN.FEHLER_JSON');
     } else {
-        $db_bekannt = array();
-        foreach (db_bausteine() as $db_b) { $db_bekannt[$db_b['uuid']] = 1; }
-        $db_neu = array();
-        $db_schluessel = array();
-        foreach ($db_d['seiten'] as $db_i => $db_s) {
-            $db_k = (string) (isset($db_s['schluessel']) ? $db_s['schluessel'] : '');
-            if (!preg_match('/^[a-z0-9-]{1,60}$/', $db_k)) {
-                $db_fehler[] = sprintf(db_t('DESIGN.FEHLER_SCHLUESSEL'), (int) $db_i + 1);
-                continue;
-            }
-            if (isset($db_schluessel[$db_k])) {
-                $db_fehler[] = sprintf(db_t('DESIGN.FEHLER_DOPPELT'), db_e($db_k));
-                continue;
-            }
-            $db_schluessel[$db_k] = 1;
-            $db_kacheln = array();
-            foreach ((isset($db_s['kacheln']) && is_array($db_s['kacheln'])
-                      ? $db_s['kacheln'] : array()) as $db_k2) {
-                $db_u = (string) (isset($db_k2['uuid']) ? $db_k2['uuid'] : '');
-                if ($db_u !== '' && !isset($db_bekannt[$db_u])) {
-                    // Der Baustein steht nicht mehr in der Struktur. Die
-                    // Kachel bleibt trotzdem erhalten - sie wird auf dem
-                    // Dashboard als 'fehlt' angezeigt, statt spurlos zu
-                    // verschwinden.
-                    $db_meldungen[] = sprintf(db_t('DESIGN.UNBEKANNT'), db_e($db_u));
-                }
-                $db_g = (string) (isset($db_k2['groesse']) ? $db_k2['groesse'] : '1x1');
-                if (!preg_match('/^[1-6]x[1-3]$/', $db_g)) { $db_g = '1x1'; }
-                $db_art = preg_replace('/[^a-z]/', '',
-                              (string) (isset($db_k2['kachel']) ? $db_k2['kachel'] : ''));
-                $db_neuek = array(
-                    'uuid'     => $db_u,
-                    'titel'    => trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
-                                       (string) (isset($db_k2['titel']) ? $db_k2['titel'] : ''))),
-                    'kachel'   => $db_art,
-                    'groesse'  => $db_g,
-                    'sichtbar' => !empty($db_k2['sichtbar']) ? 1 : 0,
-                );
-                /* Szene: die Schritte werden EINZELN gegen dieselbe
-                 * Positivliste geprueft wie ein einzelner Befehl. Ein
-                 * unbrauchbarer Schritt wird uebergangen und gemeldet - die
-                 * uebrigen Kacheln werden trotzdem gespeichert. */
-                if ($db_art === 'szene') {
-                    $db_schritte = array();
-                    foreach ((isset($db_k2['schritte']) && is_array($db_k2['schritte'])
-                              ? $db_k2['schritte'] : array()) as $db_sch) {
-                        if (!is_array($db_sch)) { continue; }
-                        $db_su = (string) (isset($db_sch['uuid']) ? $db_sch['uuid'] : '');
-                        $db_sb = (string) (isset($db_sch['befehl']) ? $db_sch['befehl'] : '');
-                        list($db_sok, $db_sgrund) = db_befehl_erlaubt($db_su, $db_sb);
-                        if (!$db_sok) {
-                            $db_fehler[] = sprintf(db_t('DESIGN.FEHLER_SCHRITT'),
-                                                   db_e($db_neuek['titel']), $db_sgrund);
-                            continue;
-                        }
-                        $db_schritte[] = array('uuid' => $db_su, 'befehl' => $db_sb);
-                    }
-                    $db_neuek['schritte'] = $db_schritte;
-                    $db_neuek['uuid'] = '';
-                }
-                $db_kacheln[] = $db_neuek;
-            }
-            $db_alt = db_seite($db_k);
-            $db_neu[] = array(
-                'schluessel' => $db_k,
-                'name'       => trim(preg_replace('/[\x00-\x1F\x7F"]/', '',
-                                     (string) (isset($db_s['name']) ? $db_s['name'] : $db_k))),
-                'spalten'    => max(2, min(12, (int) (isset($db_s['spalten']) ? $db_s['spalten'] : 6))),
-                'pin'        => (string) ($db_alt !== null && isset($db_alt['pin']) ? $db_alt['pin'] : ''),
-                'kacheln'    => $db_kacheln,
-            );
-        }
-        if (!$db_fehler) {
+        /* O7 (Durchgang 29.09.2026): abweisen statt verbiegen, mit derselben
+         * Regel wie der Reiter Dashboards und das Zurueckspielen
+         * (db_seiten_pruefen). Bis 0.9.25 wurden '9x9' zu 1x1, 'Schalter1' zu
+         * 'chalter' und 99 Spalten zu 12, gemeldet als "gespeichert"
+         * (gemessen, Befund 7 des Oberflaechen-Pruefers). Die PIN kommt aus
+         * der gespeicherten Seite, nie aus dem Formular. */
+        list($db_neu, $db_f2, $db_h2) = db_seiten_pruefen($db_d['seiten'], 'designer');
+        $db_fehler = array_merge($db_fehler, $db_f2);
+        $db_meldungen = array_merge($db_meldungen, $db_h2);
+        if (!$db_fehler && is_array($db_neu)) {
             if (db_seiten_speichern($db_neu)) { $db_meldungen[] = db_t('DESIGN.GESPEICHERT'); }
-            else { $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), $db_p['seiten']); }
+            else { $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_p['seiten'])); }
         }
     }
     $db_tab = 'tab-designer';
@@ -638,8 +671,19 @@ if ($db_post && isset($_POST['designer_speichern'])) {
 if ($db_post && isset($_POST['token_neu'])) {
     $db_cfg = db_config();
     $db_cfg['aktionstoken'] = db_token_erzeugen();
-    if (db_config_speichern($db_cfg)) { $db_meldungen[] = db_t('LOX.TOKEN_NEU'); }
-    else { $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), $db_p['config']); }
+    /* C12: "Neues Token erzeugen" ist eine ausdrueckliche Entscheidung - es
+     * darf auch eine beschaedigte dashboard.json ersetzen (die Abschrift
+     * .kaputt bleibt daneben), und die Seite sagt, dass die uebrigen
+     * Einstellungen dann auf Werk stehen. */
+    $db_lage_vorher = db_config_lage();
+    if (db_config_speichern($db_cfg, true)) {
+        $db_meldungen[] = db_t('LOX.TOKEN_NEU');
+        if ($db_lage_vorher === 'kaputt' || $db_lage_vorher === 'unlesbar') {
+            $db_meldungen[] = sprintf(db_t('EINST.KAPUTT_ERSETZT'), db_e($db_p['config'] . '.kaputt'));
+        }
+    } else {
+        $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_p['config']));
+    }
     $db_tab = 'tab-loxone';
 }
 if ($db_post && isset($_POST['log_leeren'])) {
@@ -650,14 +694,24 @@ if ($db_post && isset($_POST['log_leeren'])) {
      * sondern Muell. Bis 0.9.12 leerte der Knopf unbesehen.
      *
      * Kein stilles Zurechtbiegen: der Knopf sagt, was fehlt. */
-    if (db_dienst_pid() > 0) {
+    /* O6 (Durchgang 29.09.2026): nur mit Bestaetigungshaken (Regeln/04, "Ein
+     * Haekchen zur Bestaetigung, sonst passiert nichts"). O5: die Meldung
+     * haengt am Rueckgabewert - bis 0.9.25 meldete eine unschreibbare
+     * Logdatei "Logdatei geleert" (gemessen). */
+    if (!isset($_POST['log_leeren_ok']) || $_POST['log_leeren_ok'] !== '1') {
+        $db_fehler[] = db_t('LOG.LEEREN_BESTAETIGEN');
+    } elseif (db_dienst_pid() > 0 || db_dienst_pids()) {
         $db_fehler[] = db_t('LOG.LEEREN_LAEUFT');
     } else {
         @mkdir(dirname($db_p['log']), 0775, true);
         // In die Logdatei gehoert Klartext, kein HTML.
         $db_klartext = trim(strip_tags(html_entity_decode(db_t('LOG.GELEERT'), ENT_QUOTES, 'UTF-8')));
-        @file_put_contents($db_p['log'], '[' . date('Y-m-d H:i:s') . '] ' . $db_klartext . "\n");
-        $db_meldungen[] = db_t('LOG.GELEERT');
+        $db_zeile = '[' . date('Y-m-d H:i:s') . '] ' . $db_klartext . "\n";
+        if (@file_put_contents($db_p['log'], $db_zeile) === strlen($db_zeile)) {
+            $db_meldungen[] = db_t('LOG.GELEERT');
+        } else {
+            $db_fehler[] = sprintf(db_t('LOG.LEEREN_FEHL'), db_e($db_p['log']));
+        }
     }
     $db_tab = 'tab-log';
 }
@@ -684,8 +738,23 @@ if ($db_post && isset($_POST['probe'])) {
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
 if ($db_post && isset($_POST['db_sichern'])) {
-    $db_js = json_encode(db_config(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    /* O3 (Durchgang 29.09.2026): die GANZE Einrichtung - Einstellungen samt
+     * Aktionstoken, Seiten samt Kacheln und PIN-Pruefwerten, eigener Zugang
+     * (db_sicherung_bauen). Aus einer beschaedigten Datei wird nichts
+     * gesichert - die Sicherung waere sonst eine Sicherung der Vorgaben. */
+    $db_js = false;
+    $db_heil = true;
+    foreach (array('config', 'seiten', 'geheim') as $db_d) {
+        db_json_lesen_streng($db_p[$db_d], $db_lage);
+        if ($db_lage === 'kaputt' || $db_lage === 'unlesbar') {
+            $db_heil = false;
+            $db_fehler[] = sprintf(db_t('EINST.KAPUTT_GESPERRT'), db_e($db_p[$db_d]));
+        }
+    }
+    if ($db_heil) {
+        $db_js = json_encode(db_sicherung_bauen(),
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
     if ($db_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="dashboard_einstellungen_'
@@ -693,7 +762,7 @@ if ($db_post && isset($_POST['db_sichern'])) {
         echo $db_js;
         exit;
     }
-    $db_fehler[] = db_t('EINST.SICH_SCHREIBFEHLER');
+    if ($db_heil) { $db_fehler[] = db_t('EINST.SICH_SCHREIBFEHLER'); }
 }
 
 /* ---------------- Einstellungen zurueckspielen ----------------
@@ -709,24 +778,90 @@ if ($db_post && isset($_POST['db_zurueck'])) {
     } elseif ((int) $_FILES['db_sicherung']['size'] > 262144) {
         $db_fehler[] = db_t('EINST.SICH_ZU_GROSS');
     } else {
-        list($db_neu, $db_mangel, $db_n) = db_sicherung_lesen(
+        /* C5 (Durchgang 29.09.2026, Bauart E): jeder Wert geprueft, Seiten und
+         * Kacheln durch dieselbe Pruefung wie im Designer, der Zugang wie im
+         * Formular. Eine halb gueltige Datei aendert nichts; geht beim
+         * Schreiben etwas schief, werden die schon geschriebenen Dateien
+         * zurueckgesetzt (db_sicherung_einspielen). */
+        list($db_neu, $db_mangel, $db_n, $db_teile, $db_hinweise) = db_sicherung_lesen(
             (string) @file_get_contents($_FILES['db_sicherung']['tmp_name']));
         if ($db_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
              * nichts. */
             $db_fehler[] = db_t('EINST.SICH_ABGELEHNT') . ' '
                             . implode(' ', $db_mangel);
-        } elseif (db_config_speichern($db_neu)) {
+        } elseif (db_sicherung_einspielen($db_neu, $db_teile)) {
             $db_meldungen[] = sprintf(db_t('EINST.SICH_UEBERNOMMEN'), $db_n);
+            if (is_array($db_teile) && isset($db_teile['seiten'])) {
+                $db_meldungen[] = sprintf(db_t('EINST.SICH_SEITEN_UEBERNOMMEN'), count($db_teile['seiten']));
+            }
+            if (is_array($db_teile) && isset($db_teile['zugang'])) {
+                $db_meldungen[] = db_t('EINST.SICH_ZUGANG_UEBERNOMMEN');
+            }
+            $db_meldungen = array_merge($db_meldungen, $db_hinweise);
+            // O17: nach dem Zurueckspielen wird der Dienst nachgezogen.
+            $db_nachziehen = true;
         } else {
             $db_fehler[] = db_t('EINST.SICH_SCHREIBFEHLER');
         }
+    }
+    $db_tab = 'tab-settings';
+}
+
+/* ---------------- O17: Dienst nachziehen ----------------
+ * Der Dienst liest seine Einstellungen und den Zugang beim Start. Bis 0.9.25
+ * wirkten Takt, Miniserver, TLS und HTTP-Rueckfall nach "gespeichert" und
+ * "zurueckgespielt" erst nach einem Neustart von Hand, und keine Meldung
+ * sagte das (Befund 17 des Oberflaechen-Pruefers). Laeuft er, wird er jetzt
+ * neu gestartet und das Ergebnis gemeldet; laeuft er nicht, sagt die Seite
+ * es. */
+if ($db_nachziehen) {
+    if (db_dienst_pid() > 0 || db_dienst_pids()) {
+        list($db_ok, $db_aus) = db_dienst('restart');
+        if ($db_ok) { $db_meldungen[] = sprintf(db_t('EINST.DIENST_NACHGEZOGEN'), db_e($db_aus)); }
+        else { $db_fehler[] = sprintf(db_t('EINST.DIENST_NACHZIEHEN_FEHL'), db_e($db_aus)); }
+    } else {
+        $db_meldungen[] = db_t('EINST.DIENST_NICHT_NACHGEZOGEN');
+    }
+}
+
+/* ---------------- O1: nach JEDEM POST umleiten ----------------
+ * Regeln/04: jeder POST-Handler endet mit 303; das Ergebnis reist als
+ * Einmalmeldung. Bis 0.9.25 antworteten alle Handler mit 200 ohne Location:
+ * F5 speicherte erneut, und "Neues Token erzeugen" wuerfelte bei F5 noch
+ * einmal (gemessen: zwei Absendungen, drei verschiedene Token). Die
+ * Downloads (Vorlagen, Sicherung) liefern vorher selbst und enden mit exit.
+ * Laesst sich die Einmalmeldung nicht schreiben, wird wie bisher direkt
+ * gerendert - lieber ohne Umleitung als ohne Meldung. */
+if ($db_post) {
+    if (db_einmal_schreiben(array('meldungen' => $db_meldungen, 'fehler' => $db_fehler,
+                                  'ausgabe' => $db_ausgabe))) {
+        header('Location: index.php?form=' . rawurlencode(substr($db_tab, 4)), true, 303);
+        exit;
     }
 }
 
 /* ---------------- Laden ---------------- */
 $db_cfg = db_config();
 $db_token = db_token();
+/* C12/C3 (Durchgang 29.09.2026): beschaedigte Einrichtungsdateien stehen
+ * oben, mit Abschrift und Abhilfe - sie werden nicht still ueberschrieben. */
+$db_kaputt = false;
+foreach (array('config' => 'EINST.KAPUTT_CONFIG', 'seiten' => 'EINST.KAPUTT_SEITEN',
+               'geheim' => 'EINST.KAPUTT_ZUGANG') as $db_d => $db_sk) {
+    db_json_lesen_streng($db_p[$db_d], $db_lage);
+    if ($db_lage === 'kaputt' || $db_lage === 'unlesbar') {
+        $db_kaputt = $db_kaputt || $db_d === 'config';
+        $db_fehler[] = sprintf(db_t($db_sk), db_e($db_p[$db_d]), db_e($db_p[$db_d] . '.kaputt'));
+    }
+}
+// Ein Token, das nicht taugt, wird nicht still ersetzt - die Seite sagt es.
+if ($db_token === '' && !$db_kaputt) {
+    $db_fehler[] = db_t('LOX.TOKEN_UNTAUGLICH');
+}
+/* C10: JSON in den Skriptbloecken des Designers mit HEX_TAG, HEX_AMP,
+ * HEX_APOS und HEX_QUOT - dieselbe Bauart wie in tafel.php. */
+$db_jf = JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
 $db_seiten = db_seiten();
 $db_bausteine = db_bausteine();
 $db_struktur = db_struktur();
@@ -743,7 +878,10 @@ $db_rahmen = class_exists('LBWeb', false) && method_exists('LBWeb', 'lbheader');
 if ($db_rahmen) {
     LBWeb::lbheader(db_t('ALLG.TITEL'), 'https://www.loxone.com/enen/kb/api/', 'help.html');
 }
-
+/* O9 (Durchgang 29.09.2026): die Seite wird gepuffert, damit der Reiter Test
+ * das Formularmerkmal am GERENDERTEN HTML zaehlt (Klasse 12) - die Zeile
+ * steht als Platzhalter in der Tabelle und wird ganz am Ende ersetzt. */
+ob_start();
 ?>
 <style>
 .sm-wrap { max-width: 980px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
@@ -1327,7 +1465,11 @@ if (db_wetter_eigene_gewaehlt($db_cfg)) {
 <div class="sm-warnung"><?= db_t('DESIGN.WARNUNG') ?></div>
 
 <div class="sm-knopfreihe">
-  <button data-role="none" type="button" class="sm-btn sm-b-aktion" id="dz-neu">+ <?= db_e(db_t('DESIGN.NEUE_SEITE')) ?></button>
+  <!-- O16 (Durchgang 29.09.2026): Hinzufuegen ist grau (es aendert nur den
+       Entwurf, gespeichert wird mit dem orangen Knopf), Loeschen orange
+       (Regeln/04). Bis 0.9.25 war "+ Neue Seite" orange, "+ Szene" grau und
+       das Loeschen einer Seite grau. -->
+  <button data-role="none" type="button" class="sm-btn sm-b-technik" id="dz-neu">+ <?= db_e(db_t('DESIGN.NEUE_SEITE')) ?></button>
   <button data-role="none" type="button" class="sm-btn sm-b-technik" id="dz-szene">+ <?= db_e(db_t('DESIGN.SZENE_NEU')) ?></button>
 </div>
 
@@ -1365,7 +1507,7 @@ if (db_wetter_eigene_gewaehlt($db_cfg)) {
   <td rowspan="<?= count(db_status_felder()) ?>"><span class="sm-mono">http://<?= db_e(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : 'loxberry') ?>/plugins/<?= db_e($db_p['plugin']) ?>/index.php?token=<?= db_e($db_token) ?>&amp;aktion=status</span></td>
   <?php } ?>
   <td class="sm-mono">DASHBOARD_<?= db_e($db_feld) ?></td>
-  <td class="sm-mono">\i<?= db_e($db_feld) ?>=\i\v</td>
+  <td class="sm-mono"><?= db_e(db_check($db_feld)) ?></td>
   <td><?= db_t($db_info[1]) ?><?= $db_info[0] !== '' ? ' [' . db_e($db_info[0]) . ']' : '' ?></td></tr>
 <?php } ?>
 </table>
@@ -1549,6 +1691,7 @@ if (!$db_zeilen) { ?>
 <form action="index.php" method="post">
   <?php echo db_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-log">
+  <label><input data-role="none" type="checkbox" name="log_leeren_ok" value="1"> <?= db_e(db_t('LOG.L_BESTAETIGEN')) ?></label>
   <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" name="log_leeren" value="1"><?= db_e(db_t('LOG.K_LEEREN')) ?></button>
   </div>
@@ -1607,10 +1750,15 @@ if (!$db_zeilen) { ?>
 		             'befehle' => isset($b['befehle']) ? $b['befehle'] : array(),
 		             'nurlesen' => (int) (isset($b['nurlesen']) ? $b['nurlesen'] : 0),
 		             'gesichert' => (int) (isset($b['gesichert']) ? $b['gesichert'] : 0));
-	}, $db_bausteine), JSON_UNESCAPED_UNICODE) ?>;
-	var AUFBAU = <?= json_encode(array('seiten' => $db_seiten), JSON_UNESCAPED_UNICODE) ?>;
-	var TYPEN = <?= json_encode(db_kacheltypen(), JSON_UNESCAPED_UNICODE) ?>;
-	var GROESSEN = <?= json_encode(array_keys(db_groessen())) ?>;
+	}, $db_bausteine), $db_jf) ?>;
+	/* C11 (Durchgang 29.09.2026): der PIN-Pruefwert geht nicht in den Browser -
+	   der Designer speichert die PIN ohnehin aus der gespeicherten Seite. */
+	var AUFBAU = <?= json_encode(array('seiten' => array_map(function ($s) {
+		if (is_array($s)) { $s['pin'] = ''; }
+		return $s;
+	}, $db_seiten)), $db_jf) ?>;
+	var TYPEN = <?= json_encode(db_kacheltypen(), $db_jf) ?>;
+	var GROESSEN = <?= json_encode(array_keys(db_groessen()), $db_jf) ?>;
 	var TEXT = <?= json_encode(array(
 		'neue'    => strip_tags(db_t('DESIGN.NEUE_SEITE')),
 		'frage'   => strip_tags(html_entity_decode(db_t('DESIGN.SEITE_WEG_FRAGE'), ENT_QUOTES, 'UTF-8')),
@@ -1626,7 +1774,7 @@ if (!$db_zeilen) { ?>
 		'szene_leer'   => strip_tags(db_t('DESIGN.SZENE_LEER')),
 		'szene_dazu'   => strip_tags(db_t('DESIGN.SZENE_DAZU')),
 		'szene_ohne_befehl' => strip_tags(db_t('DESIGN.SZENE_OHNE_BEFEHL')),
-	), JSON_UNESCAPED_UNICODE) ?>;
+	), $db_jf) ?>;
 
 	var bau = document.getElementById('dz-bau');
 	var feldAufbau = document.getElementById('dz-aufbau');
@@ -1734,7 +1882,7 @@ if (!$db_zeilen) { ?>
 			titel.style.cssText = 'display:flex;gap:8px;align-items:center;padding:8px 10px;background:#f2f7ea;border-bottom:1px solid #ddd;border-radius:8px 8px 0 0';
 			titel.innerHTML = '<b style="flex:1">' + e(s.name) + '</b>' +
 				'<span class="sm-hilfe">' + (s.kacheln || []).length + '</span>' +
-				'<button data-role="none" type="button" class="sm-btn sm-b-technik" data-seiteweg="' + si + '" style="padding:4px 10px;margin:0">&times;</button>';
+				'<button data-role="none" type="button" class="sm-btn sm-b-aktion" data-seiteweg="' + si + '" style="padding:4px 10px;margin:0">&times;</button>';
 			kasten.appendChild(titel);
 
 			var liste = document.createElement('div');
@@ -1956,6 +2104,10 @@ if (!$db_zeilen) { ?>
 <?php } ?>
 
 <?php
+$db_html = (string) ob_get_clean();
+list($db_fm_stand, $db_fm_text) = db_formmerkmal_pruefen($db_html);
+echo str_replace('<!--DB_FORMMERKMAL-->',
+                 db_pruefzeile($db_fm_stand, db_t('TEST.F_FORMMERKMAL'), $db_fm_text), $db_html);
 if ($db_rahmen) {
     LBWeb::lbfooter();
 }
