@@ -3830,6 +3830,18 @@ function db_beanstandet_stil($formular, $seiten = array())
          . ' { border: 2px solid #c62828 !important; background: #fff5f5 !important; }</style>';
 }
 
+/** X-2 (Nachzug G2, 02.10.2026): die Markierung AM FELD - Klasse und
+ * aria-invalid, nur fuer das Formular, dessen Eingaben gerade zurueckkamen.
+ * $feld wie in db_eingaben_sammeln(): Feldname, bei Feldern je Seite mit dem
+ * Seitenschluessel ($zeile). Die Felder tragen sonst kein class-Attribut. */
+function db_beanstandet_attr($formular, $feld, $zeile = null)
+{
+    if (!db_eingaben_aktiv($formular)) { return ''; }
+    $soll = ($zeile === null) ? (string) $feld : ((string) $feld . ':' . (string) $zeile);
+    $felder = isset($GLOBALS['db_eingaben']['felder']) ? (array) $GLOBALS['db_eingaben']['felder'] : array();
+    return in_array($soll, $felder, true) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+
 /* ---------------- O9: Pflichtzeilen des Reiters Test ---------------- */
 
 /** Tragen alle POST-Formulare das Merkmal? Gemessen am GERENDERTEN HTML

@@ -419,10 +419,20 @@ if ($db_post && isset($_POST['speichern'])) {
     if ($db_zadr !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-]{0,80}$/', $db_zadr)) {
         $db_bean[] = 'z_adresse';
         $db_fehler[] = db_t('EINST.FEHLER_ZADRESSE');
-    } elseif ($db_zadr !== '' && (!preg_match('/^[0-9]+$/', $db_zport)
+    }
+    /* Nr. 19 (Nachzug G2, 02.10.2026): der Port wird IMMER geprueft, sobald
+     * er etwas enthaelt - bis 0.9.29 nur bei gesetzter Adresse, und 99999
+     * ging bei leerer Adresse still durch. Leer ist nur ohne Adresse
+     * erlaubt (dann gilt 80 wie bisher). */
+    if (($db_zadr !== '' || $db_zport !== '') && (!preg_match('/^[0-9]+$/', $db_zport)
             || (int) $db_zport < 1 || (int) $db_zport > 65535)) {
         $db_bean[] = 'z_port';
         $db_fehler[] = db_t('EINST.FEHLER_ZPORT');
+    } elseif ($db_zadr === '' && $db_zport !== '' && (int) $db_zport !== 80) {
+        /* Nr. 19 (zweiter Nachtrag G2): ohne eigene Adresse gilt der Zugang
+         * des LoxBerry, ein eigener Port wuerde still verworfen. */
+        $db_bean[] = 'z_port';
+        $db_fehler[] = db_t('EINST.FEHLER_ZPORT_OHNE_ADRESSE');
     }
     /* Ein Anfuehrungszeichen im Benutzernamen wird abgewiesen und gemeldet,
      * nicht still entfernt (Hinweis der Bauliste, Durchgang 29.09.2026). */
@@ -1119,6 +1129,11 @@ ob_start();
     background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'%3E%3Cpath d='M1 1l6 6 6-6' fill='none' stroke='%234f7d17' stroke-width='2'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 10px center;
     padding-right: 32px; cursor: pointer; }
+/* Ergaenzung, nicht aus der Vorlage (X-2, Nachzug G2, 02.10.2026): das
+   beanstandete Feld traegt sm-beanstandet und aria-invalid. Dieselben Farben
+   wie db_beanstandet_stil(); background-color statt der Kurzform, damit der
+   Pfeil der Auswahlfelder (Regel oben) stehen bleibt. */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background-color: #fff5f5 !important; }
 
 </style>
 
@@ -1228,7 +1243,7 @@ if (db_eingaben_aktiv('speichern')) {
 <p class="sm-hilfe"><?= db_t('EINST.MS_ERKLAERUNG') ?></p>
 <div class="sm-feld">
   <label for="miniserver"><?= db_e(db_t('EINST.L_MINISERVER')) ?></label>
-  <select data-role="none" name="miniserver" id="miniserver">
+  <select data-role="none" name="miniserver" id="miniserver"<?= db_beanstandet_attr('speichern', 'miniserver') ?>>
   <?php $db_liste = db_miniserver_liste();
         if (!$db_liste) { $db_liste = array('1' => db_t('EINST.KEINE_LISTE')); }
         foreach ($db_liste as $db_nr => $db_bez) { ?>
@@ -1244,23 +1259,23 @@ if (db_eingaben_aktiv('speichern')) {
 <p class="sm-hilfe"><?= db_t('EINST.ZUGANG_ERKLAERUNG') ?></p>
 <div class="sm-feld">
   <label for="z_adresse"><?= db_e(db_t('EINST.L_ZADRESSE')) ?></label>
-  <input data-role="none" type="text" name="z_adresse" id="z_adresse"
+  <input data-role="none" type="text" name="z_adresse" id="z_adresse"<?= db_beanstandet_attr('speichern', 'z_adresse') ?>
          value="<?= db_e(isset($db_zugang['adresse']) ? $db_zugang['adresse'] : '') ?>"
          placeholder="<?= db_e(db_t('EINST.P_ZADRESSE')) ?>">
 </div>
 <div class="sm-feld">
   <label for="z_port"><?= db_e(db_t('EINST.L_ZPORT')) ?></label>
-  <input data-role="none" type="text" name="z_port" id="z_port"
+  <input data-role="none" type="text" name="z_port" id="z_port"<?= db_beanstandet_attr('speichern', 'z_port') ?>
          value="<?= db_e(isset($db_zugang['port']) ? $db_zugang['port'] : '80') ?>">
 </div>
 <div class="sm-feld">
   <label for="z_benutzer"><?= db_e(db_t('EINST.L_ZBENUTZER')) ?></label>
-  <input data-role="none" type="text" name="z_benutzer" id="z_benutzer"
+  <input data-role="none" type="text" name="z_benutzer" id="z_benutzer"<?= db_beanstandet_attr('speichern', 'z_benutzer') ?>
          value="<?= db_e(isset($db_zugang['benutzer']) ? $db_zugang['benutzer'] : '') ?>">
 </div>
 <div class="sm-feld">
   <label for="z_passwort"><?= db_e(db_t('EINST.L_ZPASSWORT')) ?></label>
-  <input data-role="none" type="password" name="z_passwort" id="z_passwort" value=""
+  <input data-role="none" type="password" name="z_passwort" id="z_passwort"<?= db_beanstandet_attr('speichern', 'z_passwort') ?> value=""
          placeholder="<?= db_e(!empty($db_zugang['passwort']) ? db_t('EINST.PW_DA') : db_t('EINST.PW_LEER')) ?>">
   <p class="sm-hilfe"><?= db_t('EINST.H_ZPASSWORT') ?></p>
 </div>
@@ -1270,7 +1285,7 @@ if (db_eingaben_aktiv('speichern')) {
 <div class="sm-warnung"><?= db_t('EINST.GESICHERT_WARNUNG') ?></div>
 <div class="sm-feld">
   <label for="visu_pw"><?= db_e(db_t('EINST.L_VISU_PW')) ?></label>
-  <input data-role="none" type="password" name="visu_pw" id="visu_pw" value=""
+  <input data-role="none" type="password" name="visu_pw" id="visu_pw"<?= db_beanstandet_attr('speichern', 'visu_pw') ?> value=""
          placeholder="<?= db_e(db_visu_da() ? db_t('EINST.PW_DA') : db_t('EINST.PW_LEER')) ?>">
   <p class="sm-hilfe"><?= db_t('EINST.H_VISU_PW') ?></p>
 </div>
@@ -1281,7 +1296,7 @@ if (db_eingaben_aktiv('speichern')) {
 <h2><?= db_e(db_t('EINST.H_TAKT')) ?></h2>
 <div class="sm-feld">
   <label for="takt"><?= db_e(db_t('EINST.L_TAKT')) ?></label>
-  <input data-role="none" type="text" name="takt" id="takt" value="<?= db_e($db_cfg['takt']) ?>">
+  <input data-role="none" type="text" name="takt" id="takt"<?= db_beanstandet_attr('speichern', 'takt') ?> value="<?= db_e($db_cfg['takt']) ?>">
   <p class="sm-hilfe"><?= db_t('EINST.H_TAKT') ?></p>
 </div>
 <label><input data-role="none" type="checkbox" name="http_rueckfall" value="1"<?= !empty($db_cfg['http_rueckfall']) ? ' checked' : '' ?>>
@@ -1289,11 +1304,11 @@ if (db_eingaben_aktiv('speichern')) {
 <p class="sm-hilfe"><?= db_t('EINST.H_RUECKFALL') ?></p>
 <div class="sm-feld">
   <label for="http_takt"><?= db_e(db_t('EINST.L_HTTP_TAKT')) ?></label>
-  <input data-role="none" type="text" name="http_takt" id="http_takt" value="<?= db_e($db_cfg['http_takt']) ?>">
+  <input data-role="none" type="text" name="http_takt" id="http_takt"<?= db_beanstandet_attr('speichern', 'http_takt') ?> value="<?= db_e($db_cfg['http_takt']) ?>">
 </div>
 <div class="sm-feld">
   <label for="wartezeit"><?= db_e(db_t('EINST.L_WARTEZEIT')) ?></label>
-  <input data-role="none" type="text" name="wartezeit" id="wartezeit" value="<?= db_e($db_cfg['wartezeit']) ?>">
+  <input data-role="none" type="text" name="wartezeit" id="wartezeit"<?= db_beanstandet_attr('speichern', 'wartezeit') ?> value="<?= db_e($db_cfg['wartezeit']) ?>">
   <p class="sm-hilfe"><?= sprintf(db_e(db_t('EINST.H_WARTEZEIT')), DB_WARTEZEIT_MIN, DB_WARTEZEIT_MAX) ?></p>
 </div>
 <label><input data-role="none" type="checkbox" name="sse" value="1"<?= !empty($db_cfg['sse']) ? ' checked' : '' ?>>
@@ -1303,7 +1318,7 @@ if (db_eingaben_aktiv('speichern')) {
 <h2><?= db_e(db_t('EINST.H_ANZEIGE')) ?></h2>
 <div class="sm-feld">
   <label for="farbe"><?= db_e(db_t('EINST.L_FARBE')) ?></label>
-  <select data-role="none" name="farbe" id="farbe">
+  <select data-role="none" name="farbe" id="farbe"<?= db_beanstandet_attr('speichern', 'farbe') ?>>
     <option value="dunkel"<?= $db_cfg['farbe'] === 'dunkel' ? ' selected' : '' ?>><?= db_e(db_t('EINST.FARBE_DUNKEL')) ?></option>
     <option value="hell"<?= $db_cfg['farbe'] === 'hell' ? ' selected' : '' ?>><?= db_e(db_t('EINST.FARBE_HELL')) ?></option>
   </select>
@@ -1324,20 +1339,20 @@ if (db_eingaben_aktiv('speichern')) {
 <p class="sm-hilfe"><?= db_t('EINST.WANDTABLET_ERKLAERUNG') ?></p>
 <div class="sm-feld">
   <label for="rotation"><?= db_e(db_t('EINST.L_ROTATION')) ?></label>
-  <input data-role="none" type="text" name="rotation" id="rotation" value="<?= db_e($db_cfg['rotation']) ?>">
+  <input data-role="none" type="text" name="rotation" id="rotation"<?= db_beanstandet_attr('speichern', 'rotation') ?> value="<?= db_e($db_cfg['rotation']) ?>">
   <p class="sm-hilfe"><?= db_t('EINST.H_ROTATION') ?></p>
 </div>
 <div class="sm-feld">
   <label for="nacht_von"><?= db_e(db_t('EINST.L_NACHT')) ?></label>
-  <input data-role="none" type="text" name="nacht_von" id="nacht_von" size="6"
+  <input data-role="none" type="text" name="nacht_von" id="nacht_von"<?= db_beanstandet_attr('speichern', 'nacht_von') ?> size="6"
          value="<?= db_e($db_cfg['nacht_von']) ?>" placeholder="22:30">
-  <input data-role="none" type="text" name="nacht_bis" id="nacht_bis" size="6"
+  <input data-role="none" type="text" name="nacht_bis" id="nacht_bis"<?= db_beanstandet_attr('speichern', 'nacht_bis') ?> size="6"
          value="<?= db_e($db_cfg['nacht_bis']) ?>" placeholder="06:00">
   <p class="sm-hilfe"><?= db_t('EINST.H_NACHT') ?></p>
 </div>
 <div class="sm-feld">
   <label for="nacht_helligkeit"><?= db_e(db_t('EINST.L_NACHT_HELLIGKEIT')) ?></label>
-  <input data-role="none" type="text" name="nacht_helligkeit" id="nacht_helligkeit"
+  <input data-role="none" type="text" name="nacht_helligkeit" id="nacht_helligkeit"<?= db_beanstandet_attr('speichern', 'nacht_helligkeit') ?>
          value="<?= db_e($db_cfg['nacht_helligkeit']) ?>">
 </div>
 <label><input data-role="none" type="checkbox" name="verlauf" value="1"<?= !empty($db_cfg['verlauf']) ? ' checked' : '' ?>>
@@ -1345,7 +1360,7 @@ if (db_eingaben_aktiv('speichern')) {
 <p class="sm-hilfe"><?= db_t('EINST.H_VERLAUF') ?></p>
 <div class="sm-feld">
   <label for="verlauf_punkte"><?= db_e(db_t('EINST.L_VERLAUF_PUNKTE')) ?></label>
-  <input data-role="none" type="text" name="verlauf_punkte" id="verlauf_punkte"
+  <input data-role="none" type="text" name="verlauf_punkte" id="verlauf_punkte"<?= db_beanstandet_attr('speichern', 'verlauf_punkte') ?>
          value="<?= db_e($db_cfg['verlauf_punkte']) ?>">
 </div>
 <label><input data-role="none" type="checkbox" name="tafelsteuerung" value="1"<?= !empty($db_cfg['tafelsteuerung']) ? ' checked' : '' ?>>
@@ -1355,7 +1370,7 @@ if (db_eingaben_aktiv('speichern')) {
   <?= db_e(db_t('EINST.L_TAFEL_MQTT')) ?></label>
 <div class="sm-feld">
   <label for="tafel_mqtt_praefix"><?= db_e(db_t('EINST.L_TAFEL_MQTT_PRAEFIX')) ?></label>
-  <input data-role="none" type="text" name="tafel_mqtt_praefix" id="tafel_mqtt_praefix"
+  <input data-role="none" type="text" name="tafel_mqtt_praefix" id="tafel_mqtt_praefix"<?= db_beanstandet_attr('speichern', 'tafel_mqtt_praefix') ?>
          value="<?= db_e($db_cfg['tafel_mqtt_praefix']) ?>" placeholder="dashboard">
   <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_TAFEL_MQTT'),
       '<span class="sm-mono">' . db_e(implode(', ', db_tafel_mqtt_themen((string) $db_cfg['tafel_mqtt_praefix']))) . '</span>') ?></p>
@@ -1364,7 +1379,7 @@ if (db_eingaben_aktiv('speichern')) {
 <h3><?= db_e(db_t('EINST.T_PIN_FREI')) ?></h3>
 <div class="sm-feld">
   <label for="pin_frei"><?= db_e(db_t('EINST.L_PIN_FREI')) ?></label>
-  <input data-role="none" type="text" name="pin_frei" id="pin_frei"
+  <input data-role="none" type="text" name="pin_frei" id="pin_frei"<?= db_beanstandet_attr('speichern', 'pin_frei') ?>
          value="<?= db_e($db_cfg['pin_frei']) ?>" placeholder="192.168.1.50, 192.168.1.51">
   <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_PIN_FREI'), DB_PIN_FREI_MAX,
       '<span class="sm-mono">' . db_e(db_adresse_normal(isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '') !== ''
@@ -1381,7 +1396,7 @@ if (db_eingaben_aktiv('speichern')) {
 <p class="sm-hilfe"><?= db_t('EINST.RUHE_ERKLAERUNG') ?></p>
 <div class="sm-feld">
   <label for="ruhe_nach"><?= db_e(db_t('EINST.L_RUHE_NACH')) ?></label>
-  <input data-role="none" type="text" name="ruhe_nach" id="ruhe_nach"
+  <input data-role="none" type="text" name="ruhe_nach" id="ruhe_nach"<?= db_beanstandet_attr('speichern', 'ruhe_nach') ?>
          value="<?= db_e($db_cfg['ruhe_nach']) ?>">
 </div>
 <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_RUHE_NACH'), DB_RUHE_NACH_MIN, DB_RUHE_NACH_MAX) ?></p>
@@ -1392,13 +1407,13 @@ if (db_eingaben_aktiv('speichern')) {
 <p class="sm-hilfe"><?= db_t('EINST.H_RUHE_WETTER') ?></p>
 <div class="sm-feld">
   <label for="ruhe_kacheln"><?= db_e(db_t('EINST.L_RUHE_KACHELN')) ?></label>
-  <input data-role="none" type="text" name="ruhe_kacheln" id="ruhe_kacheln"
+  <input data-role="none" type="text" name="ruhe_kacheln" id="ruhe_kacheln"<?= db_beanstandet_attr('speichern', 'ruhe_kacheln') ?>
          value="<?= db_e($db_cfg['ruhe_kacheln']) ?>">
 </div>
 <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_RUHE_KACHELN'), DB_RUHE_KACHELN_MAX) ?></p>
 <div class="sm-feld">
   <label for="ruhe_seite"><?= db_e(db_t('EINST.L_RUHE_SEITE')) ?></label>
-  <select data-role="none" name="ruhe_seite" id="ruhe_seite">
+  <select data-role="none" name="ruhe_seite" id="ruhe_seite"<?= db_beanstandet_attr('speichern', 'ruhe_seite') ?>>
     <option value=""><?= db_e(db_t('EINST.L_RUHE_SEITE_KEINE')) ?></option>
   <?php foreach ($db_seiten as $db_rs2) {
         $db_rk = (string) (isset($db_rs2['schluessel']) ? $db_rs2['schluessel'] : ''); ?>
@@ -1409,13 +1424,13 @@ if (db_eingaben_aktiv('speichern')) {
 <p class="sm-hilfe"><?= db_t('EINST.H_RUHE_SEITE') ?></p>
 <div class="sm-feld">
   <label for="ruhe_hell"><?= db_e(db_t('EINST.L_RUHE_HELL')) ?></label>
-  <input data-role="none" type="text" name="ruhe_hell" id="ruhe_hell"
+  <input data-role="none" type="text" name="ruhe_hell" id="ruhe_hell"<?= db_beanstandet_attr('speichern', 'ruhe_hell') ?>
          value="<?= db_e($db_cfg['ruhe_hell']) ?>">
 </div>
 <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_RUHE_HELL'), DB_RUHE_HELL_MIN, DB_RUHE_HELL_MAX) ?></p>
 <div class="sm-feld">
   <label for="ruhe_bild"><?= db_e(db_t('EINST.L_RUHE_BILD')) ?></label>
-  <input data-role="none" type="file" name="ruhe_bild" id="ruhe_bild" accept="image/jpeg,image/png,image/webp">
+  <input data-role="none" type="file" name="ruhe_bild" id="ruhe_bild"<?= db_beanstandet_attr('speichern', 'ruhe_bild') ?> accept="image/jpeg,image/png,image/webp">
 </div>
 <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_RUHE_BILD'), (int) (DB_RUHE_BILD_MAX / 1048576), DB_RUHE_BILD_KANTE) ?></p>
 <?php
@@ -1438,13 +1453,13 @@ if ((string) $db_cfg['ruhe_bild'] !== '' && is_file($db_bpfad)) {
 <p class="sm-hilfe"><?= db_t('EINST.ECO_ERKLAERUNG') ?></p>
 <div class="sm-feld">
   <label for="eco_nach"><?= db_e(db_t('EINST.L_ECO_NACH')) ?></label>
-  <input data-role="none" type="text" name="eco_nach" id="eco_nach"
+  <input data-role="none" type="text" name="eco_nach" id="eco_nach"<?= db_beanstandet_attr('speichern', 'eco_nach') ?>
          value="<?= db_e($db_cfg['eco_nach']) ?>">
 </div>
 <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_ECO_NACH'), DB_ECO_NACH_MIN, DB_ECO_NACH_MAX) ?></p>
 <div class="sm-feld">
   <label for="eco_hell"><?= db_e(db_t('EINST.L_ECO_HELL')) ?></label>
-  <input data-role="none" type="text" name="eco_hell" id="eco_hell"
+  <input data-role="none" type="text" name="eco_hell" id="eco_hell"<?= db_beanstandet_attr('speichern', 'eco_hell') ?>
          value="<?= db_e($db_cfg['eco_hell']) ?>">
 </div>
 <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_ECO_HELL'), DB_ECO_HELL_MIN, DB_ECO_HELL_MAX) ?></p>
@@ -1477,7 +1492,7 @@ $db_wetterfeld = function ($feld, $beschriftung) use ($db_wliste, $db_cfg) {
     $ist = (string) (isset($db_cfg[$feld]) ? $db_cfg[$feld] : '');
     echo '<div class="sm-feld"><label for="' . db_e($feld) . '">'
        . db_e($beschriftung) . '</label>'
-       . '<select data-role="none" name="' . db_e($feld) . '" id="' . db_e($feld) . '">'
+       . '<select data-role="none" name="' . db_e($feld) . '" id="' . db_e($feld) . '"' . db_beanstandet_attr('speichern', $feld) . '>'
        . '<option value=""' . ($ist === '' ? ' selected' : '') . '>'
        . db_e(db_t('EINST.WETTER_KEINER')) . '</option>';
     foreach ($db_wliste as $kat => $eintraege) {
@@ -1675,13 +1690,13 @@ if (!$db_vliste) { ?>
 <?php foreach ($db_seiten as $db_i => $db_s) {
     $db_k = (string) $db_s['schluessel']; ?>
 <tr>
-  <td><input data-role="none" type="text" name="s_name[<?= (int) $db_i ?>]"
+  <td><input data-role="none" type="text" name="s_name[<?= (int) $db_i ?>]"<?= db_beanstandet_attr('seiten_speichern', 's_name', $db_k) ?>
              value="<?= db_e(db_eingabe('seiten_speichern', 's_name', $db_s['name'], $db_k)) ?>" size="18">
       <div class="sm-hilfe sm-mono"><?= db_e($db_k) ?></div></td>
   <td><?= count(isset($db_s['kacheln']) ? $db_s['kacheln'] : array()) ?></td>
-  <td><input data-role="none" type="text" name="s_spalten[<?= (int) $db_i ?>]"
+  <td><input data-role="none" type="text" name="s_spalten[<?= (int) $db_i ?>]"<?= db_beanstandet_attr('seiten_speichern', 's_spalten', $db_k) ?>
              value="<?= db_e(db_eingabe('seiten_speichern', 's_spalten', (int) (isset($db_s['spalten']) ? $db_s['spalten'] : 6), $db_k)) ?>" size="3"></td>
-  <td><input data-role="none" type="password" name="s_pin[<?= (int) $db_i ?>]" value="" size="8"
+  <td><input data-role="none" type="password" name="s_pin[<?= (int) $db_i ?>]"<?= db_beanstandet_attr('seiten_speichern', 's_pin', $db_k) ?> value="" size="8"
              placeholder="<?= db_e(!empty($db_s['pin']) ? db_t('BOARD.PIN_DA') : db_t('BOARD.PIN_LEER')) ?>">
       <?php if (!empty($db_s['pin'])) { ?>
       <div class="sm-hilfe"><label><input data-role="none" type="checkbox"
@@ -1882,10 +1897,13 @@ $db_bausteinliste = array(
     array(4,  'BAUSTEIN.T_NICHT',   'BAUSTEIN.N04', '',             'I &larr; #1'),
     array(5,  'BAUSTEIN.T_SWS',     'BAUSTEIN.N05', 'BAUSTEIN.P05', 'I &larr; #2'),
     array(6,  'BAUSTEIN.T_VERGL',   'BAUSTEIN.N06', 'BAUSTEIN.P06', 'I &larr; #3'),
-    array(7,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N07', '',             'I1 &larr; #4, I2 &larr; #5, I3 &larr; #6'),
-    array(8,  'BAUSTEIN.T_EVZ',     'BAUSTEIN.N08', 'BAUSTEIN.P08', 'I &larr; #7'),
-    array(9,  'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N09', 'BAUSTEIN.P09', 'I &larr; #8'),
-    array(10, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N10', 'BAUSTEIN.P10', 'I &larr; #2'),
+    /* Regel A4: ein ODER belegt hoechstens zwei Eingaenge; drei Wege
+       brauchen die Kaskade #7 -> #8 (Nachzug G2, 02.10.2026). */
+    array(7,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N07A', '',            'I1 &larr; #4, I2 &larr; #5'),
+    array(8,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N07', '',             'I1 &larr; #7, I2 &larr; #6'),
+    array(9,  'BAUSTEIN.T_EVZ',     'BAUSTEIN.N08', 'BAUSTEIN.P08', 'I &larr; #8'),
+    array(10, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N09', 'BAUSTEIN.P09', 'I &larr; #9'),
+    array(11, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N10', 'BAUSTEIN.P10', 'I &larr; #2'),
 );
 foreach ($db_bausteinliste as $db_z) { ?>
 <?php /* Die Werte kommen aus der Sprachdatei, nicht vom Anwender: sie

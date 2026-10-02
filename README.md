@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.28 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.29 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,27 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.29
+
+Markierte Felder, Port-Prüfung, Baustein-Liste nach A4 (Nachzug B: X-2, A4, Nr. 19).
+Gemessen am Prüfstand unter PHP 7.4 und 8.5
+(Windows, `php -S`); nicht am Gerät.
+
+* **Beanstandete Felder sind am Feld markiert:** Nach einer Beanstandung tragen die betroffenen Felder in den
+  Einstellungen und in der Seitenliste zusätzlich die Klasse `sm-beanstandet` und `aria-invalid="true"`;
+  Vorleseprogramme sagen damit, welches Feld nicht stimmt. Der rote Rahmen bleibt wie bisher.
+* **Port des eigenen Miniserver-Zugangs wird immer geprüft:** Bisher wurde er nur geprüft, wenn eine eigene
+  Adresse eingetragen war; ein Port wie `99999` ging bei leerer Adresse ohne Meldung durch. Jetzt wird er
+  beanstandet, die eingetippten Werte stehen markiert wieder im Formular, und es wird nichts gespeichert.
+  Ein leeres Portfeld ohne Adresse bleibt erlaubt, ebenso 80. Ein anderer gültiger Port ohne eigene Adresse
+  (z. B. `8080`) wird jetzt beanstandet („gilt nur zusammen mit einer eigenen Adresse“) – bisher wurde er ohne
+  Meldung verworfen, weil ohne Adresse der Zugang des LoxBerry gilt.
+* **Baustein-Liste im Reiter „Einbindung in Loxone“:** Die drei Störungswege (Dienst tot, Werte alt, Struktur
+  leer) laufen jetzt über zwei ODER mit je zwei Eingängen (#7 und #8) statt über ein ODER mit drei Eingängen;
+  die folgenden Zeilen rücken um eins (#9 Einschaltverzögerung, #10 Benachrichtigung, #11 Status).
+  **In Loxone:** nichts zu tun – wer die Liste schon nachgebaut hat, darf sein ODER mit drei Eingängen stehen
+  lassen; es wirkt gleich.
 
 ## Neu in 0.9.28
 
