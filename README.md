@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.30 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.31 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,20 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.31
+
+Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und
+verlinkt die Projektdatei.
+
+* Unter der Baustein-Liste (Schritt 5) steht das Bild der Seite „Dashboard“ aus dem
+  [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt); das Bild liegt im Plugin,
+  nachgeladen wird nichts. Config kürzt lange Bausteinnamen, die vollen Namen stehen in der Tabelle.
+* **Baustein-Liste, Zeile 6** so, wie sie im Musterprojekt in Loxone Config gebaut ist: Baustein
+  „Gleich“ statt „Vergleicher“, Parameter „zweiter Eingang offen (= 0)“, Eingang `I1 = #3`.
+  Wirkung wie bisher: der Ausgang geht auf Ein, wenn die Bausteinzahl 0 ist.
+  **In Loxone:** nichts zu tun – ein schon gebauter Vergleicher auf „gleich 0“ wirkt gleich.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.9.30
 
@@ -597,6 +611,10 @@ Der Reiter *Einbindung in Loxone* merkt sich beim Herunterladen die Kennung
 jeder Vorlage und sagt danach **„Vorlage neu importieren“**, sobald das Plugin
 eine andere erzeugen würde (neue Fassung, neues Token, neue Seite,
 Tafelsteuerung an). Datum und Rechnername zählen dabei nicht mit.
+
+Die Ausfallmeldung aus der Baustein-Liste desselben Reiters steht fertig verbunden auf der
+Seite „Dashboard“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
 ### Der Ambient-Modus
 

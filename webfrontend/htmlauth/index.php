@@ -1134,6 +1134,10 @@ ob_start();
    wie db_beanstandet_stil(); background-color statt der Kurzform, damit der
    Pfeil der Auswahlfelder (Regel oben) stehen bleibt. */
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background-color: #fff5f5 !important; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 
 </style>
 
@@ -1896,7 +1900,7 @@ $db_bausteinliste = array(
     array(3,  'BAUSTEIN.T_VE',      'BAUSTEIN.N03', 'BAUSTEIN.P03', '&mdash;'),
     array(4,  'BAUSTEIN.T_NICHT',   'BAUSTEIN.N04', '',             '#1'),
     array(5,  'BAUSTEIN.T_SWS',     'BAUSTEIN.N05', 'BAUSTEIN.P05', '#2'),
-    array(6,  'BAUSTEIN.T_VERGL',   'BAUSTEIN.N06', 'BAUSTEIN.P06', '#3'),
+    array(6,  'BAUSTEIN.T_VERGL',   'BAUSTEIN.N06', 'BAUSTEIN.P06', 'I1 = #3'),
     /* Regel A4: ein ODER belegt hoechstens zwei Eingaenge; drei Wege
        brauchen die Kaskade #7 -> #8 (Nachzug G2, 02.10.2026). */
     array(7,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N07A', '',            'I1 = #4, I2 = #5'),
@@ -1916,6 +1920,11 @@ foreach ($db_bausteinliste as $db_z) { ?>
 <?php } ?>
 </table>
 <div class="sm-hinweis"><?= db_t('LOX.S3_ERLAEUTERUNG') ?></div>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= db_e(db_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= db_e(db_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= db_t('LOX.MUSTERPROJEKT') ?></p>
 </div>
 
 <div class="sm-step">
