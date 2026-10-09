@@ -1894,16 +1894,16 @@ $db_bausteinliste = array(
     array(1,  'BAUSTEIN.T_VE',      'BAUSTEIN.N01', 'BAUSTEIN.P01', '&mdash;'),
     array(2,  'BAUSTEIN.T_VE',      'BAUSTEIN.N02', 'BAUSTEIN.P02', '&mdash;'),
     array(3,  'BAUSTEIN.T_VE',      'BAUSTEIN.N03', 'BAUSTEIN.P03', '&mdash;'),
-    array(4,  'BAUSTEIN.T_NICHT',   'BAUSTEIN.N04', '',             'I &larr; #1'),
-    array(5,  'BAUSTEIN.T_SWS',     'BAUSTEIN.N05', 'BAUSTEIN.P05', 'I &larr; #2'),
-    array(6,  'BAUSTEIN.T_VERGL',   'BAUSTEIN.N06', 'BAUSTEIN.P06', 'I &larr; #3'),
+    array(4,  'BAUSTEIN.T_NICHT',   'BAUSTEIN.N04', '',             '#1'),
+    array(5,  'BAUSTEIN.T_SWS',     'BAUSTEIN.N05', 'BAUSTEIN.P05', '#2'),
+    array(6,  'BAUSTEIN.T_VERGL',   'BAUSTEIN.N06', 'BAUSTEIN.P06', '#3'),
     /* Regel A4: ein ODER belegt hoechstens zwei Eingaenge; drei Wege
        brauchen die Kaskade #7 -> #8 (Nachzug G2, 02.10.2026). */
-    array(7,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N07A', '',            'I1 &larr; #4, I2 &larr; #5'),
-    array(8,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N07', '',             'I1 &larr; #7, I2 &larr; #6'),
-    array(9,  'BAUSTEIN.T_EVZ',     'BAUSTEIN.N08', 'BAUSTEIN.P08', 'I &larr; #8'),
-    array(10, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N09', 'BAUSTEIN.P09', 'I &larr; #9'),
-    array(11, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N10', 'BAUSTEIN.P10', 'I &larr; #2'),
+    array(7,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N07A', '',            'I1 = #4, I2 = #5'),
+    array(8,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N07', '',             'I1 = #7, I2 = #6'),
+    array(9,  'BAUSTEIN.T_EVZ',     'BAUSTEIN.N08', 'BAUSTEIN.P08', '#8'),
+    array(10, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N09', 'BAUSTEIN.P09', '#9'),
+    array(11, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N10', 'BAUSTEIN.P10', 'V1 = #2'),
 );
 foreach ($db_bausteinliste as $db_z) { ?>
 <?php /* Die Werte kommen aus der Sprachdatei, nicht vom Anwender: sie
