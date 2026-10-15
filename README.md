@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.31 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.32 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,33 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.32
+
+Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) mit zwei Bildern und
+Schritt-für-Schritt-Anleitung.
+
+* **Reiter Einbindung in Loxone, Schritt 5:** zwei Baustein-Listen statt einer (34 statt 11 Zeilen) –
+  „Dashboard“ (Überwachung: Dienst, Werte, Struktur und jetzt auch ein stehender LoxBerry; der Status
+  „Dashboard-Zustand“ sagt in Klartext, was fehlt und welcher Knopf im Plugin hilft) und „Dashboard
+  Steuerung“ (Klingel zeigt die Haustürseite, Heimkehr weckt die Tablets, Abwesenheit legt das Ruhebild
+  auf, Helligkeit aus der App) –, je mit Kasten „So übernehmen Sie diese Seite“, Hinweisen und dem Bild
+  der Seite aus dem Musterprojekt.
+* **Neues Feld `ZEIT` (Lebenszeichen):** Zustandszeile (`aktion=status`) und Vorlage „Dashboard-Designer“
+  tragen zusätzlich `ZEIT`, die Zeit der Antwort in Unix-Sekunden; sie ändert sich bei jeder Abfrage.
+  Steht der LoxBerry selbst, behält ein Virtueller Eingang in Loxone seine letzten Werte – OK und ALTER
+  melden dann nichts, die Analogwertvalidierung auf `DASHBOARD_ZEIT` schon. **In Loxone:** Wer die
+  Vorlage schon importiert hat, legt den Befehl `DASHBOARD_ZEIT` von Hand am vorhandenen Eingang an
+  (Befehlserkennung `\i;ZEIT=\i\v`, analog, Min 0, Max 2147483647); ein neuer Import legt alles doppelt
+  an, und die Leitungen hängen am alten Eingang. Der Reiter meldet „Vorlage neu importieren“, weil sich
+  die Vorlage geändert hat. Die Vorlage der Steuerbefehle bleibt unverändert.
+* **Textberichtigungen:** `wach=1` weckt die Bildschirme, beendet den Eco-Modus und hebt eine Helligkeit
+  aus Loxone auf – die Nachtabsenkung bleibt; `wach=0` hat keine Wirkung (bisher hieß es, wach hebe die
+  Nachtabsenkung auf und wach=0 gebe sie wieder frei). Die Erläuterung zur Liste nennt die Schwelle
+  300 s jetzt bei #5 (bisher „Zu #2“) und die Abfragezeit von 60 Sekunden (bisher „Takt zwei
+  Sekunden“). Statuszeilen für „Alter der Dashboard-Werte“ und ein Meldetext für „Meldung Dashboard
+  gestört“ stehen in den Hinweisen; Schritt 4 nennt die Grenze von ALTER.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.9.31
 
@@ -612,8 +639,8 @@ jeder Vorlage und sagt danach **„Vorlage neu importieren“**, sobald das Plug
 eine andere erzeugen würde (neue Fassung, neues Token, neue Seite,
 Tafelsteuerung an). Datum und Rechnername zählen dabei nicht mit.
 
-Die Ausfallmeldung aus der Baustein-Liste desselben Reiters steht fertig verbunden auf der
-Seite „Dashboard“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+Die Ausfallmeldung und die Steuerung der Tablets aus den zwei Baustein-Listen desselben Reiters stehen
+fertig verbunden auf den Seiten „Dashboard“ und „Dashboard Steuerung“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
 ### Der Ambient-Modus

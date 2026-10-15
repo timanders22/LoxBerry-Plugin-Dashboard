@@ -880,8 +880,14 @@ function db_status_werte()
     }
     $alter = db_alter($a);
     $ok = (!empty($a['ok']) && $alter >= 0 && $alter <= db_frist($a, $cfg)) ? 1 : 0;
+    /* ZEIT (0.9.32, Entwurf Welle 13 db, Entscheidung 2): die Zeit der Antwort in Unix-Sekunden, das
+     * Lebenszeichen. Sie aendert sich bei JEDER Abfrage - auch wenn Dienst und Abbild stehen. Steht
+     * der LoxBerry selbst (aus, Netz weg, Apache tot), behaelt der Virtuelle HTTP-Eingang in Loxone
+     * seine letzten Werte: OK bleibt 1, ALTER bleibt klein, und nichts meldet. Eine
+     * Analogwertvalidierung auf ZEIT meldet genau das. ALTER taugt dafuer nicht: es steht beim Abruf
+     * meist auf 0, 1 oder 2 und wiederholt sich. */
     return array('OK' => $ok, 'BAUSTEINE' => count(db_bausteine()), 'SEITEN' => count($seiten),
-                 'KACHELN' => $kacheln, 'ALTER' => $alter);
+                 'KACHELN' => $kacheln, 'ALTER' => $alter, 'ZEIT' => time());
 }
 
 /** Die Zustandszeile, gebaut AUS db_status_felder() (H8, Regeln/07). Bis
@@ -2147,13 +2153,18 @@ function db_status_felder()
      * an. Ganzzahlige Zaehler mit Unit '<v>'.
      * H2: ALTER mit Untergrenze -1 (Signed) und weiter Obergrenze - mit
      * MinVal=0 und MaxVal=86400 kamen "kein Abbild" und "ueber 24 h alt" in
-     * Loxone als 0 an, also als "frisch" (Regeln/07). */
+     * Loxone als 0 an, also als "frisch" (Regeln/07).
+     * ZEIT (0.9.32, Entwurf Welle 13 db, Entscheidung 2): Lebenszeichen, Unix-Sekunden der Antwort;
+     * Obergrenze 2147483647 reicht bis 2038 (wie Heimkino, Kodi, APC). Reine Erweiterung der
+     * Zustandszeile - die Kennung der Vorlage aendert sich, der Reiter sagt "Vorlage neu importieren",
+     * der Kasten nennt den Handweg (ein Befehl von Hand). */
     return array(
         'OK'         => array('',  'DB_FELD.OK',        0,  1,          1, '<v>', 'VORLAGE.K_OK'),
         'BAUSTEINE'  => array('',  'DB_FELD.BAUSTEINE', 0,  65535,      1, '<v>', 'VORLAGE.K_BAUSTEINE'),
         'SEITEN'     => array('',  'DB_FELD.SEITEN',    0,  255,        1, '<v>', 'VORLAGE.K_SEITEN'),
         'KACHELN'    => array('',  'DB_FELD.KACHELN',   0,  65535,      1, '<v>', 'VORLAGE.K_KACHELN'),
         'ALTER'      => array('s', 'DB_FELD.ALTER',     -1, 2147483647, 1, '',    'VORLAGE.K_ALTER'),
+        'ZEIT'       => array('',  'DB_FELD.ZEIT',      0,  2147483647, 1, '<v>', 'VORLAGE.K_ZEIT'),
     );
 }
 

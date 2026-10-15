@@ -1138,6 +1138,11 @@ ob_start();
 .sm-bild { margin: 12px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+/* Welle Bild 13 (0.9.32): Abschnitte, Schritte und Hinweise je Baustein-Liste. */
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 
 </style>
 
@@ -1890,41 +1895,128 @@ foreach (array('vi' => 'VI_DASHBOARD_STATUS.xml', 'vq' => 'VQ_DASHBOARD_STEUERUN
 <div class="sm-step">
 <h3><?= db_e(db_t('LOX.S3_TITEL')) ?></h3>
 <p class="sm-hilfe"><?= db_t('LOX.S3_TEXT') ?></p>
+<?php
+/* Welle Bild 13 (0.9.32, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum
+ * leicht uebernehmen koennen; Entwurf Welle 13 db, Entscheidungen 1-12 wie empfohlen, 15.10.2026): zwei
+ * Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und mit leitungen_setzen.py
+ * verbunden (Musterprojekt/baustein_listen.txt, Abschnitte "Dashboard" 18 und "Dashboard Steuerung" 16
+ * Zeilen). Je Seite: Ueberschrift (= Seitenname), Kasten "So uebernehmen Sie diese Seite", Tabelle,
+ * Hinweise, Bild, Link - alle immer sichtbar. Bis 0.9.31 stand hier eine Liste mit 11 Zeilen und der
+ * Erlaeuterung darunter (Schluessel S3_ERLAEUTERUNG, gestrichen; ihr Inhalt steht berichtigt in den Hinweisen).
+ * Texte aus [BAUSTEIN]; die Zeilen sind deutsch wortgleich mit der Liste, Bausteinnamen in beiden
+ * Sprachen deutsch wie im Musterprojekt. Jede Zelle wird maskiert ausgegeben.
+ * Zeile: array(Nr, Typ, Name, Parameter, Eingaenge). */
+/* Erst vsprintf auf den Sprachtext, dann maskieren: eingesetzte Namen kommen nie roh heraus. */
+$db_bs_k = function ($schluessel, $argumente = array()) {
+    $s = (string) db_t('BAUSTEIN.' . $schluessel);
+    return db_e($argumente ? vsprintf($s, $argumente) : $s);
+};
+$db_bs_seiten = array(
+    array('seite' => 'Dashboard', 'bild' => 'einbindung_loxone.png', 'zeilen' => array(
+        array(1, $db_bs_k('T_VE_VORLAGE'), $db_bs_k('S1_01_NAME'), $db_bs_k('S1_01_PARAM'), $db_bs_k('S1_01_EIN')),
+        array(2, $db_bs_k('T_VE_VORLAGE'), $db_bs_k('S1_02_NAME'), $db_bs_k('S1_02_PARAM'), $db_bs_k('S1_02_EIN')),
+        array(3, $db_bs_k('T_VE_VORLAGE'), $db_bs_k('S1_03_NAME'), $db_bs_k('S1_03_PARAM'), $db_bs_k('S1_03_EIN')),
+        array(4, $db_bs_k('T_NICHT'), $db_bs_k('S1_04_NAME'), '&ndash;', 'I = #1'),
+        array(5, $db_bs_k('T_SWS'), $db_bs_k('S1_05_NAME'), $db_bs_k('S1_05_PARAM'), 'V = #2'),
+        array(6, $db_bs_k('T_GLEICH'), $db_bs_k('S1_06_NAME'), $db_bs_k('S1_06_PARAM'), 'I1 = #3'),
+        array(7, $db_bs_k('T_ODER'), $db_bs_k('S1_07_NAME'), '&ndash;', 'I1 = #4, I2 = #5'),
+        array(8, $db_bs_k('T_ODER'), $db_bs_k('S1_08_NAME'), '&ndash;', 'I1 = #7, I2 = #6'),
+        array(9, $db_bs_k('T_EVZ'), $db_bs_k('S1_09_NAME'), $db_bs_k('S1_09_PARAM'), $db_bs_k('S1_09_EIN')),
+        array(10, $db_bs_k('T_BENACHR'), $db_bs_k('S1_10_NAME'), $db_bs_k('S1_10_PARAM'), $db_bs_k('S1_10_EIN')),
+        array(11, $db_bs_k('T_STATUS'), $db_bs_k('S1_11_NAME'), $db_bs_k('S1_11_PARAM'), 'V1 = #2'),
+        array(12, $db_bs_k('T_VHI'), $db_bs_k('S1_12_NAME'), $db_bs_k('S1_12_PARAM'), '&mdash;'),
+        array(13, $db_bs_k('T_VHI'), $db_bs_k('S1_13_NAME'), $db_bs_k('S1_13_PARAM'), '&mdash;'),
+        array(14, $db_bs_k('T_VHI'), $db_bs_k('S1_14_NAME'), $db_bs_k('S1_14_PARAM'), '&mdash;'),
+        array(15, $db_bs_k('T_KONSTANTE'), $db_bs_k('S1_15_NAME'), $db_bs_k('S1_15_PARAM'), '&mdash;'),
+        array(16, $db_bs_k('T_VALID'), $db_bs_k('S1_16_NAME'), $db_bs_k('S1_16_PARAM'), 'V = #14, En = #15'),
+        array(17, $db_bs_k('T_ODER'), $db_bs_k('S1_17_NAME'), $db_bs_k('S1_17_PARAM'), $db_bs_k('S1_17_EIN')),
+        array(18, $db_bs_k('T_STATUS'), $db_bs_k('S1_18_NAME'), $db_bs_k('S1_18_PARAM'), $db_bs_k('S1_18_EIN')),
+        ),
+        'schritte' => array(
+            array('S1_SCHRITT1', array(db_t('REITER.EINSTELLUNGEN'), db_t('EINST.K_START'), db_t('REITER.DASHBOARDS'), db_t('BOARD.K_STRUKTUR'), db_t('BOARD.K_ENTWURF'), db_t('REITER.TEST'), db_t('TEST.K_STATUS'))),
+            array('S1_SCHRITT2', array(db_t('LOX.K_VORLAGE'))),
+            array('S1_SCHRITT3', array()),
+            array('S1_SCHRITT4', array()),
+            array('S1_SCHRITT5', array(db_t('LOX.T_EINGAENGE'), db_t('LOX.T_PARAMETER'))),
+            array('S1_SCHRITT6', array(db_t('REITER.TEST'), db_t('TEST.K_STATUS'))),
+        ),
+        'hinweise' => array(
+            array('S1_H1', array()),
+            array('S1_H2', array()),
+            array('S1_H3', array()),
+            array('S1_H4', array()),
+            array('S1_H5', array()),
+            array('S1_H6', array()),
+            array('S1_H7', array(db_t('LOX.K_TOKEN_NEU'))),
+        )),
+    array('seite' => 'Dashboard Steuerung', 'bild' => 'einbindung_loxone_steuerung.png', 'zeilen' => array(
+        array(1, $db_bs_k('T_VE_TASTE'), $db_bs_k('S2_01_NAME'), $db_bs_k('S2_01_PARAM'), '&mdash;'),
+        array(2, $db_bs_k('T_VE_TASTE'), $db_bs_k('S2_02_NAME'), $db_bs_k('S2_02_PARAM'), '&mdash;'),
+        array(3, $db_bs_k('T_AVZ'), $db_bs_k('S2_03_NAME'), $db_bs_k('S2_03_PARAM'), $db_bs_k('S2_03_EIN')),
+        array(4, $db_bs_k('T_FLANKE'), $db_bs_k('S2_04_NAME'), $db_bs_k('S2_04_PARAM'), $db_bs_k('S2_04_EIN')),
+        array(5, $db_bs_k('T_ODER'), $db_bs_k('S2_05_NAME'), $db_bs_k('S2_05_PARAM'), $db_bs_k('S2_05_EIN')),
+        array(6, $db_bs_k('T_VQ'), $db_bs_k('S2_06_NAME'), $db_bs_k('S2_06_PARAM'), $db_bs_k('S2_06_EIN')),
+        array(7, $db_bs_k('T_VQ'), $db_bs_k('S2_07_NAME'), $db_bs_k('S2_07_PARAM'), $db_bs_k('S2_07_EIN')),
+        array(8, $db_bs_k('T_VE_TASTE'), $db_bs_k('S2_08_NAME'), $db_bs_k('S2_08_PARAM'), '&mdash;'),
+        array(9, $db_bs_k('T_VE_SCHALTER'), $db_bs_k('S2_09_NAME'), $db_bs_k('S2_09_PARAM'), '&mdash;'),
+        array(10, $db_bs_k('T_FLANKE'), $db_bs_k('S2_10_NAME'), $db_bs_k('S2_10_PARAM'), $db_bs_k('S2_10_EIN')),
+        array(11, $db_bs_k('T_ODER'), $db_bs_k('S2_11_NAME'), '&mdash;', $db_bs_k('S2_11_EIN')),
+        array(12, $db_bs_k('T_ODER'), $db_bs_k('S2_12_NAME'), $db_bs_k('S2_12_PARAM'), 'I1 = #8, I2 = #11'),
+        array(13, $db_bs_k('T_VQ'), $db_bs_k('S2_13_NAME'), $db_bs_k('S2_13_PARAM'), $db_bs_k('S2_13_EIN')),
+        array(14, $db_bs_k('T_VQ'), $db_bs_k('S2_14_NAME'), $db_bs_k('S2_14_PARAM'), $db_bs_k('S2_14_EIN')),
+        array(15, $db_bs_k('T_VE_REGLER'), $db_bs_k('S2_15_NAME'), $db_bs_k('S2_15_PARAM'), '&mdash;'),
+        array(16, $db_bs_k('T_VQ'), $db_bs_k('S2_16_NAME'), $db_bs_k('S2_16_PARAM'), $db_bs_k('S2_16_EIN')),
+        ),
+        'schritte' => array(
+            array('S2_SCHRITT1', array(db_t('REITER.EINSTELLUNGEN'), db_t('EINST.L_TAFELSTEUERUNG'), db_t('EINST.L_RUHE_NACH'))),
+            array('S2_SCHRITT2', array(db_t('REITER.DASHBOARDS'))),
+            array('S2_SCHRITT3', array(db_t('LOX.K_VORLAGE_OUT'))),
+            array('S2_SCHRITT4', array()),
+            array('S2_SCHRITT5', array()),
+            array('S2_SCHRITT6', array(db_t('LOX.T_EINGAENGE'))),
+            array('S2_SCHRITT7', array()),
+        ),
+        'hinweise' => array(
+            array('S2_H1', array()),
+            array('S2_H2', array()),
+            array('S2_H3', array()),
+            array('S2_H4', array()),
+            array('S2_H5', array()),
+            array('S2_H6', array(db_t('LOX.SMQTT_TITEL'))),
+        )),
+);
+foreach ($db_bs_seiten as $db_bs_s) { ?>
+<h4 class="sm-h4"><?= db_e($db_bs_s['seite']) ?></h4>
+<div class="sm-hinweis"><b><?= $db_bs_k('SCHRITTE_TITEL') ?></b>
+<ol class="sm-schritte">
+<?php foreach ($db_bs_s['schritte'] as $db_bs_x) { ?>
+<li><?= $db_bs_k($db_bs_x[0], $db_bs_x[1]) ?></li>
+<?php } ?>
+</ol></div>
+<div class="sm-breit">
 <table class="sm-tabelle">
 <tr><th>#</th><th><?= db_e(db_t('LOX.T_BAUSTEIN')) ?></th><th><?= db_e(db_t('LOX.T_NAMENSVORSCHLAG')) ?></th>
     <th><?= db_e(db_t('LOX.T_PARAMETER')) ?></th><th><?= db_e(db_t('LOX.T_EINGAENGE')) ?></th></tr>
-<?php
-$db_bausteinliste = array(
-    array(1,  'BAUSTEIN.T_VE',      'BAUSTEIN.N01', 'BAUSTEIN.P01', '&mdash;'),
-    array(2,  'BAUSTEIN.T_VE',      'BAUSTEIN.N02', 'BAUSTEIN.P02', '&mdash;'),
-    array(3,  'BAUSTEIN.T_VE',      'BAUSTEIN.N03', 'BAUSTEIN.P03', '&mdash;'),
-    array(4,  'BAUSTEIN.T_NICHT',   'BAUSTEIN.N04', '',             '#1'),
-    array(5,  'BAUSTEIN.T_SWS',     'BAUSTEIN.N05', 'BAUSTEIN.P05', '#2'),
-    array(6,  'BAUSTEIN.T_VERGL',   'BAUSTEIN.N06', 'BAUSTEIN.P06', 'I1 = #3'),
-    /* Regel A4: ein ODER belegt hoechstens zwei Eingaenge; drei Wege
-       brauchen die Kaskade #7 -> #8 (Nachzug G2, 02.10.2026). */
-    array(7,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N07A', '',            'I1 = #4, I2 = #5'),
-    array(8,  'BAUSTEIN.T_ODER',    'BAUSTEIN.N07', '',             'I1 = #7, I2 = #6'),
-    array(9,  'BAUSTEIN.T_EVZ',     'BAUSTEIN.N08', 'BAUSTEIN.P08', '#8'),
-    array(10, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N09', 'BAUSTEIN.P09', '#9'),
-    array(11, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N10', 'BAUSTEIN.P10', 'V1 = #2'),
-);
-foreach ($db_bausteinliste as $db_z) { ?>
-<?php /* Die Werte kommen aus der Sprachdatei, nicht vom Anwender: sie
-   duerfen ihre Entitaeten behalten. Werden sie zusaetzlich maskiert, steht
-   der Entitaetsname woertlich auf dem Bildschirm. */ ?>
-<tr><td><?= (int) $db_z[0] ?></td><td><?= db_t($db_z[1]) ?></td>
-    <td class="sm-mono"><?= db_t($db_z[2]) ?></td>
-    <td><?= $db_z[3] !== '' ? db_t($db_z[3]) : '&mdash;' ?></td>
+<?php foreach ($db_bs_s['zeilen'] as $db_z) { ?>
+<tr><td><?= (int) $db_z[0] ?></td><td><?= $db_z[1] ?></td>
+    <td class="sm-mono"><?= $db_z[2] ?></td>
+    <td><?= $db_z[3] ?></td>
     <td class="sm-mono"><?= $db_z[4] ?></td></tr>
 <?php } ?>
 </table>
-<div class="sm-hinweis"><?= db_t('LOX.S3_ERLAEUTERUNG') ?></div>
+</div>
+<div class="sm-warnung"><b><?= $db_bs_k('HINWEISE_TITEL') ?></b>
+<ul class="sm-schritte">
+<?php foreach ($db_bs_s['hinweise'] as $db_bs_x) { ?>
+<li><?= $db_bs_k($db_bs_x[0], $db_bs_x[1]) ?></li>
+<?php } ?>
+</ul></div>
 <figure class="sm-bild">
-<img src="einbindung_loxone.png" alt="<?= db_e(db_t('LOX.BILD_ALT')) ?>" loading="lazy">
-<figcaption><?= db_e(db_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+<img src="<?= db_e($db_bs_s['bild']) ?>" alt="<?= db_e(sprintf(db_t('LOX.BILD_ALT'), $db_bs_s['seite'])) ?>" loading="lazy">
+<figcaption><?= db_e(sprintf(db_t('LOX.BILD_UNTERSCHRIFT'), $db_bs_s['seite'])) ?></figcaption>
 </figure>
 <p class="sm-hilfe"><?= db_t('LOX.MUSTERPROJEKT') ?></p>
+<?php } ?>
 </div>
 
 <div class="sm-step">
