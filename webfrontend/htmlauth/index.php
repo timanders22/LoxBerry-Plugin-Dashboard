@@ -1913,9 +1913,9 @@ $db_bs_k = function ($schluessel, $argumente = array()) {
 };
 $db_bs_seiten = array(
     array('seite' => 'Dashboard', 'bild' => 'einbindung_loxone.png', 'zeilen' => array(
-        array(1, $db_bs_k('T_VE_VORLAGE'), $db_bs_k('S1_01_NAME'), $db_bs_k('S1_01_PARAM'), $db_bs_k('S1_01_EIN')),
-        array(2, $db_bs_k('T_VE_VORLAGE'), $db_bs_k('S1_02_NAME'), $db_bs_k('S1_02_PARAM'), $db_bs_k('S1_02_EIN')),
-        array(3, $db_bs_k('T_VE_VORLAGE'), $db_bs_k('S1_03_NAME'), $db_bs_k('S1_03_PARAM'), $db_bs_k('S1_03_EIN')),
+        array(1, $db_bs_k('T_VHI'), $db_bs_k('S1_01_NAME'), $db_bs_k('S1_01_PARAM'), '&mdash;'),
+        array(2, $db_bs_k('T_VHI'), $db_bs_k('S1_02_NAME'), $db_bs_k('S1_02_PARAM'), '&mdash;'),
+        array(3, $db_bs_k('T_VHI'), $db_bs_k('S1_03_NAME'), $db_bs_k('S1_03_PARAM'), '&mdash;'),
         array(4, $db_bs_k('T_NICHT'), $db_bs_k('S1_04_NAME'), '&ndash;', 'I = #1'),
         array(5, $db_bs_k('T_SWS'), $db_bs_k('S1_05_NAME'), $db_bs_k('S1_05_PARAM'), 'V = #2'),
         array(6, $db_bs_k('T_GLEICH'), $db_bs_k('S1_06_NAME'), $db_bs_k('S1_06_PARAM'), 'I1 = #3'),

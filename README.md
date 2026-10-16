@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.32 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.33 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,21 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.33
+
+Textberichtigungen der Einbindungstabelle (Reiter „Einbindung in Loxone“, Schritt 5, Seite „Dashboard“),
+wortgleich mit der Baustein-Liste des
+[LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt). Keine
+Leitung, keine Vorlage und kein Verhalten ändert sich.
+
+* **#1 bis #3:** Typ „Virtueller HTTP-Eingang (Vorlage „Dashboard-Designer“)“ (bisher „Virtueller Eingang
+  aus der Vorlage …“); die Spalte der Eingänge zeigt „—“ wie bei #12 bis #14.
+* **#10 „Meldung Dashboard gestört“:** Typ „Benachrichtigung“ (bisher „Benachrichtigungsbaustein“); der
+  Meldetext steht jetzt in der Tabelle (bisher „Push-Nachricht oder Mail“).
+* **#11 „Alter der Dashboard-Werte“:** die Statuszeilen stehen jetzt in der Tabelle (bisher nur
+  „Einheit `<v.0>` s“).
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.9.32
 
