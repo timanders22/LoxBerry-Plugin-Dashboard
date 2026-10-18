@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.35 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.36 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,16 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.36
+
+* **Einbindung in Loxone, Seite „Dashboard“:** Die Hinweise zu Nr. 9/10 (Meldung) und Nr. 11 (Alter der
+  Werte) wiederholten Meldetext, Statuszeilen und Verzögerung aus der Tabelle. Sie sagen jetzt nur noch, was
+  die Tabelle nicht sagt (ein Neustart meldet nicht, die Benachrichtigung sendet nur beim Wechsel auf Ein;
+  Nr. 11 ist wahlweise und braucht Zeilen). Schritt 4 verweist für den Meldetext auf die Tabelle. Die Tabelle
+  selbst ist unverändert und wortgleich mit dem Musterprojekt.
+* Kein Neuimport nötig, Vorlagen und Dienst sind unverändert; im eigenen Projekt ändert sich nichts.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.9.35
 
