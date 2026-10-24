@@ -12,6 +12,8 @@
 # python3-venv            Rueckfallebene: reicht die Systemfassung von
 #                         websockets nicht, baut postinstall.sh eine eigene
 #                         Umgebung und holt sie ueber pip
+# mosquitto-clients       gebraucht von der Befehlsbruecke (mosquitto_sub/mosquitto_pub, seit 0.9.37)
 python3-websockets
 python3-cryptography
 python3-venv
+mosquitto-clients

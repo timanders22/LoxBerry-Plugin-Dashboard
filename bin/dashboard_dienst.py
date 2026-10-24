@@ -30,7 +30,6 @@ Aufrufe:
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import errno
 import json
@@ -41,6 +40,7 @@ import re
 import signal
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,7 @@ sys.path.insert(0, str(HIER))
 from entwurf import entwurf_bauen, bausteine_sammeln          # noqa: E402
 from lox_client import Miniserver, LoxFehler, LoxZeit, selbstpruefung   # noqa: E402
 import tafel_mqtt                                              # noqa: E402
+import status_mqtt                                             # noqa: E402
 
 
 def lb_wurzel_ermitteln():
@@ -84,19 +85,23 @@ def lb_wurzel_ermitteln():
 # ---------------------------------------------------------------------------
 
 def _home() -> str:
+    """D2 (0.9.37): die gelesene Wurzel ($LBHOMEDIR), sonst die Suche vom eigenen Ablageort aufwaerts. Der feste
+    Systempfad (Regeln/06, harte Systempfade) und der Rueckfall HIER.parent.parent sind gestrichen: aus einer
+    Kopie ausserhalb legte --selbsttest darueber einen ganzen Fremdbaum an (Pruefbericht D2).
+    Ohne Wurzel "" - dann ist nichts eine Anlage (_in_der_anlage)."""
     h = os.environ.get("LBHOMEDIR", "")
     if h and os.path.isdir(h):
         return h
-    for k in (lb_wurzel_ermitteln(), "/home/loxberry/loxberry"):
-        if os.path.isdir(k):
-            return k
-    return str(HIER.parent.parent)
+    return lb_wurzel_ermitteln()
 
 
 HOME = _home()
-ORDNER = HIER.name if (HIER.name != "bin") else HIER.parent.name
-# bin/plugins/<ordner> -> <ordner>
-if HIER.parent.name == "plugins":
+# bin/plugins/<ordner> -> <ordner>; ausdruecklich genannt ($LBPPLUGINDIR) gilt die Auskunft von LoxBerry, sonst
+# im Archiv der Elternordner. D2: EINE Zuweisung (bis 0.9.36 standen zwei, die erste wurde sofort ueberschrieben).
+_LBP = os.path.basename((os.environ.get("LBPPLUGINDIR") or "").rstrip("/"))
+if _LBP and _LBP not in (".", "/", "html", "bin", "plugins"):
+    ORDNER = _LBP
+elif HIER.parent.name == "plugins":
     ORDNER = HIER.name
 else:
     ORDNER = HIER.parent.name
@@ -128,6 +133,33 @@ DATEI_TAFEL = os.path.join(DATADIR, "tafel.json")
 # in db_lib.php, und der Stand des MQTT-Abos fuer den Reiter Test.
 DATEI_TAFEL_SPERRE = os.path.join(DATADIR, "tafel.sperre")
 DATEI_TAFEL_MQTT = os.path.join(DATADIR, "tafel_mqtt.json")
+# Gruppe 12 (0.9.37): der Stand des Senders der Zustandswerte (bin/status_mqtt.py) fuer den Reiter Test.
+DATEI_STATUS_MQTT = os.path.join(DATADIR, "status_mqtt.json")
+
+
+def _in_der_anlage() -> bool:
+    """D2 (0.9.37, Bauform Sprachsteuerung 0.12.7 _in_der_anlage): die Anlage gilt nur, wenn diese Datei in ihrem
+    bin-Ordner liegt (<Wurzel>/bin/plugins/<ordner>, physisch verglichen) oder der Aufrufer Wurzel UND Ordner
+    ausdruecklich nennt ($LBHOMEDIR und $LBPPLUGINDIR, und config/plugins/<ordner> ist dort eingerichtet) - dieselbe
+    Regel wie db_paths() in db_lib.php und bin/dienst.sh. Bis 0.9.36 legte --selbsttest aus einem ausgepackten Archiv
+    unter der Wurzel config/data/log/plugins/<Archivname> in der Anlage an (Pruefbericht D2)."""
+    if not HOME:
+        return False
+    try:
+        if Path(HOME, "bin", "plugins", ORDNER).resolve() == HIER:
+            return True
+    except OSError:
+        pass
+    umgebung = os.environ.get("LBHOMEDIR") or ""
+    if not umgebung or not _LBP or _LBP in (".", "/", "html", "bin", "plugins"):
+        return False
+    try:
+        return Path(umgebung).resolve() == Path(HOME).resolve() and os.path.isdir(CONFIGDIR)
+    except OSError:
+        return False
+
+
+IN_DER_ANLAGE = _in_der_anlage()
 DATEI_PID = os.path.join(DATADIR, "dienst.pid")
 DATEI_SOLL = os.path.join(DATADIR, "soll_laufen")
 ORDNER_BEFEHLE = os.path.join(DATADIR, "befehle")
@@ -208,6 +240,12 @@ VORGABEN = {
     # steuern - ab Werk AUS (bin/tafel_mqtt.py).
     "tafel_mqtt": 0,
     "tafel_mqtt_praefix": "dashboard",
+    # Gruppe 12 (0.9.37): Zustand ueber MQTT senden (ab Werk an, auch beim Update - E5), Befehle ueber MQTT
+    # annehmen (Befehlsbruecke, ab Werk aus), Loxone-Abruf ueber HTTP (status/tafel, ab Werk aus; postinstall
+    # setzt ihn beim Update auf 1, wenn ein gueltiges Aktionstoken steht - E6).
+    "mqtt_ein": 1,
+    "befehle_mqtt_ein": 0,
+    "endpunkt_ein": 0,
 }
 
 _LOG = logging.getLogger("dashboard")
@@ -284,15 +322,17 @@ def log_einrichten(stufe=logging.INFO, nach_stdout: bool = False) -> None:
     Rotationen loeschte backupCount=2 sie, der Deskriptor hielt sie am Leben,
     und der Platz auf der SD-Karte blieb belegt, ohne dass 'ls' etwas zeigte.
     """
-    os.makedirs(LOGDIR, exist_ok=True)
     _LOG.setLevel(stufe)
     if _LOG.handlers:
         return
-    h = WachsameRotation(DATEI_LOG, maxBytes=512000, backupCount=2,
-                                             encoding="utf-8")
-    h.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s",
-                                     "%Y-%m-%d %H:%M:%S"))
-    _LOG.addHandler(h)
+    # D2 (0.9.37): ausserhalb der Anlage kein Protokollordner und keine Protokolldatei - nur stdout.
+    if IN_DER_ANLAGE:
+        os.makedirs(LOGDIR, exist_ok=True)
+        h = WachsameRotation(DATEI_LOG, maxBytes=512000, backupCount=2,
+                                                 encoding="utf-8")
+        h.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s",
+                                         "%Y-%m-%d %H:%M:%S"))
+        _LOG.addHandler(h)
     if nach_stdout:
         k = logging.StreamHandler(sys.stdout)
         k.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
@@ -463,27 +503,6 @@ def kacheltabelle() -> dict:
 # Zugangsdaten
 # ---------------------------------------------------------------------------
 
-def _vielleicht_base64(s: str) -> str:
-    """LoxBerry legt Benutzer und Kennwort in der general.json base64-kodiert ab.
-
-    Aeltere Fassungen taten das nicht. Statt zu raten, welche Fassung laeuft,
-    wird geprueft: nur wenn sich der Text sauber dekodieren UND identisch
-    wieder kodieren laesst, war er base64. Sonst bleibt er, wie er ist.
-    """
-    if not s or len(s) % 4 != 0:
-        return s
-    try:
-        roh = base64.b64decode(s, validate=True)
-        text = roh.decode("utf-8")
-    except Exception:
-        return s
-    if not text or any(ord(c) < 32 for c in text):
-        return s
-    if base64.b64encode(text.encode("utf-8")).decode("ascii") != s:
-        return s
-    return text
-
-
 def miniserver_daten(nummer: str = "1") -> dict:
     """Zugangsdaten aus der LoxBerry-Konfiguration.
 
@@ -517,8 +536,10 @@ def miniserver_daten(nummer: str = "1") -> dict:
         "name": ms.get("Name") or ("Miniserver " + str(nummer)),
         "adresse": str(adresse),
         "port": int(ms.get("Port") or 80),
-        "benutzer": _vielleicht_base64(str(ms.get("Admin") or ms.get("Username") or "")),
-        "passwort": _vielleicht_base64(str(ms.get("Pass") or ms.get("Password") or "")),
+        # D9: Admin_raw/Pass_raw (Klartext, LoxBerry 2.2-4.x), sonst Admin/Pass uri_escape-kodiert -> unquote.
+        # Bauform Sprachsteuerung miniserver_aus_general(). Leerer *_raw faellt auf unquote(Admin) zurueck.
+        "benutzer": str(ms.get("Admin_raw") or urllib.parse.unquote(str(ms.get("Admin") or ms.get("Username") or ""))),
+        "passwort": str(ms.get("Pass_raw") or urllib.parse.unquote(str(ms.get("Pass") or ms.get("Password") or ""))),
     }
 
 
@@ -814,6 +835,10 @@ def befehl_erlaubt(uuid: str, befehl: str, struktur: dict) -> tuple[bool, str]:
     return False, "Diesen Baustein gibt es in der Struktur nicht."
 
 
+# F1 (0.9.37): die Kennung eines Auftrags (db_befehl_absetzen: bin2hex(random_bytes(8))).
+KENNUNG = re.compile(r"^[0-9a-f]{16}$")
+
+
 async def warteschlange(ms: Miniserver, struktur: dict) -> None:
     """Auftraege abarbeiten.
 
@@ -827,7 +852,10 @@ async def warteschlange(ms: Miniserver, struktur: dict) -> None:
     except OSError:
         return
     for name in namen:
-        if not name.endswith(".json"):
+        # F1 (0.9.37, E8): nur Auftraege der Oberflaeche - db_befehl_absetzen() schreibt seit jeher
+        # bin2hex(random_bytes(8)).json. Die Befehlsbruecke legt zustand.json und waechter.json in DENSELBEN
+        # Ordner (bb_pfade "daten"); ohne den Filter fraesse diese Schleife sie alle 2 s und schriebe eine Antwort.
+        if not name.endswith(".json") or not KENNUNG.match(name[:-5]):
             continue
         pfad = os.path.join(ORDNER_BEFEHLE, name)
         # H3 (Durchgang 29.09.2026): den Auftrag ERST in Besitz nehmen, dann
@@ -976,6 +1004,46 @@ def tafel_mqtt_starten(cfg: dict, laeuft):
     return asyncio.ensure_future(abo.laufen_sicher())
 
 
+def abo_datei_anlegen(cfg: dict) -> bool:
+    """Gruppe 12 (0.9.37, Entwurf 2.4): die Abo-Datei fuer das MQTT-Gateway V1 beim Dienststart anlegen, wenn sie
+    fehlt - config/plugins/<ordner>/mqtt_subscriptions.cfg = "<praefix>/#", 0644, atomar (dieselbe Regel wie
+    db_mqtt_abo_inhalt() und postinstall.sh). Der Seitenaufbau der Oberflaeche schreibt sie nicht (Sprachsteuerung-Bau,
+    Abweichung 1). Rueckgabe: geschrieben."""
+    datei = os.path.join(CONFIGDIR, "mqtt_subscriptions.cfg")
+    if os.path.exists(datei) or not os.path.isdir(CONFIGDIR):
+        return False
+    p = cfg.get("tafel_mqtt_praefix")
+    if not tafel_mqtt.praefix_gueltig(p):
+        p = "dashboard"
+    tmp = "%s.tmp.%d" % (datei, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(p + "/#\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, datei)
+    except OSError as f:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        _LOG.warning("Die Abo-Datei fuer das MQTT-Gateway liess sich nicht anlegen (%s).", f)
+        return False
+    _LOG.info("Abo-Datei fuer das MQTT-Gateway angelegt: %s (%s/#).", datei, p)
+    return True
+
+
+def status_mqtt_starten(laeuft):
+    """Gruppe 12 (0.9.37, Entwurf 2.1): die Zustandswerte jede Minute ueber den UDP-Eingang des Gateways - eigene
+    Aufgabe neben der Miniserver-Verbindung (Bauart tafel_mqtt_starten), also auch im Notnagel und in der Wartezeit.
+    Der Haken mqtt_ein wird je Takt gelesen (ein Speichern im Reiter wirkt ohne Neustart). Rueckgabe (Aufgabe,
+    Sender)."""
+    sender = status_mqtt.StatusMqtt(
+        config=config, praefix_regel=tafel_mqtt.praefix_gueltig,
+        general_pfad=os.path.join(HOME, "config", "system", "general.json"),
+        abbild_pfad=DATEI_ABBILD, struktur_pfad=DATEI_STRUKTUR, seiten_pfad=DATEI_DASHBOARD,
+        stand_pfad=DATEI_STATUS_MQTT, json_lesen=json_lesen, json_schreiben=json_schreiben, log=_LOG,
+        laeuft=laeuft)
+    return asyncio.ensure_future(sender.laufen()), sender
+
+
 class Dienst:
     def __init__(self) -> None:
         self.laeuft = True
@@ -1028,6 +1096,9 @@ class Dienst:
         os.makedirs(ORDNER_ANTWORTEN, exist_ok=True)
         # Tafel-1: das MQTT-Abo laeuft neben der Verbindung zum Miniserver.
         tafel_aufgabe = tafel_mqtt_starten(cfg, lambda: self.laeuft)
+        # Gruppe 12 (0.9.37): Abo-Datei fuer das Gateway V1, dann die Zustandswerte jede Minute ueber das Gateway.
+        abo_datei_anlegen(cfg)
+        status_aufgabe, status_sender = status_mqtt_starten(lambda: self.laeuft)
         takt = max(1, min(30, int(cfg.get("takt") or 2)))
         wartezeit = 5
 
@@ -1141,6 +1212,13 @@ class Dienst:
                 await asyncio.wait_for(tafel_aufgabe, 5)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
+        # Gruppe 12 (0.9.37): die Werte-Aufgabe endet binnen 0,5 s; danach EINMAL ok 0 (Entwurf 2.1) - das
+        # Abbild sagt "gestoert" schon (abbild_gestoert beim Verlassen der Schleife).
+        try:
+            await asyncio.wait_for(status_aufgabe, 5)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+        status_sender.abmelden()
         return 0
 
     async def http_weg(self, cfg: dict, tabelle: dict) -> None:
@@ -1450,7 +1528,13 @@ def selbsttest() -> int:
         except ImportError:
             zeilen.append((0, "Paket %s fehlt - ohne das geht nichts. "
                               "Plugin neu installieren." % paket))
-    for name, p in (("Konfiguration", CONFIGDIR), ("Daten", DATADIR), ("Log", LOGDIR)):
+    # D2 (0.9.37): Ordner nur in der Anlage anlegen; aus einem Archiv oder einer Kopie heraus nichts.
+    if not IN_DER_ANLAGE:
+        zeilen.append((0, "Kein eingerichtetes Plugin (ausgepacktes Archiv oder Pruefordner: %s) - nichts "
+                          "angelegt. Den Selbsttest aus <LoxBerry-Wurzel>/bin/plugins/<ordner> aufrufen oder "
+                          "LBHOMEDIR und LBPPLUGINDIR setzen." % HIER))
+    for name, p in ((("Konfiguration", CONFIGDIR), ("Daten", DATADIR), ("Log", LOGDIR))
+                    if IN_DER_ANLAGE else ()):
         os.makedirs(p, exist_ok=True)
         zeilen.append((1 if os.access(p, os.W_OK) else 0,
                        "Ordner %s beschreibbar: %s" % (name, p)))
@@ -1619,6 +1703,11 @@ def main() -> int:
     if "--visuprobe" in sys.argv:
         return einmallauf(visuprobe)
 
+    # D2 (0.9.37): der Dauerbetrieb nur in der Anlage - aus einem Archiv heraus legte er deren Ordner an.
+    if not IN_DER_ANLAGE:
+        sys.stderr.write("FEHLER: %s liegt nicht in der Installation unter %s (ausgepacktes Archiv oder "
+                         "Pruefordner). Der Dienst startet nicht, es wurde nichts angelegt.\n" % (HIER, HOME or "-"))
+        return 2
     os.makedirs(DATADIR, exist_ok=True)
     # C1: ein zweiter Dienst endet sofort mit 3 - er laeuft nicht daneben her.
     # Bis 0.9.25 gab es keine Sperre: zwei Waechter in derselben Sekunde

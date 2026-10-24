@@ -12,6 +12,12 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-dashboard}"
+# D6 (0.9.37): der Ordnername darf keinen Pfadtrenner und kein ".." tragen - dieselbe Schranke wie in
+# preinstall.sh, direkt hinter der Ordnerbestimmung (plugininstall.pl laesst ohnehin nur [A-Za-z0-9_-] zu;
+# ein Handaufruf mit "../<anderes>" traf bis 0.9.36 die Zweitschriften eines fremden Plugins).
+case "$PFOLDER" in
+    ''|*/*|*..*) echo "<FAIL> preupgrade: unzulaessiger Ordnername '$PFOLDER' - es wurde nichts gesichert."; exit 1 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 
 # Aufwaerts suchen, bis ein Verzeichnis gefunden ist, das nachweislich eine
@@ -102,6 +108,16 @@ else
     echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - der Dienst"
     echo "<WARNING> koennte waehrend der Aktualisierung anlaufen, und ein Aufruf der"
     echo "<WARNING> Oberflaeche in dieser Zeit kann die Einstellungen kosten."
+fi
+
+# ---------- Die Befehlsbruecke anhalten (seit 0.9.37, Gruppe 12) ----------
+# NACH der Marke: befehlsbruecke.sh start und der Waechter pruefen dieselbe Marke und starten nicht, solange sie
+# liegt. Beim Umstieg von 0.9.36 und aelter gibt es die Bruecke noch nicht - dann nichts. Den Neustart besorgt der
+# Waechter in cron.01min binnen einer Minute nach dem Update (nur mit "Befehle ueber MQTT annehmen").
+DB_BB="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$DB_BB" ] && command -v bash >/dev/null 2>&1; then
+    DB_BB_AUS=$(timeout 40 bash "$DB_BB" stop 2>&1 | head -n 1)
+    echo "<INFO> Befehlsbruecke: ${DB_BB_AUS:-angehalten}"
 fi
 
 # Anhalten ueber dienst.sh, nicht mit einem eigenen kill.
@@ -262,29 +278,63 @@ fi
 # Rueckgabe: 0 = traegt Inhalt, 1 = traegt keinen, 2 = nicht pruefbar. Die
 # Funktion steht wortgleich in postinstall.sh - die Hakenskripte laufen
 # einzeln, eine gemeinsame Bibliothek gibt es fuer sie nicht.
-db_inhalt() {      # $1 Datei  $2 Art: dashboard | seiten | zugang
-    [ -s "$1" ] || return 1
+#
+# D5 (0.9.37, Bauform Heimkino 1.3.30 H14): "Inhalt" heisst ein ANWENDERFELD. Fuer zugang zaehlen adresse, benutzer,
+# passwort und visu_pw (nicht leer) und - als EIN Feld - ein vollstaendiger Token-Satz (ms_token UND ms_kennung nicht
+# leer): mit den Zugangsdaten aus general.json traegt zugang.json nur die Token-Anmeldung des Dienstes (am Geraet
+# gemessen 24.10.2026: ms_hashalg, ms_kennung, ms_token - der erste Bau meldete dort faelschlich "kein Inhalt"). Ein
+# einzelnes ms_token ohne Kennung zaehlt nicht. Fuer
+# dashboard zaehlt jeder Schluessel ausser aktionstoken, vorlagen, endpunkt_ein, mqtt_ein und befehle_mqtt_ein (Token,
+# Merker und die Haken, die postinstall selbst setzt). Bis 0.9.36 genuegte ein beliebiger Schluessel: ein Stand nur mit
+# Token bzw. ms_token verdraengte nach einem abgebrochenen Update die heile Zweitschrift (Pruefbericht D5, Faelle B/C).
+# Mit $3 = zahl gibt die Funktion zusaetzlich die Zahl der Anwenderfelder aus (H14-Zaehlregel in preupgrade.sh).
+db_inhalt() {      # $1 Datei  $2 Art: dashboard | seiten | zugang  [$3 zahl]
+    if [ ! -s "$1" ]; then
+        [ "${3:-}" = zahl ] && echo 0
+        return 1
+    fi
     if command -v php >/dev/null 2>&1; then
         php -r '
             $d = json_decode((string) @file_get_contents($argv[1]), true);
-            if (!is_array($d)) { exit(1); }
-            if ($argv[2] === "seiten") {
-                exit(isset($d["seiten"]) && is_array($d["seiten"]) && count($d["seiten"]) > 0 ? 0 : 1);
+            $n = 0;
+            if (is_array($d)) {
+                if ($argv[2] === "seiten") {
+                    $n = isset($d["seiten"]) && is_array($d["seiten"]) ? count($d["seiten"]) : 0;
+                } elseif ($argv[2] === "zugang") {
+                    foreach (array("adresse", "benutzer", "passwort", "visu_pw") as $k) {
+                        if (isset($d[$k]) && is_scalar($d[$k]) && (string) $d[$k] !== "") { $n++; }
+                    }
+                    if (isset($d["ms_token"], $d["ms_kennung"]) && is_scalar($d["ms_token"]) && is_scalar($d["ms_kennung"])
+                        && (string) $d["ms_token"] !== "" && (string) $d["ms_kennung"] !== "") { $n++; }
+                } else {
+                    foreach (array_keys($d) as $k) {
+                        if (!in_array((string) $k, array("aktionstoken", "vorlagen", "endpunkt_ein", "mqtt_ein",
+                                                          "befehle_mqtt_ein"), true)) { $n++; }
+                    }
+                }
             }
-            exit(count($d) > 0 ? 0 : 1);' -- "$1" "$2" 2>/dev/null
+            if ($argv[3] === "zahl") { echo $n, "\n"; }
+            exit($n > 0 ? 0 : 1);' -- "$1" "$2" "${3:-}" 2>/dev/null
     elif command -v python3 >/dev/null 2>&1; then
         python3 -c '
 import json, sys
+n = 0
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
-    sys.exit(1)
-if not isinstance(d, dict):
-    sys.exit(1)
-if sys.argv[2] == "seiten":
-    s = d.get("seiten")
-    sys.exit(0 if isinstance(s, list) and len(s) > 0 else 1)
-sys.exit(0 if len(d) > 0 else 1)' "$1" "$2" 2>/dev/null
+    d = None
+if isinstance(d, dict):
+    if sys.argv[2] == "seiten":
+        s = d.get("seiten")
+        n = len(s) if isinstance(s, list) else 0
+    elif sys.argv[2] == "zugang":
+        n = sum(1 for k in ("adresse", "benutzer", "passwort", "visu_pw") if str(d.get(k) or "") != "")
+        n += 1 if (str(d.get("ms_token") or "") != "" and str(d.get("ms_kennung") or "") != "") else 0
+    else:
+        n = sum(1 for k in d if k not in ("aktionstoken", "vorlagen", "endpunkt_ein", "mqtt_ein", "befehle_mqtt_ein"))
+if sys.argv[3] == "zahl":
+    print(n)
+sys.exit(0 if n > 0 else 1)' "$1" "$2" "${3:-}" 2>/dev/null
     else
         return 2
     fi
@@ -312,6 +362,25 @@ for f in dashboard.json seiten.json zugang.json; do
         echo "<WARNING>   $ZWEIT"
         continue
     fi
+    # D5 (0.9.37, H14-Zaehlregel, Bauform Heimkino 1.3.30): liegt schon eine Zweitschrift (ein voriger Lauf brach
+    # zwischen preupgrade und postinstall ab), wird sie nur von einem Stand mit mindestens so vielen Anwenderfeldern
+    # ueberschrieben. seiten.json hat ihre eigene, strenge Regel (Zahl der Seiten) und bleibt aussen vor - dort darf
+    # ein Anwender Seiten loeschen. Nicht zaehlbar (kein php, kein python3) -> wie bisher.
+    if [ -f "$ZWEIT" ] && [ "$ART" != seiten ]; then
+        N_CF=$(db_inhalt "$CF" "$ART" zahl)
+        N_ZW=$(db_inhalt "$ZWEIT" "$ART" zahl)
+        case "$N_CF:$N_ZW" in
+            *[!0-9:]*|:*|*:) ;;
+            *)
+                if [ "$N_CF" -lt "$N_ZW" ]; then
+                    echo "<WARNING> $f traegt weniger Einstellungen ($N_CF) als die vorhandene Zweitschrift ($N_ZW)."
+                    echo "<WARNING> Die Zweitschrift bleibt unveraendert - aus ihr werden die Einstellungen am"
+                    echo "<WARNING> Ende der Installation zurueckgeholt:"
+                    echo "<WARNING>   $ZWEIT"
+                    continue
+                fi ;;
+        esac
+    fi
     if cp -p "$CF" "$ZWEIT"; then
         echo "<INFO> $f gesichert."
     else
@@ -325,6 +394,24 @@ chmod 600 "$BASE/config/plugins/$PFOLDER.backup.zugang.json" 2>/dev/null
 chmod 600 "$BASE/config/plugins/$PFOLDER.backup.dashboard.json" 2>/dev/null
 chmod 600 "$BASE/config/plugins/$PFOLDER.backup.seiten.json" 2>/dev/null
 echo "<OK> preupgrade abgeschlossen."
+
+# ---------- Altlast: Zweitschrift in der alten Namensform <ordner>.backup.json (Nachzug Geraetemessung 0.9.37) ----------
+# Am Geraet gemessen (24.10.2026): config/plugins/dashboard.backup.json vom 15.08.2026, 0644, mit Aktionstoken. Bis 0.9.36
+# legte sie nur preinstall.sh bei einer NEUINSTALLATION beiseite; beim Update blieb sie lesbar liegen. Jetzt auch hier:
+# erst 0600, dann nach <name>.alt - wie preinstall.sh, aber ohne etwas zu loeschen: liegt schon eine .alt, bekommt die
+# neue einen Zeitstempel. uninstall/uninstall raeumt <ordner>.backup.* ab.
+DB_ALTFORM="$BASE/config/plugins/$PFOLDER.backup.json"
+if [ -f "$DB_ALTFORM" ] && [ ! -L "$DB_ALTFORM" ]; then
+    chmod 600 "$DB_ALTFORM" 2>/dev/null
+    DB_ALTZIEL="$DB_ALTFORM.alt"
+    [ -e "$DB_ALTZIEL" ] || [ -L "$DB_ALTZIEL" ] && DB_ALTZIEL="$DB_ALTFORM.alt.$(date +%Y%m%d%H%M%S)"
+    if mv "$DB_ALTFORM" "$DB_ALTZIEL" 2>/dev/null; then
+        chmod 600 "$DB_ALTZIEL" 2>/dev/null
+        echo "<INFO> Alte Zweitschrift $(basename "$DB_ALTFORM") (Namensform bis 0.9.5) beiseitegelegt: $(basename "$DB_ALTZIEL") (0600)."
+    else
+        echo "<WARNING> Alte Zweitschrift $(basename "$DB_ALTFORM") liess sich nicht verschieben - Rechte auf 0600 gesetzt."
+    fi
+fi
 
 # ---------- Langzeitwerte retten ----------
 # der Verlauf, aus dem die Kurven der letzten Tage entstehen.

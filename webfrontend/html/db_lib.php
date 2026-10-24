@@ -107,25 +107,52 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* D8 (Gruppe 12, 0.9.37; Bauform Sprachsteuerung 0.12.7 sp_lbhome()/sp_paths()): die Wurzel. $LBHOMEDIR gilt nur,
+ * wenn darunter config/plugins liegt (die Attrappe Werkzeuge/lb traegt keine general.json), sonst die Suche vom eigenen
+ * Ablageort aufwaerts. Der feste Pfad /home/loxberry/loxberry ist gestrichen (Regeln/06, harte Systempfade): bis 0.9.36
+ * griff am Geraet JEDE Archivkopie ueber ihn auf die Konfiguration der Anlage zu (Pruefbericht D8, gemessen unter
+ * PHP 7.4/8.4/8.5: "Archiv liest Token der Anlage: JA"). */
+function db_lbhome()
+{
+    $home = getenv('LBHOMEDIR');
+    if ($home && is_dir($home . '/config/plugins')) {
+        return $home;
+    }
+    return lb_wurzel_ermitteln();
+}
+
 function db_paths()
 {
     static $p = null;
     if ($p !== null) { return $p; }
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) { $home = $k; break; }
-        }
-    }
+    $home = db_lbhome();
     // Der Pluginordner ergibt sich aus dem Ablageort DIESER Datei. Der
     // MD5-Schluessel aus der plugindatabase.json wird bewusst NICHT benutzt -
     // er wird aus Autorenname, E-Mail und Plugin-Name gebildet und aendert
     // sich bei jedem Fork.
     $dir = basename(dirname(__FILE__));
-    if ($home && !is_dir($home . '/config/plugins/' . $dir)) {
-        foreach (array(getenv('LBPPLUGINDIR'), 'dashboard') as $kand) {
-            if ($kand && is_dir($home . '/config/plugins/' . $kand)) { $dir = $kand; break; }
-        }
+    /* D8: LBPPLUGINDIR ist die Auskunft von LoxBerry selbst. Der feste Name 'dashboard' greift nur noch dort, wo der
+     * ermittelte nachweislich kein Plugin-Ordner sein kann: aus dem ausgepackten Archiv heraus heisst er "html". */
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = ($lbp !== '' && !in_array($lbp, array('.', '/', 'html', 'bin', 'plugins'), true));
+    if ($lbp_gilt) {
+        $dir = $lbp;
+    } elseif ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html') {
+        $dir = 'dashboard';
+    }
+    /* D8: Archivmodus. Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek dort installiert liegt
+     * (<Wurzel>/webfrontend/html/plugins/<ordner>, physisch verglichen) oder der Aufrufer Wurzel UND Ordner
+     * ausdruecklich nennt ($LBHOMEDIR und $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit ihrer Attrappe). Sonst
+     * ist das ein ausgepacktes Archiv oder ein Pruefordner, und alles bleibt in dessen eigenem Ordner. Die
+     * Befehlsbruecke laedt die Bibliothek aus webfrontend/html/plugins/<ordner>/ - "installiert" greift dort ohne
+     * Umgebung (cron). */
+    if ($home) {
+        $soll = @realpath($home . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt
+            && rtrim((string) $home, '/') === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) { $home = ''; }
     }
     if ($home) {
         $p = array(
@@ -275,6 +302,13 @@ function db_vorgaben()
          * der virtuelle Ausgang wirkt unabhaengig davon wie bisher. */
         'tafel_mqtt'         => 0,
         'tafel_mqtt_praefix' => 'dashboard',
+        /* Gruppe 12 (0.9.37): Zustand ueber MQTT senden (ab Werk AN, auch beim Update - E5; bin/status_mqtt.py),
+         * Befehle ueber MQTT annehmen (Befehlsbruecke, ab Werk AUS), Loxone-Abruf ueber HTTP (aktion=status und
+         * aktion=tafel, ab Werk AUS; postinstall.sh setzt ihn beim Update auf 1, wenn ein gueltiges Aktionstoken
+         * steht - E6). Der Tablet-Weg haengt an keinem der drei. */
+        'mqtt_ein'           => 1,
+        'befehle_mqtt_ein'   => 0,
+        'endpunkt_ein'       => 0,
     );
 }
 
@@ -533,7 +567,7 @@ function db_miniserver()
                      'passwort_da' => !empty($z['passwort']) ? 1 : 0);
     }
     $cfg = db_config();
-    $g = db_json_lesen(db_paths()['home'] . '/config/system/general.json');
+    $g = db_paths()['home'] !== '' ? db_json_lesen(db_paths()['home'] . '/config/system/general.json') : array();
     $alle = isset($g['Miniserver']) && is_array($g['Miniserver']) ? $g['Miniserver'] : array();
     $nr = (string) $cfg['miniserver'];
     $ms = isset($alle[$nr]) ? $alle[$nr] : (count($alle) ? reset($alle) : null);
@@ -544,25 +578,17 @@ function db_miniserver()
                  'name' => isset($ms['Name']) ? $ms['Name'] : ('Miniserver ' . $nr),
                  'adresse' => (string) $ip,
                  'port' => (int) (isset($ms['Port']) ? $ms['Port'] : 80),
-                 'benutzer' => db_vielleicht_base64((string) (isset($ms['Admin']) ? $ms['Admin'] : '')),
-                 'passwort_da' => !empty($ms['Pass']) ? 1 : 0);
-}
-
-/** Siehe die gleichnamige Funktion im Dienst - dieselbe Pruefung. */
-function db_vielleicht_base64($s)
-{
-    if ($s === '' || strlen($s) % 4 !== 0) { return $s; }
-    $roh = base64_decode($s, true);
-    if ($roh === false || $roh === '') { return $s; }
-    if (preg_match('/[\x00-\x1F]/', $roh)) { return $s; }
-    if (base64_encode($roh) !== $s) { return $s; }
-    return $roh;
+                 /* D9 + E1: Admin_raw ist der Klartext (LoxBerry miniserver.cgi, migrate_generalcfg); Admin traegt
+                  * ihn uri_escape-kodiert. rawurldecode, nicht urldecode: ein "+" im Namen bleibt "+". */
+                 'benutzer' => (string) (isset($ms['Admin_raw']) && $ms['Admin_raw'] !== '' ? $ms['Admin_raw']
+                     : rawurldecode((string) (isset($ms['Admin']) ? $ms['Admin'] : ''))),
+                 'passwort_da' => (!empty($ms['Pass_raw']) || !empty($ms['Pass'])) ? 1 : 0);
 }
 
 /** Liste aller Miniserver aus der LoxBerry-Konfiguration. */
 function db_miniserver_liste()
 {
-    $g = db_json_lesen(db_paths()['home'] . '/config/system/general.json');
+    $g = db_paths()['home'] !== '' ? db_json_lesen(db_paths()['home'] . '/config/system/general.json') : array();
     $alle = isset($g['Miniserver']) && is_array($g['Miniserver']) ? $g['Miniserver'] : array();
     $out = array();
     foreach ($alle as $nr => $ms) {
@@ -871,23 +897,40 @@ function db_frist($a = null, $cfg = null)
  * ALTER bleibt unveraendert daneben (Entscheidung 4). */
 function db_status_werte()
 {
-    $a = db_abbild();
-    $cfg = db_config();
+    /* Gruppe 12 (0.9.37): die Rechnung steht in db_status_werte_bei() - dieselben Eingaben wie bisher, dasselbe
+     * Ergebnis (die Zeile des Endpunkts bleibt byte-gleich); der Reiter Test rechnet damit die Werte des Dienstes
+     * (bin/status_mqtt.py) nach. */
     $seiten = db_seiten();
-    $kacheln = 0;
-    foreach ($seiten as $s) {
-        $kacheln += count(is_array($s) && isset($s['kacheln']) && is_array($s['kacheln']) ? $s['kacheln'] : array());
-    }
-    $alter = db_alter($a);
-    $ok = (!empty($a['ok']) && $alter >= 0 && $alter <= db_frist($a, $cfg)) ? 1 : 0;
+    $w = db_status_werte_bei(db_abbild(), db_config(), $seiten, count(db_bausteine()), time());
     /* ZEIT (0.9.32, Entwurf Welle 13 db, Entscheidung 2): die Zeit der Antwort in Unix-Sekunden, das
      * Lebenszeichen. Sie aendert sich bei JEDER Abfrage - auch wenn Dienst und Abbild stehen. Steht
      * der LoxBerry selbst (aus, Netz weg, Apache tot), behaelt der Virtuelle HTTP-Eingang in Loxone
      * seine letzten Werte: OK bleibt 1, ALTER bleibt klein, und nichts meldet. Eine
      * Analogwertvalidierung auf ZEIT meldet genau das. ALTER taugt dafuer nicht: es steht beim Abruf
-     * meist auf 0, 1 oder 2 und wiederholt sich. */
-    return array('OK' => $ok, 'BAUSTEINE' => count(db_bausteine()), 'SEITEN' => count($seiten),
-                 'KACHELN' => $kacheln, 'ALTER' => $alter, 'ZEIT' => time());
+     * meist auf 0, 1 oder 2 und wiederholt sich. Ueber MQTT leistet das status/zaehler (Gruppe 12). */
+    $w['ZEIT'] = time();
+    return $w;
+}
+
+/** Die Werte der Zustandszeile aus gegebenen Eingaben (ohne ZEIT) - EINE Regel fuer Endpunkt, Reiter Test und die
+ * Gegenrechnung der MQTT-Werte (bin/status_mqtt.py rechnet dieselbe in Python). $jetzt ist der Zeitpunkt, zu dem das
+ * Alter gilt; $frist_versatz nur fuer die Gegenprobe im Pruefstand (sonst 0). */
+function db_status_werte_bei($a, $cfg, $seiten, $bausteine, $jetzt, $frist_versatz = 0)
+{
+    $a = is_array($a) ? $a : array();
+    $kacheln = 0;
+    foreach ((array) $seiten as $s) {
+        $kacheln += count(is_array($s) && isset($s['kacheln']) && is_array($s['kacheln']) ? $s['kacheln'] : array());
+    }
+    if (!isset($a['ts']) || !is_numeric($a['ts']) || (int) $a['ts'] <= 0) {
+        $alter = -1;
+    } else {
+        $alter = (int) $jetzt - (int) $a['ts'];
+        if ($alter < 0) { $alter = -1; }
+    }
+    $ok = (!empty($a['ok']) && $alter >= 0 && $alter <= db_frist($a, $cfg) + (int) $frist_versatz) ? 1 : 0;
+    return array('OK' => $ok, 'BAUSTEINE' => (int) $bausteine, 'SEITEN' => count((array) $seiten),
+                 'KACHELN' => $kacheln, 'ALTER' => $alter);
 }
 
 /** Die Zustandszeile, gebaut AUS db_status_felder() (H8, Regeln/07). Bis
@@ -1345,18 +1388,635 @@ function db_befehl_absetzen($befehl, $wartezeit = null)
     return array(2, sprintf(db_t('EP.KEINE_ANTWORT'), $wartezeit));
 }
 
-/* Es gibt bewusst KEINE MQTT-Funktionen mehr.
+/* ==================================================================
+ * MQTT (seit 0.9.37, Gruppe 12): Zustandswerte ueber das Gateway, Tafelbefehle ueber die Befehlsbruecke
+ * ==================================================================
  *
- * Bis 0.9.0 standen hier db_mqtt_zustand() und db_mqtt_senden() - aufgerufen
- * wurden sie von nirgends. Das passt auch nicht zum Entwurf: dieses Plugin
- * haelt die Werte im Zwischenspeicher des Dienstes und liefert sie der
- * Anzeigeseite als JSON. Ein Umweg ueber einen Broker braeuchte es nicht,
- * und in der Oberflaeche steht ausdruecklich, dass es ihn nicht gibt.
- *
- * Toter Code, der einen ganzen Uebertragungsweg andeutet, ist schlimmer als
- * gar keiner: der naechste Leser haelt ihn fuer benutzt.
- */
+ * Bis 0.9.36 stand hier "Es gibt bewusst KEINE MQTT-Funktionen mehr" (tote db_mqtt_* bis 0.9.0). Seit 0.9.37:
+ *   - die Zustandswerte (ok, bausteine, seiten, kacheln, alter, status/zaehler) sendet der DIENST jede Minute ueber
+ *     den UDP-Eingang des Gateways (bin/status_mqtt.py, Haken mqtt_ein, ab Werk an); hier stehen Namenstabelle,
+ *     V2-Hakenliste, Abo-Datei und die Pruefzeilen;
+ *   - die Tafelbefehle seite/wecken/hell/ruhe nimmt die gemeinsame Befehlsbruecke an (bin/befehlsbruecke.php,
+ *     Stammfassung; bin/befehle_zuordnung.php) und reicht sie an db_bb_tun() -> db_tafel_steuern() - dieselbe
+ *     Pruefung wie aktion=tafel des Endpunkts;
+ *   - der alte Weg <praefix>/tafel/alle/... (bin/tafel_mqtt.py) bleibt hinter seinem Haken tafel_mqtt (E7).
+ * EIN Praefix fuer alles: tafel_mqtt_praefix (E4, im Reiter "MQTT-Praefix"). */
 
+/**
+ * Die Steuerung der Anzeigeseite - EINE Pruefung fuer den HTTP-Endpunkt (aktion=tafel) und die Befehlsbruecke.
+ * Bis 0.9.36 stand sie im tafel-Zweig von html/index.php; Felder, Reihenfolge, Gruende, Meldungen und Codes sind
+ * dieselben (Pruefstand: Antworten byte-gleich). $roh: 'seite' (Schluessel, schon nach Muster geprueft, '' = keine),
+ * 'wach', 'hell', 'ruhe' (Zeichenketten wie aus der Adresse, null = nicht genannt). ERST alles pruefen, DANN einmal
+ * schreiben (0.9.12). Rueckgabe array(HTTP-Code, array(ok, grund, meldung)).
+ */
+function db_tafel_steuern(array $roh, $cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = db_config(); }
+    if (empty($cfg['tafelsteuerung'])) {
+        return array(403, array('ok' => 0, 'grund' => 'GESPERRT', 'meldung' => db_t('EP.TAFEL_GESPERRT')));
+    }
+    $getan = array();
+    $felder = array();
+    $seite = isset($roh['seite']) ? $roh['seite'] : '';
+    if ($seite !== '' && $seite !== null) {
+        if (db_seite($seite) === null) {
+            return array(404, array('ok' => 0, 'grund' => 'SEITE_UNBEKANNT', 'meldung' => db_t('EP.SEITE_UNBEKANNT')));
+        }
+        $felder['seite'] = $seite;
+        $getan[] = 'seite=' . $seite;
+    }
+    // C5: jede Angabe VOR der Umwandlung auf ihre Art geprueft.
+    $v = array_key_exists('wach', $roh) ? $roh['wach'] : null;
+    if ($v !== null) {
+        if (!is_string($v) || !preg_match('/^[01]$/', $v)) {
+            return array(400, array('ok' => 0, 'grund' => 'WERT_UNGUELTIG', 'meldung' => db_t('EP.WACH')));
+        }
+        $felder['wach'] = (int) $v;
+        $getan[] = 'wach=' . (int) $v;
+    }
+    $h = array_key_exists('hell', $roh) ? $roh['hell'] : null;
+    if ($h !== null) {
+        if (!is_string($h) || !preg_match('/^[0-9]{1,3}$/', $h) || (int) $h > 100) {
+            return array(400, array('ok' => 0, 'grund' => 'WERT_UNGUELTIG', 'meldung' => db_t('EP.HELL')));
+        }
+        $felder['hell'] = (int) $h;
+        $getan[] = 'hell=' . (int) $h;
+    }
+    $r = array_key_exists('ruhe', $roh) ? $roh['ruhe'] : null;
+    if ($r !== null) {
+        if (!is_string($r) || !preg_match('/^[01]$/', $r)) {
+            return array(400, array('ok' => 0, 'grund' => 'WERT_UNGUELTIG', 'meldung' => db_t('EP.RUHE')));
+        }
+        if (empty($cfg['ruhe_nach'])) {
+            /* Nicht stillschweigend nichts tun: wer das Ruhebild aus Loxone schaltet und es ist gar nicht
+             * eingerichtet, sucht sonst am falschen Ende. */
+            return array(409, array('ok' => 0, 'grund' => 'RUHE_AUS', 'meldung' => db_t('EP.RUHE_AUS')));
+        }
+        $felder['ruhe'] = (int) $r;
+        $getan[] = 'ruhe=' . (int) $r;
+    }
+    if (!$getan) {
+        return array(400, array('ok' => 0, 'grund' => 'NICHTS_ANGEGEBEN', 'meldung' => db_t('EP.NICHTS')));
+    }
+    /* C8 (Durchgang 29.09.2026): ein misslungenes Schreiben ist ein Fehler. Bis 0.9.25 wurde der Rueckgabewert
+     * verworfen und {"ok":1} gemeldet, obwohl tafel.json unveraendert blieb (gemessen, E8). */
+    if (!db_tafel_befehl($felder)) {
+        return array(500, array('ok' => 0, 'grund' => 'SCHREIBFEHLER', 'meldung' => db_t('EP.SCHREIBFEHLER')));
+    }
+    return array(200, array('ok' => 1, 'meldung' => implode(', ', $getan)));
+}
+
+/** Das MQTT-Praefix (E4: tafel_mqtt_praefix), gueltig nach db_tafel_mqtt_praefix_gueltig(), sonst 'dashboard'. */
+function db_mqtt_praefix($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = db_config(); }
+    $p = isset($cfg['tafel_mqtt_praefix']) ? $cfg['tafel_mqtt_praefix'] : '';
+    return db_tafel_mqtt_praefix_gueltig($p) ? $p : 'dashboard';
+}
+
+/* ---------------- Befehlsbruecke: die Seite der Linie ---------------- */
+
+/** Einstellungen fuer die Bruecke (frisch je Aufruf - db_config() liest jedes Mal; ein Haken wirkt ohne Neustart). */
+function db_bb_einstellungen()
+{
+    $c = db_config();
+    return array('praefix' => db_mqtt_praefix($c),
+                 'annehmen' => (int) $c['befehle_mqtt_ein'] === 1,
+                 'eingreifend' => false,
+                 'mqtt_ein' => (int) $c['mqtt_ein'] === 1);
+}
+
+/** Protokoll der Befehlsbruecke: die Logdatei des Plugins (db_log), mit Stufe. */
+function db_bb_protokoll($stufe, $text)
+{
+    db_log('[' . (string) $stufe . '] ' . (string) $text);
+}
+
+/**
+ * Seite aus der Nutzlast: der Schluessel einer Seite, sonst ihre Nummer (1 = erste Seite; "2" oder "2.0" wie
+ * MUSTER_NUMMER in tafel_mqtt.py). Erst der Schluessel: eine Seite, die "2" heisst, gewinnt vor der zweiten Seite.
+ * Rueckgabe array(seite, grund): eine aufgeloeste Nummer gibt den Schluessel; ein Text nach dem Muster
+ * [a-z0-9-]{1,60} geht unveraendert weiter (db_tafel_steuern() prueft erst die Erlaubnis, dann ob es die Seite gibt);
+ * alles andere SEITE_UNGUELTIG.
+ */
+function db_bb_seite_aufloesen($text)
+{
+    $w = trim((string) $text);
+    $schluessel = array();
+    foreach (db_seiten() as $s) {
+        $schluessel[] = (string) (is_array($s) && isset($s['schluessel']) ? $s['schluessel'] : '');
+    }
+    $muster = (bool) preg_match('/^[a-z0-9-]{1,60}\z/', $w);
+    if ($muster && in_array($w, $schluessel, true)) {
+        return array($w, '');
+    }
+    if (preg_match('/^([0-9]{1,3})(\.0+)?\z/', $w, $m)) {
+        $n = (int) $m[1];
+        if ($n >= 1 && $n <= count($schluessel) && $schluessel[$n - 1] !== '') {
+            return array($schluessel[$n - 1], '');
+        }
+    }
+    return $muster ? array($w, '') : array('', 'SEITE_UNGUELTIG');
+}
+
+/**
+ * Ein Befehl der Befehlsbruecke (tun() in bin/befehle_zuordnung.php). $name seite | wecken | hell | ruhe, $wert der
+ * von der Bruecke gepruefte Wert (Text bis 60 Byte, 1, 0..100, 0/1). Upgrade-Marke -> AKTUALISIERUNG (gilt 3600 s, E5);
+ * dann db_tafel_steuern() - also auch "Loxone darf die Anzeigeseite umschalten" (GESPERRT, E3) und das Ruhebild
+ * (RUHE_AUS) wie beim HTTP-Endpunkt. Kein Dienst, kein HTTP, kein Kindprozess. Rueckgabe array(bool ok, grund ASCII).
+ */
+function db_bb_tun($name, $wert)
+{
+    $name = (string) $name;
+    $wert = trim((string) $wert);
+    $marke = db_upgrade_marke();
+    if (!empty($marke[1])) {
+        return array(false, 'AKTUALISIERUNG');
+    }
+    $roh = array();
+    if ($name === 'seite') {
+        list($seite, $grund) = db_bb_seite_aufloesen($wert);
+        if ($grund !== '') {
+            return array(false, $grund);
+        }
+        $roh['seite'] = $seite;
+    } elseif ($name === 'wecken') {
+        $roh['wach'] = '1';
+    } elseif ($name === 'hell') {
+        $roh['hell'] = $wert;
+    } elseif ($name === 'ruhe') {
+        $roh['ruhe'] = $wert;
+    } else {
+        return array(false, 'UNBEKANNT');
+    }
+    list(, $d) = db_tafel_steuern($roh);
+    if (!empty($d['ok'])) {
+        return array(true, '');
+    }
+    return array(false, isset($d['grund']) && $d['grund'] !== '' ? (string) $d['grund'] : 'ABGELEHNT');
+}
+
+/** Wo liegt eine Datei unter bin/? Installiert bin/plugins/<ordner>/, im Archiv <wurzel>/bin/. '' = fehlt. */
+function db_bin_datei($name)
+{
+    foreach (array(db_paths()['bindir'] . '/' . $name, dirname(dirname(__DIR__)) . '/bin/' . $name) as $k) {
+        if (@is_file($k)) {
+            return $k;
+        }
+    }
+    return '';
+}
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). */
+function db_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) {
+        return true;
+    }
+    $f = db_bin_datei('befehlsbruecke.php');
+    if ($f === '') {
+        return false;
+    }
+    if (!defined('BB_NUR_LADEN')) {
+        define('BB_NUR_LADEN', true);
+    }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/** Taugt das Praefix fuer die Befehlsbruecke? db_tafel_mqtt_praefix_gueltig (4 x 32) ist eine Teilmenge davon. */
+function db_bb_praefix_ok($p)
+{
+    if (db_bruecke_laden() && function_exists('bb_praefix_gueltig')) {
+        return bb_praefix_gueltig((string) $p);
+    }
+    return strlen((string) $p) <= 100 && (bool) preg_match('#^[A-Za-z0-9_\-]{1,40}(/[A-Za-z0-9_\-]{1,40}){0,4}\z#', (string) $p);
+}
+
+/**
+ * Direktstart bzw. -stopp der Bruecke nach dem Speichern (Entwurf 3.5, Bauart sp_bruecke_schalten):
+ * befehlsbruecke.sh start startet nur nach --soll, nie als root, nie waehrend eines Updates, nie doppelt; der Waechter
+ * in cron.01min startet hoechstens alle 600 s neu. $neustart: Praefix gewechselt (stop, dann start).
+ * Rueckgabe array(''|'ein'|'aus'|'start_fehl'|'stop_fehl', Ausgabe).
+ */
+function db_bruecke_schalten($neustart = false)
+{
+    if (DIRECTORY_SEPARATOR === '\\' || db_paths()['home'] === '' || !db_bruecke_laden()) {
+        return array('', '');
+    }
+    $p = bb_pfade();
+    if (!$p) {
+        return array('', '');
+    }
+    $e = db_bb_einstellungen();
+    $laeuft = (bool) bb_dienste();
+    if ($e['annehmen']) {
+        if ($laeuft && !$neustart) {
+            return array('', '');
+        }
+        if ($laeuft) {
+            bb_sh($p, 'stop');
+        }
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array(($rc === 0 && bb_dienste()) ? 'ein' : 'start_fehl', $aus);
+    }
+    if (!$laeuft) {
+        return array('', '');
+    }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    return array(($rc === 0 && !bb_dienste()) ? 'aus' : 'stop_fehl', $aus);
+}
+
+/** Ein Satz zum Ergebnis von db_bruecke_schalten() ('' = nichts zu sagen), maskiert. */
+function db_bruecke_satz(array $r)
+{
+    $a = $r[1] !== '' ? trim((string) $r[1]) : '-';
+    switch ($r[0]) {
+        case 'ein':
+            return db_e(sprintf(db_t('BEFEHL.M_GESTARTET'), $a));
+        case 'aus':
+            return db_e(sprintf(db_t('BEFEHL.M_ANGEHALTEN'), $a));
+        case 'start_fehl':
+            return db_e(sprintf(db_t('BEFEHL.M_START_FEHL'), $a));
+        case 'stop_fehl':
+            return db_e(sprintf(db_t('BEFEHL.M_STOP_FEHL'), $a));
+    }
+    return '';
+}
+
+/* ---------------- Abo-Datei fuer das Gateway V1 (Entwurf 2.4) ---------------- */
+
+function db_mqtt_abo_datei()
+{
+    return db_paths()['configdir'] . '/mqtt_subscriptions.cfg';
+}
+
+/** Der Soll-Inhalt: das Praefix mit '#', eine Zeile. */
+function db_mqtt_abo_inhalt($cfg = null)
+{
+    return db_mqtt_praefix($cfg) . "/#\n";
+}
+
+/** array(zustand, inhalt): 'fehlt' | 'passt' | 'anders' | 'unlesbar'. */
+function db_mqtt_abo_lage($cfg = null)
+{
+    $datei = db_mqtt_abo_datei();
+    if (!is_file($datei)) { return array('fehlt', ''); }
+    $roh = @file_get_contents($datei);
+    if ($roh === false) { return array('unlesbar', ''); }
+    return array(str_replace("\r\n", "\n", (string) $roh) === db_mqtt_abo_inhalt($cfg) ? 'passt' : 'anders', (string) $roh);
+}
+
+/** Schreiben, wenn sie fehlt oder nicht passt - atomar, 0644 (nichts Geheimes). NUR beim Speichern des Praefixes,
+ * nie beim Seitenaufbau (ein GET schreibt nicht). Rueckgabe array(ok, geschrieben). */
+function db_mqtt_abo_schreiben($cfg = null)
+{
+    list($lage) = db_mqtt_abo_lage($cfg);
+    if ($lage === 'passt') { return array(true, false); }
+    $datei = db_mqtt_abo_datei();
+    $ordner = dirname($datei);
+    if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) { return array(false, false); }
+    $inhalt = db_mqtt_abo_inhalt($cfg);
+    $tmp = $datei . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $inhalt) !== strlen($inhalt)) { @unlink($tmp); return array(false, false); }
+    @chmod($tmp, 0644);
+    if (!@rename($tmp, $datei)) { @unlink($tmp); return array(false, false); }
+    db_log('Abo-Datei fuer das MQTT-Gateway geschrieben: ' . $datei . ' (' . trim($inhalt) . ').');
+    return array(true, true);
+}
+
+/* ---------------- Befehle fuer Loxone (Entwurf 3.8, Musterprojekt Abschnitt 6) ---------------- */
+
+/** Der UDP-Eingang des MQTT-Gateways (general.json Mqtt.Udpinport), sonst 11884. */
+function db_udp_eingang()
+{
+    $h = db_paths()['home'];
+    $g = $h !== '' ? db_json_lesen($h . '/config/system/general.json') : array();
+    $m = isset($g['Mqtt']) && is_array($g['Mqtt']) ? $g['Mqtt'] : array();
+    $port = isset($m['Udpinport']) && is_numeric($m['Udpinport']) ? (int) $m['Udpinport'] : 0;
+    return ($port >= 1 && $port <= 65535) ? $port : 11884;
+}
+
+/** "publish <praefix>/befehl/<name> <wert>" - nie retain (Regeln/07). */
+function db_mqtt_befehl_text($praefix, $name, $wert)
+{
+    return 'publish ' . $praefix . '/befehl/' . $name . ' ' . $wert;
+}
+
+/**
+ * Die Befehle fuer Loxone - EINE Quelle fuer die Tabelle im Reiter Einbindung und die Vorlage MQTT-Befehle. Je Seite
+ * aus db_tafel_befehle() "Dashboard: Tablets auf <Name>", dazu wecken, Helligkeit (analog) und - nur mit Ruhebild -
+ * Ruhebild (wie db_vorlage_out). Je Zeile: titel, name (Bruecke), ein, aus ('' = keiner), analog.
+ * Kein Titel gleicht einem Gateway-Eingang (die heissen <praefix>_..., hier "Dashboard: ...").
+ */
+function db_mqtt_befehle($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = db_config(); }
+    $aus = array();
+    foreach (db_tafel_befehle() as $b) {
+        $aus[] = array('titel' => 'Dashboard: Tablets auf ' . $b['name'], 'name' => 'seite',
+                       'ein' => $b['wert'], 'aus' => '', 'analog' => false);
+    }
+    $aus[] = array('titel' => 'Dashboard: Tablets wecken', 'name' => 'wecken', 'ein' => '1', 'aus' => '', 'analog' => false);
+    $aus[] = array('titel' => 'Dashboard: Tablet-Helligkeit', 'name' => 'hell', 'ein' => '<v.0>', 'aus' => '',
+                   'analog' => true);
+    if (!empty($cfg['ruhe_nach'])) {
+        $aus[] = array('titel' => 'Dashboard: Ruhebild', 'name' => 'ruhe', 'ein' => '1', 'aus' => '0', 'analog' => false);
+    }
+    return $aus;
+}
+
+/**
+ * Vorlage "MQTT-Befehle" (Entwurf 3.8): ein Virtueller Ausgang an /dev/udp/<LoxBerry>/<UDP-Eingang des Gateways>,
+ * CloseAfterSend, je Zeile aus db_mqtt_befehle() ein Befehl "publish <praefix>/befehl/<name> <wert>" (nie retain).
+ * Rueckgabe array(Dateiname, Inhalt).
+ */
+function db_vorlage_mqtt_out($cfg = null)
+{
+    if (!is_array($cfg)) { $cfg = db_config(); }
+    $praefix = db_mqtt_praefix($cfg);
+    $cmds = array();
+    foreach (db_mqtt_befehle($cfg) as $b) {
+        $c = array('title' => $b['titel'],
+                   'comment' => db_kuerzen(substr($b['titel'], strlen('Dashboard: ')), 40),
+                   'on' => db_mqtt_befehl_text($praefix, $b['name'], $b['ein']),
+                   'off' => $b['aus'] === '' ? '' : db_mqtt_befehl_text($praefix, $b['name'], $b['aus']));
+        if ($b['analog']) {
+            $c['analog'] = 1;
+            $c['min'] = 0;
+            $c['max'] = 100;
+        }
+        $cmds[] = $c;
+    }
+    return array('VQ_Dashboard_MQTT.xml', db_xml_virtual_out(array(
+        'title'   => 'Dashboard Befehle (MQTT)',
+        'address' => '/dev/udp/' . db_host() . '/' . db_udp_eingang(),
+        'comment' => db_kuerzen(sprintf(db_t('VORLAGE.KOPF'), date('d.m.Y')), 40),
+        'close'   => true,
+    ), $cmds));
+}
+
+/* ---------------- Namenstabelle und V2-Hakenliste (Entwurf 2.4, E9) ---------------- */
+
+/** Der Name, den das MQTT-Gateway einem Thema gibt: Praefix und Thema, "/", "%" und Leerzeichen als "_". EINE Stelle. */
+function db_vi_name($thema, $cfg = null)
+{
+    return str_replace(array('/', '%', ' '), '_', db_mqtt_praefix($cfg) . '/' . trim((string) $thema, '/'));
+}
+
+/**
+ * Die Themen, die der Dienst sendet, mit V2-Kennzeichen (Musterprojekt, 6 Haken, 5 Noncached), Grenzen und Bedeutung.
+ * Nichts ist retained (Entwurf 2.2). Je Zeile: thema, n (Noncached), min, max, bedeutung (Sprachschluessel).
+ */
+function db_mqtt_themen()
+{
+    return array(
+        array('thema' => 'ok', 'n' => true, 'min' => 0, 'max' => 1, 'bedeutung' => 'MQTT.B_OK'),
+        array('thema' => 'bausteine', 'n' => true, 'min' => 0, 'max' => 65535, 'bedeutung' => 'MQTT.B_BAUSTEINE'),
+        array('thema' => 'seiten', 'n' => true, 'min' => 0, 'max' => 255, 'bedeutung' => 'MQTT.B_SEITEN'),
+        array('thema' => 'kacheln', 'n' => true, 'min' => 0, 'max' => 65535, 'bedeutung' => 'MQTT.B_KACHELN'),
+        array('thema' => 'alter', 'n' => true, 'min' => -1, 'max' => 2147483647, 'bedeutung' => 'MQTT.B_ALTER'),
+        array('thema' => 'status/zaehler', 'n' => false, 'min' => 0, 'max' => 999, 'bedeutung' => 'MQTT.B_ZAEHLER'),
+    );
+}
+
+/**
+ * Die Namenstabelle - EINE Quelle fuer Reiter Einbindung und Pruefzeile: thema, voll, name (db_vi_name), v2 (N|''),
+ * min, max, bedeutung; alle Musterprojekt-Seite "Dashboard".
+ */
+function db_mqtt_namen($cfg = null)
+{
+    $p = db_mqtt_praefix($cfg);
+    $aus = array();
+    foreach (db_mqtt_themen() as $t) {
+        $aus[] = array('thema' => $t['thema'], 'voll' => $p . '/' . $t['thema'], 'name' => db_vi_name($t['thema'], $cfg),
+                       'v2' => $t['n'] ? 'N' : '', 'min' => $t['min'], 'max' => $t['max'],
+                       'bedeutung' => $t['bedeutung']);
+    }
+    return $aus;
+}
+
+/** Der Stand des Senders (bin/status_mqtt.py) oder array(). */
+function db_status_mqtt_stand()
+{
+    return db_json_lesen(db_paths()['datadir'] . '/status_mqtt.json');
+}
+
+/* ---------------- Pruefzeilen der Umstellung (Reiter Test; Entwurf 3.5) ----------------
+ * Rueckgabe je array(stand, HTML): 1 in Ordnung, 0 Befund, -1 Hinweis bzw. nicht feststellbar. Alle lesen nur. */
+
+/** Laeuft die Befehlsbruecke? status und letzte Quittung aus ihrer zustand.json. Haken aus ist grau. */
+function db_pruef_bruecke($cfg)
+{
+    if (!db_bruecke_laden()) {
+        return array(0, db_e(db_t('BEFEHL.T_FEHLT')));
+    }
+    list($z, $fehler) = bb_zuordnung_laden(db_bin_datei('befehle_zuordnung.php'));
+    if ($z === null) {
+        return array(0, db_e(sprintf(db_t('BEFEHL.T_DEFEKT'), $fehler)));
+    }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) {
+        return array(0, db_e(sprintf(db_t('BEFEHL.T_DEFEKT'), $f[0])));
+    }
+    if ((int) $cfg['befehle_mqtt_ein'] !== 1) {
+        return array(-1, db_e(db_t('BEFEHL.T_AUS')));
+    }
+    if (DIRECTORY_SEPARATOR === '\\' || db_paths()['home'] === '' || !bb_pfade()) {
+        return array(-1, db_e(db_t('BEFEHL.T_ARCHIV')));
+    }
+    $zu = bb_zustand_lesen();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!bb_dienste()) {
+        return array(0, db_e(db_t('BEFEHL.T_STEHT')));
+    }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) {
+        return array(0, db_e(sprintf(db_t('BEFEHL.T_HAENGT'), (int) $alter)));
+    }
+    if (empty($zu['abo'])) {
+        return array(0, db_e(sprintf(db_t('BEFEHL.T_OHNE_ABO'), isset($zu['fehler']) ? (string) $zu['fehler'] : '')));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $letzte = (!empty($zu['letzter']) && is_array($zu['letzter']))
+        ? (string) $zu['letzter']['name'] . ': ' . (string) $zu['letzter']['ergebnis'] . ' (vor '
+          . max(0, time() - (int) $zu['letzter']['zeit']) . ' s)' : '-';
+    return array(1, db_e(sprintf(db_t('BEFEHL.T_LAEUFT'),
+        date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time()),
+        isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0,
+        isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0, $letzte)));
+}
+
+/** "befehlsbruecke.php --pruefen" (mosquitto_sub/_pub = mosquitto-clients, Zuordnung) als EINE Zeile. */
+function db_pruef_bruecke_einrichtung($cfg)
+{
+    if (!db_bruecke_laden()) {
+        return array(0, db_e(db_t('BEFEHL.T_FEHLT')));
+    }
+    ob_start();
+    bb_pruefen();
+    $aus = array_values(array_filter(explode("\n", (string) ob_get_clean()), 'strlen'));
+    if (!$aus) {
+        return array(-1, db_e(db_t('BEFEHL.T_UNKLAR')));
+    }
+    $fehl = array_values(preg_grep('/^\[FEHL\]/', $aus));
+    if ($fehl) {
+        // Fehlende mosquitto-clients bei ausgeschaltetem Haken: ein Hinweis, kein Kreuz.
+        return array((int) $cfg['befehle_mqtt_ein'] === 1 ? 0 : -1,
+                     db_e(implode(' | ', $fehl) . ' ' . db_t('BEFEHL.T_EINRICHTUNG')));
+    }
+    return array(1, db_e(implode(' | ', array($aus[0], end($aus)))));
+}
+
+/** Praefix in der Grenze der Bruecke (und der eigenen Regel)? */
+function db_pruef_praefix($cfg)
+{
+    $roh = isset($cfg['tafel_mqtt_praefix']) ? $cfg['tafel_mqtt_praefix'] : '';
+    if (!db_tafel_mqtt_praefix_gueltig($roh)) {
+        return array(0, db_e(sprintf(db_t('MQTT.T_PRAEFIX_FALSCH'), is_scalar($roh) ? (string) $roh : '?')));
+    }
+    if (!db_bb_praefix_ok($roh)) {
+        return array(0, db_e(sprintf(db_t('MQTT.T_PRAEFIX_BRUECKE'), $roh)));
+    }
+    return array(1, db_e(sprintf(db_t('MQTT.T_PRAEFIX'), $roh)));
+}
+
+/** F1: nimmt der Dienst nur Auftraege mit der Kennung ^[0-9a-f]{16}$? (gelesen am Quelltext des Dienstes) */
+function db_pruef_namensfilter()
+{
+    $f = db_bin_datei('dashboard_dienst.py');
+    $roh = $f !== '' ? (string) @file_get_contents($f) : '';
+    if ($roh === '') {
+        return array(-1, db_e(db_t('MQTT.T_FILTER_UNKLAR')));
+    }
+    $ok = strpos($roh, 'KENNUNG = re.compile(r"^[0-9a-f]{16}$")') !== false
+        && strpos($roh, 'not KENNUNG.match(name[:-5])') !== false;
+    return array($ok ? 1 : 0, db_e(db_t($ok ? 'MQTT.T_FILTER' : 'MQTT.T_FILTER_FEHLT')));
+}
+
+/** Zustand ueber MQTT: sendet der Dienst, zaehlt das Lebenszeichen, ist der Stand frisch (hoechstens 2 Takte)? */
+function db_pruef_status_mqtt($cfg)
+{
+    if ((int) $cfg['mqtt_ein'] !== 1) {
+        return array(-1, db_e(db_t('MQTT.T_WERTE_AUS')));
+    }
+    $st = db_status_mqtt_stand();
+    if (!$st || !isset($st['ts'], $st['lage'])) {
+        return array(db_dienst_pids() ? 0 : -1, db_e(db_t('MQTT.T_WERTE_NOCH_NICHT')));
+    }
+    $alter = time() - (int) $st['ts'];
+    if ($st['lage'] === 'fehler') {
+        return array(0, db_e(sprintf(db_t('MQTT.T_WERTE_FEHLER'), isset($st['fehler']) ? (string) $st['fehler'] : '')));
+    }
+    if ($st['lage'] !== 'gesendet' || $alter < 0 || $alter > 130) {
+        return array(db_dienst_pids() ? 0 : -1, db_e(sprintf(db_t('MQTT.T_WERTE_ALT'), (int) $alter)));
+    }
+    return array(1, db_e(sprintf(db_t('MQTT.T_WERTE'), isset($st['zaehler']) ? (int) $st['zaehler'] : 0, (int) $alter,
+        isset($st['port']) ? (int) $st['port'] : 0, isset($st['praefix']) ? (string) $st['praefix'] : '')));
+}
+
+/**
+ * Dieselbe Regel in zwei Sprachen (Entwurf 2.1): die Werte des Senders (status_mqtt.json) gegen db_status_werte_bei()
+ * mit DENSELBEN Eingaben (Abbild-Zeitstempel und -weg aus dem Stand, Sendezeitpunkt als "jetzt"). Ist das Abbild
+ * seither neu geschrieben, werden nur die Zahlen verglichen. $frist_versatz nur fuer die Gegenprobe (verfaelschte Frist).
+ */
+function db_pruef_status_gleich($cfg, $frist_versatz = 0)
+{
+    $st = db_status_mqtt_stand();
+    if (!isset($st['werte']) || !is_array($st['werte']) || !isset($st['ts'])) {
+        return array(-1, db_e(db_t('MQTT.T_GLEICH_UNKLAR')));
+    }
+    $a = db_abbild();
+    $ab_ts = isset($st['abbild']['ts']) ? $st['abbild']['ts'] : null;
+    $gleiches_abbild = isset($a['ts']) && $ab_ts !== null && (string) $a['ts'] === (string) $ab_ts
+        && (isset($a['weg']) ? (string) $a['weg'] : '') === (isset($st['abbild']['weg']) ? (string) $st['abbild']['weg'] : '')
+        && (!empty($a['ok'])) === (!empty($st['abbild']['ok']));
+    $php = db_status_werte_bei($a, $cfg, db_seiten(), count(db_bausteine()), (int) $st['ts'], $frist_versatz);
+    $felder = $gleiches_abbild ? array('OK' => 'ok', 'BAUSTEINE' => 'bausteine', 'SEITEN' => 'seiten',
+                                       'KACHELN' => 'kacheln', 'ALTER' => 'alter')
+                               : array('BAUSTEINE' => 'bausteine', 'SEITEN' => 'seiten', 'KACHELN' => 'kacheln');
+    $abw = array();
+    foreach ($felder as $pf => $py) {
+        $w = isset($st['werte'][$py]) ? (int) $st['werte'][$py] : null;
+        if ($w !== (int) $php[$pf]) { $abw[] = $py . ' ' . var_export($w, true) . '/' . (int) $php[$pf]; }
+    }
+    if ($abw) {
+        return array(0, db_e(sprintf(db_t('MQTT.T_GLEICH_FEHL'), implode(', ', $abw))));
+    }
+    return array(1, db_e($gleiches_abbild ? sprintf(db_t('MQTT.T_GLEICH'), count($felder))
+                                          : sprintf(db_t('MQTT.T_GLEICH_ZAHLEN'), count($felder))));
+}
+
+/** Jeder Name der Tabelle entsteht aus einem gesendeten Thema nach der Gateway-Regel (verdrehter Name -> rot). */
+function db_pruef_namen($cfg, $namen = null)
+{
+    if (!is_array($namen)) { $namen = db_mqtt_namen($cfg); }
+    $p = db_mqtt_praefix($cfg);
+    $gesendet = array();
+    foreach (db_mqtt_themen() as $t) { $gesendet[] = $t['thema']; }
+    $fehl = array();
+    foreach ($namen as $z) {
+        $soll = str_replace(array('/', '%', ' '), '_', $p . '/' . $z['thema']);
+        if (!in_array($z['thema'], $gesendet, true) || $z['name'] !== $soll || $z['voll'] !== $p . '/' . $z['thema']) {
+            $fehl[] = $z['name'];
+        }
+    }
+    if ($fehl || count($namen) !== count($gesendet)) {
+        return array(0, db_e(sprintf(db_t('MQTT.T_NAMEN_FEHL'), implode(', ', $fehl))));
+    }
+    return array(1, db_e(sprintf(db_t('MQTT.T_NAMEN'), count($namen))));
+}
+
+/** Abo-Datei fuer das Gateway V1: liegt sie und passt sie zum Praefix? */
+function db_pruef_abo($cfg)
+{
+    list($lage, $roh) = db_mqtt_abo_lage($cfg);
+    if ($lage === 'passt') {
+        return array(1, db_e(sprintf(db_t('MQTT.T_ABO'), trim($roh))));
+    }
+    $soll = trim(db_mqtt_abo_inhalt($cfg));
+    /* ausgeschriebene sprintf-Aufrufe, damit der Platzhalter-Pruefer sie sieht */
+    if ($lage === 'fehlt') {
+        $text = sprintf(db_t('MQTT.T_ABO_FEHLT'), $soll);
+    } elseif ($lage === 'anders') {
+        $text = sprintf(db_t('MQTT.T_ABO_ANDERS'), $soll);
+    } else {
+        $text = sprintf(db_t('MQTT.T_ABO_UNLESBAR'), $soll);
+    }
+    return array($lage === 'fehlt' && db_paths()['home'] === '' ? -1 : 0, db_e($text));
+}
+
+/** Kein Befehlstitel der Vorlage MQTT-Befehle gleicht einem Gateway-Namen; die Vorlage laedt als XML. */
+function db_pruef_vorlage_mqtt($cfg)
+{
+    list(, $xml) = db_vorlage_mqtt_out($cfg);
+    $namen = array();
+    foreach (db_mqtt_namen($cfg) as $z) { $namen[] = $z['name']; }
+    $gleich = array();
+    foreach (db_mqtt_befehle($cfg) as $b) {
+        if (in_array($b['titel'], $namen, true)) { $gleich[] = $b['titel']; }
+    }
+    if ($gleich) {
+        return array(0, db_e(sprintf(db_t('MQTT.T_VORLAGE_GLEICH'), implode(', ', $gleich))));
+    }
+    if (!function_exists('simplexml_load_string')) {
+        return array(-1, db_e(db_t('MQTT.T_VORLAGE_OHNE_XML')));
+    }
+    $alt = libxml_use_internal_errors(true);
+    $x = simplexml_load_string((string) $xml);
+    libxml_use_internal_errors($alt);
+    if ($x === false) {
+        return array(0, db_e(db_t('MQTT.T_VORLAGE_KAPUTT')));
+    }
+    return array(1, db_e(sprintf(db_t('MQTT.T_VORLAGE'), count(db_mqtt_befehle($cfg)))));
+}
+
+/** Loxone-Abruf ueber HTTP (endpunkt_ein): an, oder aus (gewollt - das Musterprojekt nimmt MQTT). */
+function db_pruef_loxone_abruf($cfg)
+{
+    return (int) $cfg['endpunkt_ein'] === 1
+        ? array(1, db_e(db_t('MQTT.T_ABRUF_AN')))
+        : array(-1, db_e(db_t('MQTT.T_ABRUF_AUS')));
+}
 
 /* ==================================================================
  * Loxone-Vorlagen
@@ -1446,7 +2106,7 @@ function db_xml_virtual_out($kopf, $cmds)
     $o .= 'Comment="' . db_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . db_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'CmdInit="" ';
-    $o .= 'CloseAfterSend="false" ';
+    $o .= 'CloseAfterSend="' . (!empty($kopf['close']) ? 'true' : 'false') . '" ';
     $o .= 'CmdSep="' . db_x(isset($kopf['cmdsep']) ? $kopf['cmdsep'] : ';') . '"';
     $o .= '>' . $crlf;
     $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
@@ -1516,8 +2176,7 @@ function db_sprache()
          * LBSystem nicht, und Apache reicht LBLANG nicht durch (Regeln/03).
          * Bis 0.9.25 war die Anzeigeseite deshalb auf jeder Anlage deutsch.
          * Die dritte Quelle ist Base.Lang in config/system/general.json. */
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) { $home = lb_wurzel_ermitteln(); }
+        $home = db_paths()['home'];     // D8: dieselbe Wurzel wie alle Pfade (leer im Archiv)
         if ($home) {
             $g = @json_decode((string) @file_get_contents($home . '/config/system/general.json'), true);
             if (is_array($g) && isset($g['Base']['Lang']) && is_string($g['Base']['Lang'])) {
@@ -1533,18 +2192,11 @@ function db_t($schluessel)
 {
     static $texte = null;
     if ($texte === null) {
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) {
-                    $home = $k;
-                    break;
-                }
-            }
-        }
-        $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        /* D8: dieselbe Wurzel und derselbe Ordner wie db_paths(); leere Wurzel (Archiv) -> Archivtexte, nicht
+         * '/templates/plugins/html/lang' ab /. Der feste /home/loxberry/loxberry ist gestrichen. */
+        $dbp = db_paths();
+        $pfad = $dbp['home'] !== '' ? $dbp['home'] . '/templates/plugins/' . $dbp['plugin'] . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
         $texte = @parse_ini_file($pfad . '/language_' . db_sprache() . '.ini', true, INI_SCANNER_RAW);
@@ -1924,6 +2576,14 @@ function db_seite_daten($schluessel)
         // Baustein ueberhaupt Farbe kann (Rgb/Lumitech) oder nur Weisston
         // (TunableWhite) - danach richtet sich, welche Regler die Kachel zeigt.
         $det = isset($b['details']) && is_array($b['details']) ? $b['details'] : array();
+        /* D11 (0.9.37): beim Slider stehen min/max/step NICHT in den Zustaenden, sondern in den Details
+         * (Structure-File V17.0 S. 120). Rueckfall nach den Zustaenden - der ValueSelector liefert sie als States
+         * (S. 135, kacheln.json abonniert sie seit 0.9.37). Bis 0.9.36 zeigte die Tafel 0..100/1. */
+        foreach (array('min', 'max', 'step') as $g) {
+            if (!isset($eintrag[$g]) && isset($det[$g]) && is_numeric($det[$g])) {
+                $eintrag[$g] = 0 + $det[$g];
+            }
+        }
         if ($eintrag['kachel'] === 'farbe') {
             $eintrag['twmin'] = (int) (isset($det['TWMin']) && is_numeric($det['TWMin'])
                                        ? $det['TWMin'] : 2700);
@@ -2134,7 +2794,7 @@ function db_pin_frei($cfg = null)
  * nennt sie; jeder andere fehlende Schluessel bleibt eine Beanstandung. */
 function db_sicherung_nachgezogen()
 {
-    return array('pin_frei', 'tafel_mqtt', 'tafel_mqtt_praefix');
+    return array('pin_frei', 'tafel_mqtt', 'tafel_mqtt_praefix', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein');
 }
 
 /** Felder, die der Endpunkt als Zustandszeile liefert.
@@ -2420,7 +3080,7 @@ function db_sicherung_wert_pruefen($k, $w)
     );
     $haken = array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'haptik',
                    'verlauf', 'sse', 'tafelsteuerung', 'gesichert_schalten', 'ruhe_uhr',
-                   'ruhe_wetter', 'ambient', 'tafel_mqtt');
+                   'ruhe_wetter', 'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein');
     if (isset($ganz[$k])) {
         return (is_int($w) && $w >= $ganz[$k][0] && $w <= $ganz[$k][1]) ? ''
             : sprintf(db_t('EINST.SICH_GRUND_BEREICH'), $ganz[$k][0], $ganz[$k][1]);
@@ -3574,6 +4234,7 @@ function db_eingabe_felder()
             'nacht_bis' => 'text', 'nacht_helligkeit' => 'text', 'verlauf' => 'haken',
             'verlauf_punkte' => 'text', 'tafelsteuerung' => 'haken', 'tafel_mqtt' => 'haken',
             'tafel_mqtt_praefix' => 'text', 'pin_frei' => 'text', 'ambient' => 'haken',
+            'mqtt_ein' => 'haken', 'befehle_mqtt_ein' => 'haken',
             'ruhe_nach' => 'text', 'ruhe_uhr' => 'haken', 'ruhe_wetter' => 'haken',
             'ruhe_kacheln' => 'text', 'ruhe_seite' => 'text', 'ruhe_hell' => 'text',
             'ruhe_bild' => 'datei', 'eco_nach' => 'text', 'eco_hell' => 'text',

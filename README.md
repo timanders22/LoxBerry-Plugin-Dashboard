@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.36 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.37 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,29 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.37
+
+* **Zustand über MQTT:** Der Dienst sendet jede Minute `ok`, `bausteine`, `seiten`, `kacheln`, `alter` (-1 = noch
+  keine Werte) und das Lebenszeichen `status/zaehler` (0–999) über den UDP-Eingang des MQTT-Gateways – nie retained,
+  auch im HTTP-Notnagel und zwischen zwei Verbindungsversuchen (`bin/status_mqtt.py`, Haken „Zustand über MQTT
+  senden“, ab Werk an, auch beim Update). Beim geordneten Anhalten einmal `ok 0`. Dieselbe Regel wie die
+  Zustandszeile; der Reiter Test rechnet sie nach. Abo-Datei für das Gateway V1 (`mqtt_subscriptions.cfg`).
+* **Tafeln über die Befehlsbrücke:** `<präfix>/befehl/seite` (Schlüssel oder Nummer), `wecken`, `hell` (0–100) und
+  `ruhe` (1/0), Haken „Befehle über MQTT annehmen“ (ab Werk aus). Dieselbe Prüfung wie der HTTP-Endpunkt
+  (`db_tafel_steuern()`), auch die Erlaubnis „Loxone darf die Anzeigeseite steuern“; Quittung je Befehl. Vorlage
+  „MQTT-Befehle“ im Reiter Einbindung. Ein Präfix für alles (bisher „Präfix der Tafelthemen“, jetzt „MQTT-Präfix“).
+* **HTTP-Endpunkt:** `aktion=status` und `aktion=tafel` nur noch mit „Loxone-Abruf über HTTP annehmen“ (beim Update
+  an, wenn ein gültiges Aktionstoken steht; neu aus). Der Tablet-Weg (`tafel.php`, alle anderen Aktionen) ist
+  unverändert. Der alte Weg `<präfix>/tafel/alle/…` bleibt hinter seinem Haken.
+* **Korrekturen:** Miniserver-Zugang aus der LoxBerry-Konfiguration über `Admin_raw`/`Pass_raw` bzw. URL-Dekodierung
+  statt Base64-Raten (Kennwörter mit Sonderzeichen meldeten 401; die Anzeige verfälschte Benutzernamen); Archivkopien
+  lesen und schreiben nicht mehr die Anlage (Bibliothek, Dienst, `dienst.sh`); Schieberegler und Wertwahl zeigen ihre
+  echten Grenzen; ein abgebrochenes Update verliert keine Einstellungen mehr an einen Stand nur mit Token; keine
+  feste Datei unter `/tmp` mehr; Ordnernamen-Schranke vor jedem Löschen.
+* Neu benötigt: `mosquitto-clients` (kommt über dpkg/apt). Bausteinlisten und Bilder der Seiten „Dashboard“ und „Dashboard
+  Steuerung“ zeigen das umgestellte Musterprojekt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät gemessen.
 
 ## Neu in 0.9.36
 

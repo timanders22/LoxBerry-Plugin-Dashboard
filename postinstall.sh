@@ -17,6 +17,12 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-dashboard}"
+# D6 (0.9.37): der Ordnername darf keinen Pfadtrenner und kein ".." tragen - dieselbe Schranke wie in
+# preinstall.sh, direkt hinter der Ordnerbestimmung (plugininstall.pl laesst ohnehin nur [A-Za-z0-9_-] zu;
+# ein Handaufruf mit "../<anderes>" traf bis 0.9.36 die Zweitschriften eines fremden Plugins).
+case "$PFOLDER" in
+    ''|*/*|*..*) echo "<FAIL> postinstall: unzulaessiger Ordnername '$PFOLDER' - es wurde nichts eingerichtet."; exit 1 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 
 # Aufwaerts suchen, bis ein Verzeichnis gefunden ist, das nachweislich eine
@@ -133,29 +139,63 @@ chmod 600 "$PCONFIG/seiten.json"
 # Rueckgabe: 0 = traegt Inhalt, 1 = traegt keinen, 2 = nicht pruefbar.
 # 'Nicht pruefbar' faellt geschlossen aus (CLAUDE.md, "ein Schutz faellt
 # geschlossen aus"): dann wird weder zurueckgespielt noch weggeraeumt.
-db_inhalt() {      # $1 Datei  $2 Art: dashboard | seiten | zugang
-    [ -s "$1" ] || return 1
+#
+# D5 (0.9.37, Bauform Heimkino 1.3.30 H14): "Inhalt" heisst ein ANWENDERFELD. Fuer zugang zaehlen adresse, benutzer,
+# passwort und visu_pw (nicht leer) und - als EIN Feld - ein vollstaendiger Token-Satz (ms_token UND ms_kennung nicht
+# leer): mit den Zugangsdaten aus general.json traegt zugang.json nur die Token-Anmeldung des Dienstes (am Geraet
+# gemessen 24.10.2026: ms_hashalg, ms_kennung, ms_token - der erste Bau meldete dort faelschlich "kein Inhalt"). Ein
+# einzelnes ms_token ohne Kennung zaehlt nicht. Fuer
+# dashboard zaehlt jeder Schluessel ausser aktionstoken, vorlagen, endpunkt_ein, mqtt_ein und befehle_mqtt_ein (Token,
+# Merker und die Haken, die postinstall selbst setzt). Bis 0.9.36 genuegte ein beliebiger Schluessel: ein Stand nur mit
+# Token bzw. ms_token verdraengte nach einem abgebrochenen Update die heile Zweitschrift (Pruefbericht D5, Faelle B/C).
+# Mit $3 = zahl gibt die Funktion zusaetzlich die Zahl der Anwenderfelder aus (H14-Zaehlregel in preupgrade.sh).
+db_inhalt() {      # $1 Datei  $2 Art: dashboard | seiten | zugang  [$3 zahl]
+    if [ ! -s "$1" ]; then
+        [ "${3:-}" = zahl ] && echo 0
+        return 1
+    fi
     if command -v php >/dev/null 2>&1; then
         php -r '
             $d = json_decode((string) @file_get_contents($argv[1]), true);
-            if (!is_array($d)) { exit(1); }
-            if ($argv[2] === "seiten") {
-                exit(isset($d["seiten"]) && is_array($d["seiten"]) && count($d["seiten"]) > 0 ? 0 : 1);
+            $n = 0;
+            if (is_array($d)) {
+                if ($argv[2] === "seiten") {
+                    $n = isset($d["seiten"]) && is_array($d["seiten"]) ? count($d["seiten"]) : 0;
+                } elseif ($argv[2] === "zugang") {
+                    foreach (array("adresse", "benutzer", "passwort", "visu_pw") as $k) {
+                        if (isset($d[$k]) && is_scalar($d[$k]) && (string) $d[$k] !== "") { $n++; }
+                    }
+                    if (isset($d["ms_token"], $d["ms_kennung"]) && is_scalar($d["ms_token"]) && is_scalar($d["ms_kennung"])
+                        && (string) $d["ms_token"] !== "" && (string) $d["ms_kennung"] !== "") { $n++; }
+                } else {
+                    foreach (array_keys($d) as $k) {
+                        if (!in_array((string) $k, array("aktionstoken", "vorlagen", "endpunkt_ein", "mqtt_ein",
+                                                          "befehle_mqtt_ein"), true)) { $n++; }
+                    }
+                }
             }
-            exit(count($d) > 0 ? 0 : 1);' -- "$1" "$2" 2>/dev/null
+            if ($argv[3] === "zahl") { echo $n, "\n"; }
+            exit($n > 0 ? 0 : 1);' -- "$1" "$2" "${3:-}" 2>/dev/null
     elif command -v python3 >/dev/null 2>&1; then
         python3 -c '
 import json, sys
+n = 0
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
-    sys.exit(1)
-if not isinstance(d, dict):
-    sys.exit(1)
-if sys.argv[2] == "seiten":
-    s = d.get("seiten")
-    sys.exit(0 if isinstance(s, list) and len(s) > 0 else 1)
-sys.exit(0 if len(d) > 0 else 1)' "$1" "$2" 2>/dev/null
+    d = None
+if isinstance(d, dict):
+    if sys.argv[2] == "seiten":
+        s = d.get("seiten")
+        n = len(s) if isinstance(s, list) else 0
+    elif sys.argv[2] == "zugang":
+        n = sum(1 for k in ("adresse", "benutzer", "passwort", "visu_pw") if str(d.get(k) or "") != "")
+        n += 1 if (str(d.get("ms_token") or "") != "" and str(d.get("ms_kennung") or "") != "") else 0
+    else:
+        n = sum(1 for k in d if k not in ("aktionstoken", "vorlagen", "endpunkt_ein", "mqtt_ein", "befehle_mqtt_ein"))
+if sys.argv[3] == "zahl":
+    print(n)
+sys.exit(0 if n > 0 else 1)' "$1" "$2" "${3:-}" 2>/dev/null
     else
         return 2
     fi
@@ -184,6 +224,21 @@ for f in dashboard.json seiten.json zugang.json; do
     esac
     db_inhalt "$CF" "$ART"; RC_CF=$?
     db_inhalt "$BK" "$ART"; RC_BK=$?
+    # D5 (0.9.37, H14-Zaehlregel, Nachzug Geraetemessung): tragen beide etwas, gewinnt die Zweitschrift nur, wenn sie
+    # MEHR Anwenderfelder traegt (z. B. eigener Zugang mit Benutzer/Kennwort gegen einen Token-Satz aus der Luecke
+    # eines abgebrochenen Updates - das Token holt der Dienst neu). seiten.json bleibt bei ihrer strengen Regel.
+    if [ "$RC_CF" = 0 ] && [ "$RC_BK" = 0 ] && [ "$ART" != seiten ]; then
+        N_CF=$(db_inhalt "$CF" "$ART" zahl)
+        N_BK=$(db_inhalt "$BK" "$ART" zahl)
+        case "$N_CF:$N_BK" in
+            *[!0-9:]*|:*|*:) ;;
+            *)
+                if [ "$N_CF" -lt "$N_BK" ]; then
+                    echo "<INFO> $f traegt weniger Einstellungen ($N_CF) als die Zweitschrift ($N_BK) - sie wird zurueckgespielt."
+                    RC_CF=1
+                fi ;;
+        esac
+    fi
     # Zurueckgespielt wird nur, wenn die vorhandene Datei nachweislich nichts
     # traegt UND die Zweitschrift nachweislich etwas.
     if [ "$RC_CF" = 1 ] && [ "$RC_BK" = 0 ]; then
@@ -221,6 +276,83 @@ done
 chmod 600 "$PCONFIG/zugang.json"
 # C11: 'cp -p' bringt die Rechte der Zweitschrift mit - danach nachziehen.
 chmod 600 "$PCONFIG/dashboard.json" "$PCONFIG/seiten.json"
+
+# ---------- Uebergang der Haken auf 0.9.37 (Gruppe 12, Entscheidung E6) ----------
+# NUR BEI EINER AKTUALISIERUNG und nur, wenn endpunkt_ein in der Datei noch FEHLT (ein zweiter Anlauf nach einem
+# Abbruch aendert nichts mehr): der Loxone-Abruf ueber HTTP (aktion=status und aktion=tafel) war bis 0.9.36 immer
+# offen. Wer ein gueltiges Aktionstoken hat (dieselbe Regel wie db_token_gueltig: [A-Za-z0-9_.-]{1,64}, nicht
+# "Array"), behaelt ihn (endpunkt_ein = 1; jede benutzte Anlage hat eins, die Tablets brauchen es), sonst 0.
+# mqtt_ein (Vorgabe 1) und befehle_mqtt_ein (Vorgabe 0) brauchen keinen Uebergang - ein fehlender Schluessel gilt mit
+# seiner Vorgabe; tafel_mqtt behaelt seinen Wert. Neuinstallation: nichts geschrieben, es gilt die Vorgabe 0.
+# Geschrieben ueber python3 in eine Nebendatei, geprueft (lesbar, Schluesselzahl +1, Token gleich), dann mv, 0600 -
+# fuer die Konfiguration UND eine noch liegende Zweitschrift. Scheitert es, gilt die Vorgabe 0 (Abruf aus).
+db_haken_uebergang() {   # $1 Datei
+    python3 - "$1" <<'DB_UEBERGANG'
+import json, os, re, sys
+f = sys.argv[1]
+try:
+    with open(f, encoding="utf-8") as h:
+        d = json.load(h)
+except Exception:
+    sys.exit(3)
+if not isinstance(d, dict) or not d:
+    sys.exit(3)
+if "endpunkt_ein" in d:
+    print("nichts")
+    sys.exit(0)
+t = d.get("aktionstoken")
+gueltig = isinstance(t, str) and t != "Array" and re.fullmatch(r"[A-Za-z0-9_.\-]{1,64}", t) is not None
+neu = dict(d)
+neu["endpunkt_ein"] = 1 if gueltig else 0
+tmp = f + ".uebergang"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as h:
+    json.dump(neu, h, ensure_ascii=False, indent=4)
+os.chmod(tmp, 0o600)
+with open(tmp, encoding="utf-8") as h:
+    c = json.load(h)
+if len(c) != len(d) + 1 or c.get("aktionstoken") != d.get("aktionstoken"):
+    os.unlink(tmp)
+    sys.exit(4)
+os.replace(tmp, f)
+print("endpunkt_ein=%d" % neu["endpunkt_ein"])
+DB_UEBERGANG
+}
+if [ "$DB_UPGRADE" = 1 ]; then
+    for DB_HF in "$PCONFIG/dashboard.json" "$BASE/config/plugins/$PFOLDER.backup.dashboard.json"; do
+        [ -f "$DB_HF" ] || continue
+        if DB_HA=$(db_haken_uebergang "$DB_HF" 2>&1); then
+            [ "$DB_HA" = nichts ] || echo "<OK> Uebergang auf 0.9.37 ($(basename "$DB_HF")): $DB_HA."
+        else
+            echo "<WARNING> Der Haken endpunkt_ein liess sich in $(basename "$DB_HF") nicht setzen - es gilt die Vorgabe 0 (Loxone-Abruf ueber HTTP aus)."
+            echo "<INFO> Abhilfe: im Plugin Reiter Einbindung den Haken 'Loxone-Abruf ueber HTTP annehmen' setzen."
+        fi
+    done
+fi
+
+# ---------- Abo-Datei fuer das MQTT-Gateway V1 (0.9.37, Gruppe 12) ----------
+# config/plugins/<ordner>/mqtt_subscriptions.cfg = "<praefix>/#" (Praefix tafel_mqtt_praefix aus der Konfiguration,
+# sonst dashboard - dieselbe Regel wie db_mqtt_abo_inhalt()), 0644, nur wenn sie fehlt. Ebenso beim Dienststart und
+# beim Speichern des Praefixes; der Seitenaufbau schreibt sie nicht. Das Gateway V2 liest sie nicht.
+DB_ABO="$PCONFIG/mqtt_subscriptions.cfg"
+if [ ! -e "$DB_ABO" ]; then
+    DB_PRAEFIX=$(python3 -c 'import json, re, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as h:
+        p = json.load(h).get("tafel_mqtt_praefix")
+except Exception:
+    p = ""
+p = p if isinstance(p, str) else ""
+print(p if re.fullmatch(r"[A-Za-z0-9_\-]{1,32}(/[A-Za-z0-9_\-]{1,32}){0,3}", p) else "dashboard")' "$PCONFIG/dashboard.json" 2>/dev/null)
+    [ -n "$DB_PRAEFIX" ] || DB_PRAEFIX=dashboard
+    if printf '%s/#\n' "$DB_PRAEFIX" > "$DB_ABO.tmp.$$" 2>/dev/null && chmod 644 "$DB_ABO.tmp.$$" \
+       && mv -f "$DB_ABO.tmp.$$" "$DB_ABO"; then
+        echo "<INFO> Abo-Datei fuer das MQTT-Gateway V1 angelegt: $DB_PRAEFIX/#"
+    else
+        rm -f "$DB_ABO.tmp.$$" 2>/dev/null
+        echo "<WARNING> Die Abo-Datei fuer das MQTT-Gateway V1 liess sich nicht anlegen ($DB_ABO) - der Dienst versucht es beim Start erneut."
+    fi
+fi
 
 # ---------- Python ----------
 PY3=$(command -v python3)
@@ -311,15 +443,18 @@ if [ "$BRAUCHT_PIP" = "1" ] && [ -x "$VENV/bin/pip" ]; then
     echo "<INFO> Letzter Versuch ueber pip - das braucht eine Internetverbindung."
     FEHLT=0
     for PAKET in websockets cryptography; do
-        if "$VENV/bin/pip" install --no-cache-dir "$PAKET" >/tmp/dashboard_pip.log 2>&1; then
+        # D4 (0.9.37): die Ausgabe in einer Variable statt in einer festen Datei unter /tmp. Gehoerte die einem
+        # anderen Benutzer, scheiterte schon die Umlenkung, pip lief gar nicht, und hier stand die falsche
+        # Ursache (Pruefbericht D4). Erfolg am Rueckgabewert von pip.
+        PIPAUSGABE=$("$VENV/bin/pip" install --no-cache-dir "$PAKET" 2>&1); RC=$?
+        if [ "$RC" = 0 ]; then
             echo "<OK> Paket $PAKET ueber pip eingerichtet."
         else
             echo "<INFO> Paket $PAKET liess sich ueber pip nicht einrichten."
-            tail -n 8 /tmp/dashboard_pip.log
+            printf '%s\n' "$PIPAUSGABE" | tail -n 8
             FEHLT=1
         fi
     done
-    rm -f /tmp/dashboard_pip.log
     if [ "$FEHLT" = "1" ]; then
         echo "<FAIL> Ohne websockets UND cryptography kommt keine Verbindung zum"
         echo "<FAIL> Miniserver zustande. Von Hand nachholen:"
@@ -338,7 +473,9 @@ for MODUL in websockets cryptography; do
 done
 
 # ---------- Rechte ----------
-chmod 755 "$PBIN/dienst.sh" 2>/dev/null
+# Gruppe 12 (0.9.37): dazu die Befehlsbruecke. KEIN Start hier - der Waechter in cron.01min startet sie binnen
+# einer Minute, wenn "Befehle ueber MQTT annehmen" gesetzt ist (und nie, solange die Marke liegt).
+chmod 755 "$PBIN/dienst.sh" "$PBIN/befehlsbruecke.sh" 2>/dev/null
 chmod 755 "$PBIN"/*.py 2>/dev/null
 
 # ---------- Miniserver ----------

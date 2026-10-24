@@ -302,7 +302,10 @@
    "kachel": "schieber",
    "haupt": "value",
    "zustaende": [
-    "value"
+    "value",
+    "min",
+    "max",
+    "step"
    ],
    "befehle": [
     "$wert"

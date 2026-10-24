@@ -14,13 +14,18 @@
 # und Docker NG 1.3.7. Laesst sich cron.err nicht anlegen, laeuft der
 # Waechter trotzdem - eine gescheiterte Umlenkung verhinderte sonst den
 # Aufruf selbst.
+# Gruppe 12 (0.9.37): VOR dem Dienst der Waechter der Befehlsbruecke (Stammfassung bin/befehlsbruecke.sh). Er
+# startet sie nur mit "Befehle ueber MQTT annehmen", nie waehrend eines Updates, hoechstens alle 600 s neu.
+BBSH="REPLACELBPBINDIR/befehlsbruecke.sh"
 ERR="REPLACELBPLOGDIR/cron.err"
 mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
 if touch "$ERR" 2>/dev/null; then
     if [ "$(stat -c %s "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
         tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
     fi
+    [ -f "$BBSH" ] && /bin/bash "$BBSH" waechter >/dev/null 2>>"$ERR"
     "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>>"$ERR"
 else
+    [ -f "$BBSH" ] && /bin/bash "$BBSH" waechter >/dev/null 2>&1
     "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1
 fi

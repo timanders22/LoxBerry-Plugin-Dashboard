@@ -64,8 +64,10 @@ lb_wurzel_suchen() {
     done
     return 1
 }
+# D3 (0.9.37): merken, ob die Wurzel aus der Umgebung kam - nur dann darf $LBPPLUGINDIR die Anlage benennen.
+DB_UMGEBUNG=0
 if lb_wurzel_taugt "$LBHOMEDIR"; then
-    :
+    DB_UMGEBUNG=1
 else
     LBHOMEDIR=$(lb_wurzel_suchen)
 fi
@@ -92,10 +94,19 @@ if [ -z "$LBHOMEDIR" ] || [ ! -d "$LBHOMEDIR" ]; then
     echo "        Es wurde nichts angelegt und nichts gestartet." >&2
     exit 1
 fi
-if [ "$SELF" != "$LBH_R/bin/plugins/$PNAME" ] \
-   && [ ! -d "$LBHOMEDIR/config/plugins/$PNAME" ]; then
-    echo "FEHLER: '$PNAME' ist unter $LBHOMEDIR kein eingerichtetes Plugin," >&2
-    echo "        und $SELF ist nicht dessen bin-Ordner." >&2
+# D3 (0.9.37, Bauform Sprachsteuerung 0.12.7): die Anlage gilt nur, wenn dieses Skript in ihrem bin-Ordner liegt
+# oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt ($LBHOMEDIR aus der Umgebung und $LBPPLUGINDIR, und
+# <ordner> ist dort eingerichtet) - dieselbe Regel wie db_paths() in db_lib.php. Bis 0.9.36 genuegte, dass
+# config/plugins/<name> existierte: eine Kopie in einem Ordner "dashboard" hielt den Dienst der Anlage an und
+# loeschte soll_laufen (Pruefbericht D3, Faelle 2 und 3).
+DB_AUSDRUECKLICH=0
+if [ "$DB_UMGEBUNG" = 1 ] && [ -n "${LBPPLUGINDIR:-}" ] \
+   && [ -d "$LBHOMEDIR/config/plugins/$PNAME" ]; then
+    DB_AUSDRUECKLICH=1
+fi
+if [ "$SELF" != "$LBH_R/bin/plugins/$PNAME" ] && [ "$DB_AUSDRUECKLICH" != 1 ]; then
+    echo "FEHLER: $SELF ist nicht der bin-Ordner von '$PNAME' unter $LBHOMEDIR," >&2
+    echo "        und LBHOMEDIR und LBPPLUGINDIR nennen die Anlage nicht beide." >&2
     echo "        Der Aufruf kommt offenbar aus einem ausgepackten Archiv oder" >&2
     echo "        einem Pruefordner. Es wurde nichts angelegt." >&2
     echo "        Abhilfe: LBHOMEDIR und LBPPLUGINDIR setzen oder dienst.sh" >&2

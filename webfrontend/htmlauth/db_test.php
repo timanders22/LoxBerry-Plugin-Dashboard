@@ -368,6 +368,20 @@ function db_pruefungen()
      * getrennt, still, oder aus. Faellt der Weg aus, sagt die Zeile, dass
      * der virtuelle Ausgang weiter wirkt (Rahmen, D-Punkte). */
     $zeilen[] = db_tafel_mqtt_pruefzeile();
+    /* Gruppe 12 (0.9.37, Entwurf 3.5): Zustand ueber MQTT, Regel PHP = Python, Namen, Abo-Datei, Praefix,
+     * Befehlsbruecke (laeuft? eingerichtet?), Namensfilter, Vorlage MQTT-Befehle, Loxone-Abruf ueber HTTP. */
+    foreach (array(array('MQTT.F_WERTE', db_pruef_status_mqtt($cfg)),
+                   array('MQTT.F_GLEICH', db_pruef_status_gleich($cfg)),
+                   array('MQTT.F_NAMEN', db_pruef_namen($cfg)),
+                   array('MQTT.F_ABO', db_pruef_abo($cfg)),
+                   array('MQTT.F_PRAEFIX', db_pruef_praefix($cfg)),
+                   array('BEFEHL.F_BRUECKE', db_pruef_bruecke($cfg)),
+                   array('BEFEHL.F_EINRICHTUNG', db_pruef_bruecke_einrichtung($cfg)),
+                   array('MQTT.F_FILTER', db_pruef_namensfilter()),
+                   array('MQTT.F_VORLAGE', db_pruef_vorlage_mqtt($cfg)),
+                   array('MQTT.F_ABRUF', db_pruef_loxone_abruf($cfg))) as $db_pz) {
+        $zeilen[] = db_pruefzeile($db_pz[1][0], db_t($db_pz[0]), $db_pz[1][1]);
+    }
     // Antwortet der eigene Endpunkt? Ein echter Aufruf, drei Ausgaenge.
     list($st, $text) = db_endpunkt_probe(db_token_soll(db_config()));
     $zeilen[] = db_pruefzeile($st, db_t('TEST.F_ENDPUNKT'), $text);

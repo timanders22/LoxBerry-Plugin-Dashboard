@@ -209,6 +209,47 @@ $db_sauber = function ($feld) {
  * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
  * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
  * ================================================================== */
+/* ---------------- Vorlage MQTT-Befehle (Gruppe 12, 0.9.37) ----------------
+ *
+ * Ein Virtueller Ausgang an den UDP-Eingang des MQTT-Gateways (db_vorlage_mqtt_out). Kein Merker: die Vorlage
+ * traegt kein Token. */
+if ($db_post && isset($_POST['vorlage_mqtt'])) {
+    list($db_name, $db_xml) = db_vorlage_mqtt_out();
+    header('Content-Type: application/xml; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $db_name . '"');
+    echo $db_xml;
+    exit;
+}
+/* Gruppe 12 (Entwurf 2.5): die HTTP-Vorlagen nur mit "Loxone-Abruf ueber HTTP annehmen" - sonst antwortete
+ * jeder ihrer Abrufe mit 403 ENDPUNKT_AUS. Bleibt byte-gleich, wenn der Haken steht. */
+if ($db_post && (isset($_POST['vorlage']) || isset($_POST['vorlage_out']))
+        && (int) db_config()['endpunkt_ein'] !== 1) {
+    $db_fehler[] = db_t('LOX.HTTP_ERST_HAKEN');
+    unset($_POST['vorlage'], $_POST['vorlage_out']);
+    $db_tab = 'tab-loxone';
+}
+/* ---------------- Loxone-Abruf ueber HTTP annehmen (Gruppe 12) ----------------
+ *
+ * Eigenes kleines Formular im Reiter Einbindung: endpunkt_ein steht NICHT in der Hakenliste von "speichern" -
+ * sonst setzte jedes Speichern der Einstellungen ihn auf 0. Eine beschaedigte dashboard.json wird nicht
+ * angefasst (C12). */
+if ($db_post && isset($_POST['endpunkt_speichern'])) {
+    $db_ep = db_paths();
+    $db_ep_roh = db_json_lesen_streng($db_ep['config'], $db_ep_lage);
+    if ($db_ep_lage !== 'ok' && $db_ep_lage !== 'fehlt') {
+        $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_ep['config']));
+    } else {
+        $db_ep_cfg = array_merge(db_vorgaben(), is_array($db_ep_roh) ? $db_ep_roh : array());
+        $db_ep_cfg['endpunkt_ein'] = isset($_POST['endpunkt_ein']) ? 1 : 0;
+        if (db_config_speichern($db_ep_cfg)) {
+            $db_meldungen[] = db_t($db_ep_cfg['endpunkt_ein'] ? 'LOX.ENDPUNKT_AN' : 'LOX.ENDPUNKT_AUS');
+        } else {
+            $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_ep['config']));
+        }
+    }
+    $db_tab = 'tab-loxone';
+}
+
 /* ---------------- Loxone-Vorlagen herunterladen ----------------
  *
  * Die Anfuehrungszeichen um den Dateinamen sind Pflicht - ohne sie bricht
@@ -399,7 +440,7 @@ if ($db_post && isset($_POST['speichern'])) {
     foreach (array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach',
                    'haptik', 'verlauf', 'sse', 'tafelsteuerung',
                    'gesichert_schalten', 'ruhe_uhr', 'ruhe_wetter',
-                   'ambient', 'tafel_mqtt') as $db_h) {
+                   'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein') as $db_h) {
         $db_cfg[$db_h] = isset($_POST[$db_h]) ? 1 : 0;
     }
 
@@ -593,6 +634,18 @@ if ($db_post && isset($_POST['speichern'])) {
             $db_eingaben = db_eingaben_sammeln('speichern', array());
         } else {
             $db_meldungen[] = db_t('EINST.GESPEICHERT');
+            /* Gruppe 12 (0.9.37): die Abo-Datei fuer das Gateway V1 folgt dem Praefix (nur hier, beim Speichern -
+             * nie beim Seitenaufbau); die Befehlsbruecke wird nach dem Haken gestartet bzw. angehalten, bei einem
+             * Praefixwechsel neu gestartet (Bauart sp_bruecke_schalten). */
+            list($db_abo_ok) = db_mqtt_abo_schreiben($db_cfg);
+            if (!$db_abo_ok) {
+                $db_fehler[] = sprintf(db_t('MQTT.ABO_FEHLER'), db_e(db_mqtt_abo_datei()));
+            }
+            $db_bs = db_bruecke_satz(db_bruecke_schalten(
+                (string) $db_cfg_vorher['tafel_mqtt_praefix'] !== (string) $db_cfg['tafel_mqtt_praefix']));
+            if ($db_bs !== '') {
+                $db_meldungen[] = $db_bs;
+            }
             // O17: was der Dienst beim Start liest
             foreach (array('miniserver', 'tls', 'takt', 'http_rueckfall', 'http_takt',
                            'verlauf', 'verlauf_punkte', 'tafel_mqtt', 'tafel_mqtt_praefix') as $db_k) {
@@ -1136,6 +1189,9 @@ ob_start();
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background-color: #fff5f5 !important; }
 /* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
 .sm-bild { margin: 12px 0; }
+/* Gruppe 12: zugeklappte Abschnitte im Reiter Einbindung (HTTP-Weg, alter Tafelweg). */
+.sm-zu { margin: 14px 0; border: 1px solid #ccc; border-radius: 6px; padding: 4px 12px; }
+.sm-zu > summary { cursor: pointer; font-weight: 700; padding: 6px 0; }
 .sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
 .sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 /* Welle Bild 13 (0.9.32): Abschnitte, Schritte und Hinweise je Baustein-Liste. */
@@ -1375,15 +1431,25 @@ if (db_eingaben_aktiv('speichern')) {
 <label><input data-role="none" type="checkbox" name="tafelsteuerung" value="1"<?= !empty($db_cfg['tafelsteuerung']) ? ' checked' : '' ?>>
   <?= db_e(db_t('EINST.L_TAFELSTEUERUNG')) ?></label>
 <p class="sm-hilfe"><?= db_t('EINST.H_TAFELSTEUERUNG') ?></p>
-<label><input data-role="none" type="checkbox" name="tafel_mqtt" value="1"<?= !empty($db_cfg['tafel_mqtt']) ? ' checked' : '' ?>>
-  <?= db_e(db_t('EINST.L_TAFEL_MQTT')) ?></label>
+<?php /* Gruppe 12 (0.9.37, Entwurf 2.4/2.7/3.5/3.7): Befehle ueber MQTT annehmen (Befehlsbruecke, ab Werk aus; die
+        Tafelsteuerung oben gilt auch fuer sie - E3), Zustand ueber MQTT senden (ab Werk an), EIN Praefix (E4: der
+        Schluessel tafel_mqtt_praefix, beschriftet "MQTT-Praefix"), der alte Tafelweg hinter seinem Haken (E7). */ ?>
+<label><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= (int) $db_cfg['befehle_mqtt_ein'] === 1 ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_BEFEHLE_MQTT_EIN')) ?></label>
+<p class="sm-hilfe"><?= sprintf(db_t('EINST.H_BEFEHLE_MQTT_EIN'), '<span class="sm-mono">' . db_e(db_mqtt_praefix($db_cfg)) . '/befehl/seite|wecken|hell|ruhe</span>', db_e(db_t('EINST.L_TAFELSTEUERUNG'))) ?></p>
+<label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= (int) $db_cfg['mqtt_ein'] === 1 ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_MQTT_EIN')) ?></label>
+<p class="sm-hilfe"><?= sprintf(db_t('EINST.H_MQTT_EIN'), '<span class="sm-mono">' . db_e(db_mqtt_praefix($db_cfg)) . '/ok, …/status/zaehler</span>') ?></p>
 <div class="sm-feld">
   <label for="tafel_mqtt_praefix"><?= db_e(db_t('EINST.L_TAFEL_MQTT_PRAEFIX')) ?></label>
   <input data-role="none" type="text" name="tafel_mqtt_praefix" id="tafel_mqtt_praefix"<?= db_beanstandet_attr('speichern', 'tafel_mqtt_praefix') ?>
          value="<?= db_e($db_cfg['tafel_mqtt_praefix']) ?>" placeholder="dashboard">
-  <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_TAFEL_MQTT'),
-      '<span class="sm-mono">' . db_e(implode(', ', db_tafel_mqtt_themen((string) $db_cfg['tafel_mqtt_praefix']))) . '</span>') ?></p>
+  <p class="sm-hilfe"><?= db_t('EINST.H_MQTT_PRAEFIX') ?></p>
 </div>
+<label><input data-role="none" type="checkbox" name="tafel_mqtt" value="1"<?= !empty($db_cfg['tafel_mqtt']) ? ' checked' : '' ?>>
+  <?= db_e(sprintf(db_t('EINST.L_TAFEL_MQTT'), db_mqtt_praefix($db_cfg))) ?></label>
+<p class="sm-hilfe"><?= sprintf(db_t('EINST.H_TAFEL_MQTT'),
+    '<span class="sm-mono">' . db_e(implode(', ', db_tafel_mqtt_themen(db_mqtt_praefix($db_cfg)))) . '</span>') ?></p>
 
 <h3><?= db_e(db_t('EINST.T_PIN_FREI')) ?></h3>
 <div class="sm-feld">
@@ -1799,6 +1865,107 @@ if ($db_sy_lage !== 'ok' || !db_symbol_liste()) { ?>
   <span><i class="sm-punkt sm-b-aktion"></i> <?= db_t('LEGENDE.AKTION') ?></span>
 </div>
 
+<?php /* Gruppe 12 (0.9.37, Entwurf 2.5): das Musterprojekt holt die Zustandswerte ueber das MQTT-Gateway und schaltet
+        die Tafeln ueber die Befehlsbruecke. Der HTTP-Weg fuer Loxone steht zugeklappt darunter (bestehende Anlagen),
+        der alte Tafelweg ebenso. Die Tablets nutzen weiter ihre Adresse mit Token (Reiter Dashboards). */
+$db_mq_namen = db_mqtt_namen($db_cfg);
+$db_mq_praefix = db_mqtt_praefix($db_cfg); ?>
+<div class="sm-hinweis" id="db-mqtt-kopf"><?= db_t('LOX.MQTT_KOPF') ?></div>
+
+<div class="sm-step" id="db-mqtt-werte">
+<h3><?= db_e(db_t('LOX.M1_TITEL')) ?></h3>
+<?php if ((int) $db_cfg['mqtt_ein'] === 1) { ?>
+<p class="sm-hilfe"><?= sprintf(db_t('LOX.M1_AN'), db_e(db_t('EINST.L_MQTT_EIN')), '<span class="sm-mono">' . db_e($db_mq_praefix) . '/#</span>') ?></p>
+<?php } else { ?>
+<div class="sm-warnung"><?= sprintf(db_t('LOX.M1_AUS'), db_e(db_t('EINST.L_MQTT_EIN')), db_e(db_t('REITER.EINSTELLUNGEN'))) ?></div>
+<?php } ?>
+<p class="sm-hilfe"><?= db_t('LOX.M1_TEXT') ?></p>
+<div class="sm-breit">
+<table class="sm-tabelle" id="db-namen">
+<tr><th><?= db_e(db_t('LOX.T_THEMA')) ?></th><th><?= db_e(db_t('LOX.T_GATEWAYNAME')) ?></th>
+    <th><?= db_e(db_t('LOX.T_V2')) ?></th><th><?= db_e(db_t('LOX.T_GRENZEN')) ?></th><th><?= db_e(db_t('LOX.T_BEDEUTUNG')) ?></th></tr>
+<?php foreach ($db_mq_namen as $db_mz) { ?>
+<tr><td class="sm-mono"><?= db_e($db_mz['voll']) ?></td>
+    <td class="sm-mono"><?= db_e($db_mz['name']) ?></td>
+    <td><?= db_e($db_mz['v2'] === 'N' ? db_t('LOX.V2_HAKEN_N') : db_t('LOX.V2_HAKEN')) ?></td>
+    <td class="sm-mono"><?= (int) $db_mz['min'] ?> &hellip; <?= (int) $db_mz['max'] ?></td>
+    <td><?= db_e(db_t($db_mz['bedeutung'])) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-knopfreihe">
+<button data-role="none" type="button" class="sm-btn sm-b-technik" id="db-namen-kopieren"
+        data-namen="<?= db_e(implode("\n", array_map(function ($z) { return $z['name']; }, $db_mq_namen))) ?>"><?= db_e(db_t('LOX.K_NAMEN_KOPIEREN')) ?></button>
+</div>
+<script>
+(function () {
+	var k = document.getElementById('db-namen-kopieren');
+	if (!k) { return; }
+	k.addEventListener('click', function () {
+		var t = k.getAttribute('data-namen') || '';
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(t);
+		} else {
+			var a = document.createElement('textarea');
+			a.value = t; document.body.appendChild(a); a.select();
+			try { document.execCommand('copy'); } catch (e) {}
+			document.body.removeChild(a);
+		}
+	});
+})();
+</script>
+<p class="sm-hilfe"><?= db_t('LOX.M1_V1V2') ?></p>
+</div>
+
+<div class="sm-step" id="db-mqtt-eingaenge">
+<h3><?= db_e(db_t('LOX.M2_TITEL')) ?></h3>
+<p class="sm-hilfe"><?= db_t('LOX.M2_TEXT') ?></p>
+</div>
+
+<div class="sm-step" id="db-mqtt-befehle">
+<h3><?= db_e(db_t('LOX.M3_TITEL')) ?></h3>
+<p class="sm-hilfe"><?= sprintf(db_t('LOX.M3_TEXT'), db_e(db_t('EINST.L_BEFEHLE_MQTT_EIN')), db_e(db_t('EINST.L_TAFELSTEUERUNG')), db_e(db_t('REITER.EINSTELLUNGEN'))) ?></p>
+<?php if ((int) $db_cfg['befehle_mqtt_ein'] !== 1 || empty($db_cfg['tafelsteuerung'])) { ?>
+<div class="sm-warnung"><?= sprintf(db_t('LOX.M3_AUS'), db_e(db_t('EINST.L_BEFEHLE_MQTT_EIN')), db_e(db_t('EINST.L_TAFELSTEUERUNG'))) ?></div>
+<?php } ?>
+<div class="sm-breit">
+<table class="sm-tabelle" id="db-mqtt-befehlstabelle">
+<tr><th><?= db_e(db_t('LOX.T_TITEL')) ?></th><th><?= db_e(db_t('LOX.T_THEMA')) ?></th>
+    <th><?= db_e(db_t('LOX.T_EIN')) ?></th><th><?= db_e(db_t('LOX.T_AUS')) ?></th></tr>
+<?php foreach (db_mqtt_befehle($db_cfg) as $db_mb) { ?>
+<tr><td><?= db_e($db_mb['titel']) ?></td>
+    <td class="sm-mono"><?= db_e($db_mq_praefix . '/befehl/' . $db_mb['name']) ?></td>
+    <td class="sm-mono"><?= db_e(db_mqtt_befehl_text($db_mq_praefix, $db_mb['name'], $db_mb['ein'])) ?></td>
+    <td class="sm-mono"><?= $db_mb['aus'] === '' ? '&ndash;' : db_e(db_mqtt_befehl_text($db_mq_praefix, $db_mb['name'], $db_mb['aus'])) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-technik" name="vorlage_mqtt" value="1"><?= db_e(db_t('LOX.K_VORLAGE_MQTT')) ?></button>
+  </div>
+</form>
+<p class="sm-hilfe"><?= db_t('LOX.M3_NICHTS_EINTRAGEN') ?></p>
+<div class="sm-hinweis"><?= db_t('LOX.M3_HEIMNETZ') ?></div>
+</div>
+
+<details class="sm-zu" id="db-http-weg"<?= (int) $db_cfg['endpunkt_ein'] === 1 ? ' open' : '' ?>>
+<summary><?= db_e(db_t('LOX.HTTP_TITEL')) ?></summary>
+<div class="sm-step">
+<p class="sm-hilfe"><?= db_t('LOX.HTTP_TEXT') ?></p>
+<form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <label><input data-role="none" type="checkbox" name="endpunkt_ein" value="1"<?= (int) $db_cfg['endpunkt_ein'] === 1 ? ' checked' : '' ?>>
+    <?= db_e(db_t('LOX.L_ENDPUNKT_EIN')) ?></label>
+  <div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" name="endpunkt_speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
+  </div>
+</form>
+</div>
+
 <div class="sm-step">
 <h3><?= db_e(db_t('LOX.S1_TITEL')) ?></h3>
 <p class="sm-hilfe"><?= db_t('LOX.S1_TEXT') ?></p>
@@ -1816,6 +1983,9 @@ if ($db_sy_lage !== 'ok' || !db_symbol_liste()) { ?>
 </table>
 <h4 style="margin:14px 0 2px"><?= db_e(db_t('LOX.ALLES_TITEL')) ?></h4>
 <p class="sm-hilfe"><?= db_t('LOX.ALLES_TEXT') ?></p>
+<?php if ((int) $db_cfg['endpunkt_ein'] !== 1) { ?>
+<div class="sm-warnung" id="db-http-vorlagen-aus"><?= db_t('LOX.HTTP_ERST_HAKEN') ?></div>
+<?php } else { ?>
 <form action="index.php" method="post">
   <?php echo db_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
@@ -1824,6 +1994,7 @@ if ($db_sy_lage !== 'ok' || !db_symbol_liste()) { ?>
   <button data-role="none" class="sm-btn sm-b-technik" name="vorlage_out" value="1"><?= db_e(db_t('LOX.K_VORLAGE_OUT')) ?></button>
   </div>
 </form>
+<?php } ?>
 <?php /* a1 (Verbesserungsbau 30.09.2026): je Vorlage, ob die zuletzt
         heruntergeladene noch der entspricht, die das Plugin jetzt erzeugt. */
 foreach (array('vi' => 'VI_DASHBOARD_STATUS.xml', 'vq' => 'VQ_DASHBOARD_STEUERUNG.xml') as $db_va => $db_vn) {
@@ -1868,7 +2039,16 @@ foreach (array('vi' => 'VI_DASHBOARD_STATUS.xml', 'vq' => 'VQ_DASHBOARD_STEUERUN
 <tr><td class="sm-mono">…&amp;aktion=tafel&amp;ruhe=1</td><td><?= db_t('LOX.SOUT_RUHE') ?></td></tr>
 <?php } ?>
 </table>
-<?php /* Tafel-1: der Weg ueber MQTT, zusaetzlich zum virtuellen Ausgang. */ ?>
+</div>
+</details>
+
+<?php /* Tafel-1: der alte Weg <praefix>/tafel/alle/... (Gruppe 12, E7: hinter seinem Haken, zugeklappt). */
+$db_tm_st = db_tafel_mqtt_stand();
+$db_tm_zuletzt = (isset($db_tm_st['letzter']['ts']) && is_numeric($db_tm_st['letzter']['ts'])) ? (int) $db_tm_st['letzter']['ts'] : 0; ?>
+<details class="sm-zu" id="db-alter-weg"<?= !empty($db_cfg['tafel_mqtt']) ? ' open' : '' ?>>
+<summary><?= db_e(sprintf(db_t('LOX.ALT_TITEL'), db_mqtt_praefix($db_cfg))) ?></summary>
+<div class="sm-step">
+<p class="sm-hilfe"><?= $db_tm_zuletzt > 0 ? db_e(sprintf(db_t('LOX.ALT_ZULETZT'), date('d.m.Y H:i', $db_tm_zuletzt))) : db_e(db_t('LOX.ALT_NIE')) ?></p>
 <h4 style="margin:14px 0 2px"><?= db_e(db_t('LOX.SMQTT_TITEL')) ?></h4>
 <?php if (empty($db_cfg['tafel_mqtt'])) { ?>
 <p class="sm-hilfe"><?= db_t('LOX.SMQTT_AUS') ?></p>
@@ -1882,6 +2062,7 @@ foreach (array('vi' => 'VI_DASHBOARD_STATUS.xml', 'vq' => 'VQ_DASHBOARD_STEUERUN
 <p class="sm-hilfe"><?= sprintf(db_t('LOX.SMQTT_TEXT'), '<span class="sm-mono">publish ' . db_e($db_tmt[0]) . ' &lt;v&gt;</span>') ?></p>
 <?php } ?>
 </div>
+</details>
 
 <!-- Ausfallerkennung: der Schritt, den der Hausstandard ausdruecklich
      verlangt. Ein virtueller Eingang behaelt seinen letzten Wert - in der
@@ -1913,9 +2094,9 @@ $db_bs_k = function ($schluessel, $argumente = array()) {
 };
 $db_bs_seiten = array(
     array('seite' => 'Dashboard', 'bild' => 'einbindung_loxone.png', 'zeilen' => array(
-        array(1, $db_bs_k('T_VHI'), $db_bs_k('S1_01_NAME'), $db_bs_k('S1_01_PARAM'), '&mdash;'),
-        array(2, $db_bs_k('T_VHI'), $db_bs_k('S1_02_NAME'), $db_bs_k('S1_02_PARAM'), '&mdash;'),
-        array(3, $db_bs_k('T_VHI'), $db_bs_k('S1_03_NAME'), $db_bs_k('S1_03_PARAM'), '&mdash;'),
+        array(1, $db_bs_k('T_VI'), $db_bs_k('S1_01_NAME'), $db_bs_k('S1_01_PARAM'), '&mdash;'),
+        array(2, $db_bs_k('T_VI'), $db_bs_k('S1_02_NAME'), $db_bs_k('S1_02_PARAM'), '&mdash;'),
+        array(3, $db_bs_k('T_VI'), $db_bs_k('S1_03_NAME'), $db_bs_k('S1_03_PARAM'), '&mdash;'),
         array(4, $db_bs_k('T_NICHT'), $db_bs_k('S1_04_NAME'), '&ndash;', 'I = #1'),
         array(5, $db_bs_k('T_SWS'), $db_bs_k('S1_05_NAME'), $db_bs_k('S1_05_PARAM'), 'V = #2'),
         array(6, $db_bs_k('T_GLEICH'), $db_bs_k('S1_06_NAME'), $db_bs_k('S1_06_PARAM'), 'I1 = #3'),
@@ -1924,9 +2105,9 @@ $db_bs_seiten = array(
         array(9, $db_bs_k('T_EVZ'), $db_bs_k('S1_09_NAME'), $db_bs_k('S1_09_PARAM'), $db_bs_k('S1_09_EIN')),
         array(10, $db_bs_k('T_BENACHR'), $db_bs_k('S1_10_NAME'), $db_bs_k('S1_10_PARAM'), $db_bs_k('S1_10_EIN')),
         array(11, $db_bs_k('T_STATUS'), $db_bs_k('S1_11_NAME'), $db_bs_k('S1_11_PARAM'), 'V1 = #2'),
-        array(12, $db_bs_k('T_VHI'), $db_bs_k('S1_12_NAME'), $db_bs_k('S1_12_PARAM'), '&mdash;'),
-        array(13, $db_bs_k('T_VHI'), $db_bs_k('S1_13_NAME'), $db_bs_k('S1_13_PARAM'), '&mdash;'),
-        array(14, $db_bs_k('T_VHI'), $db_bs_k('S1_14_NAME'), $db_bs_k('S1_14_PARAM'), '&mdash;'),
+        array(12, $db_bs_k('T_VI'), $db_bs_k('S1_12_NAME'), $db_bs_k('S1_12_PARAM'), '&mdash;'),
+        array(13, $db_bs_k('T_VI'), $db_bs_k('S1_13_NAME'), $db_bs_k('S1_13_PARAM'), '&mdash;'),
+        array(14, $db_bs_k('T_VI'), $db_bs_k('S1_14_NAME'), $db_bs_k('S1_14_PARAM'), '&mdash;'),
         array(15, $db_bs_k('T_KONSTANTE'), $db_bs_k('S1_15_NAME'), $db_bs_k('S1_15_PARAM'), '&mdash;'),
         array(16, $db_bs_k('T_VALID'), $db_bs_k('S1_16_NAME'), $db_bs_k('S1_16_PARAM'), 'V = #14, En = #15'),
         array(17, $db_bs_k('T_ODER'), $db_bs_k('S1_17_NAME'), $db_bs_k('S1_17_PARAM'), $db_bs_k('S1_17_EIN')),
@@ -1934,7 +2115,7 @@ $db_bs_seiten = array(
         ),
         'schritte' => array(
             array('S1_SCHRITT1', array(db_t('REITER.EINSTELLUNGEN'), db_t('EINST.K_START'), db_t('REITER.DASHBOARDS'), db_t('BOARD.K_STRUKTUR'), db_t('BOARD.K_ENTWURF'), db_t('REITER.TEST'), db_t('TEST.K_STATUS'))),
-            array('S1_SCHRITT2', array(db_t('LOX.K_VORLAGE'))),
+            array('S1_SCHRITT2', array(db_t('LOX.M1_TITEL'))),
             array('S1_SCHRITT3', array()),
             array('S1_SCHRITT4', array()),
             array('S1_SCHRITT5', array(db_t('LOX.T_EINGAENGE'), db_t('LOX.T_PARAMETER'))),
@@ -1947,7 +2128,7 @@ $db_bs_seiten = array(
             array('S1_H4', array()),
             array('S1_H5', array()),
             array('S1_H6', array()),
-            array('S1_H7', array(db_t('LOX.K_TOKEN_NEU'))),
+            array('S1_H7', array(db_t('LOX.T_GATEWAYNAME'))),
         )),
     array('seite' => 'Dashboard Steuerung', 'bild' => 'einbindung_loxone_steuerung.png', 'zeilen' => array(
         array(1, $db_bs_k('T_VE_TASTE'), $db_bs_k('S2_01_NAME'), $db_bs_k('S2_01_PARAM'), '&mdash;'),
@@ -1955,22 +2136,22 @@ $db_bs_seiten = array(
         array(3, $db_bs_k('T_AVZ'), $db_bs_k('S2_03_NAME'), $db_bs_k('S2_03_PARAM'), $db_bs_k('S2_03_EIN')),
         array(4, $db_bs_k('T_FLANKE'), $db_bs_k('S2_04_NAME'), $db_bs_k('S2_04_PARAM'), $db_bs_k('S2_04_EIN')),
         array(5, $db_bs_k('T_ODER'), $db_bs_k('S2_05_NAME'), $db_bs_k('S2_05_PARAM'), $db_bs_k('S2_05_EIN')),
-        array(6, $db_bs_k('T_VQ'), $db_bs_k('S2_06_NAME'), $db_bs_k('S2_06_PARAM'), $db_bs_k('S2_06_EIN')),
-        array(7, $db_bs_k('T_VQ'), $db_bs_k('S2_07_NAME'), $db_bs_k('S2_07_PARAM'), $db_bs_k('S2_07_EIN')),
+        array(6, $db_bs_k('T_VQ_MQTT'), $db_bs_k('S2_06_NAME'), $db_bs_k('S2_06_PARAM'), $db_bs_k('S2_06_EIN')),
+        array(7, $db_bs_k('T_VQ_MQTT'), $db_bs_k('S2_07_NAME'), $db_bs_k('S2_07_PARAM'), $db_bs_k('S2_07_EIN')),
         array(8, $db_bs_k('T_VE_TASTE'), $db_bs_k('S2_08_NAME'), $db_bs_k('S2_08_PARAM'), '&mdash;'),
         array(9, $db_bs_k('T_VE_SCHALTER'), $db_bs_k('S2_09_NAME'), $db_bs_k('S2_09_PARAM'), '&mdash;'),
         array(10, $db_bs_k('T_FLANKE'), $db_bs_k('S2_10_NAME'), $db_bs_k('S2_10_PARAM'), $db_bs_k('S2_10_EIN')),
         array(11, $db_bs_k('T_ODER'), $db_bs_k('S2_11_NAME'), '&mdash;', $db_bs_k('S2_11_EIN')),
         array(12, $db_bs_k('T_ODER'), $db_bs_k('S2_12_NAME'), $db_bs_k('S2_12_PARAM'), 'I1 = #8, I2 = #11'),
-        array(13, $db_bs_k('T_VQ'), $db_bs_k('S2_13_NAME'), $db_bs_k('S2_13_PARAM'), $db_bs_k('S2_13_EIN')),
-        array(14, $db_bs_k('T_VQ'), $db_bs_k('S2_14_NAME'), $db_bs_k('S2_14_PARAM'), $db_bs_k('S2_14_EIN')),
+        array(13, $db_bs_k('T_VQ_MQTT'), $db_bs_k('S2_13_NAME'), $db_bs_k('S2_13_PARAM'), $db_bs_k('S2_13_EIN')),
+        array(14, $db_bs_k('T_VQ_MQTT'), $db_bs_k('S2_14_NAME'), $db_bs_k('S2_14_PARAM'), $db_bs_k('S2_14_EIN')),
         array(15, $db_bs_k('T_VE_REGLER'), $db_bs_k('S2_15_NAME'), $db_bs_k('S2_15_PARAM'), '&mdash;'),
-        array(16, $db_bs_k('T_VQ'), $db_bs_k('S2_16_NAME'), $db_bs_k('S2_16_PARAM'), $db_bs_k('S2_16_EIN')),
+        array(16, $db_bs_k('T_VQ_MQTT'), $db_bs_k('S2_16_NAME'), $db_bs_k('S2_16_PARAM'), $db_bs_k('S2_16_EIN')),
         ),
         'schritte' => array(
-            array('S2_SCHRITT1', array(db_t('REITER.EINSTELLUNGEN'), db_t('EINST.L_TAFELSTEUERUNG'), db_t('EINST.L_RUHE_NACH'))),
+            array('S2_SCHRITT1', array(db_t('REITER.EINSTELLUNGEN'), db_t('EINST.L_BEFEHLE_MQTT_EIN'), db_t('EINST.L_TAFELSTEUERUNG'), db_t('EINST.L_RUHE_NACH'))),
             array('S2_SCHRITT2', array(db_t('REITER.DASHBOARDS'))),
-            array('S2_SCHRITT3', array(db_t('LOX.K_VORLAGE_OUT'))),
+            array('S2_SCHRITT3', array(db_t('LOX.K_VORLAGE_MQTT'))),
             array('S2_SCHRITT4', array()),
             array('S2_SCHRITT5', array()),
             array('S2_SCHRITT6', array(db_t('LOX.T_EINGAENGE'))),
@@ -1982,7 +2163,7 @@ $db_bs_seiten = array(
             array('S2_H3', array()),
             array('S2_H4', array()),
             array('S2_H5', array()),
-            array('S2_H6', array(db_t('LOX.SMQTT_TITEL'))),
+            array('S2_H6', array(db_t('LOX.HTTP_TITEL'))),
         )),
 );
 foreach ($db_bs_seiten as $db_bs_s) { ?>

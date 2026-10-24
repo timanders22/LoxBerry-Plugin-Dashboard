@@ -33,6 +33,10 @@
  *            seite ist PFLICHT: die PIN haengt an der Seite, von der aus
  *            geschaltet wird - nicht am Baustein.
  *   tafel    &seite=... | &wach=0|1 | &hell=<0..100> | &ruhe=0|1
+ *            Seit 0.9.37 (Gruppe 12): status und tafel nur mit dem Haken
+ *            "Loxone-Abruf ueber HTTP annehmen" (endpunkt_ein); das
+ *            Musterprojekt nimmt das MQTT-Gateway und die Befehlsbruecke.
+ *            Der Tablet-Weg (alle anderen Aktionen, tafel.php) bleibt offen.
  *            Nur wenn die Tafelsteuerung eingeschaltet ist. Sie wirkt allein
  *            auf die Anzeige, nie auf ein Geraet - deshalb ohne PIN.
  *            &ruhe=1 legt das Ruhebild sofort auf, &ruhe=0 nimmt es weg.
@@ -124,6 +128,24 @@ if (!is_string($db_aktion) || !in_array($db_aktion, array_merge($db_lesend, $db_
     db_abweisung('Endpunkt', 'UNBEKANNTE_AKTION');
     echo "FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION\n";
     echo sprintf(db_t('EP.ERLAUBT'), implode(', ', array_merge($db_lesend, $db_schaltend))) . "\n";
+    exit;
+}
+
+/* ---------------- Loxone-Abruf ueber HTTP (Gruppe 12, 0.9.37) ----------------
+ *
+ * status und tafel sind die Wege des Miniservers. Seit 0.9.37 holt das Musterprojekt die Werte ueber das
+ * MQTT-Gateway und schaltet die Tafeln ueber die Befehlsbruecke; der HTTP-Weg bleibt fuer bestehende Anlagen hinter
+ * dem Haken "Loxone-Abruf ueber HTTP annehmen" (endpunkt_ein, Update: 1 bei gueltigem Token, neu 0 - E6).
+ * Bewusst NACH Token und Weissliste: der Endpunkt bleibt fuer die Tablets offen (seite, werte, strom, roh, seiten,
+ * ruhebild, symbol, befehl, szene, tafel.php), und wer kein Token hat, erfaehrt nicht, welche Aktion gesperrt ist.
+ * Fehlt aktion, gilt status (oben) - also ebenfalls gesperrt. */
+if (($db_aktion === 'status' || $db_aktion === 'tafel') && (int) $db_cfg['endpunkt_ein'] !== 1) {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=utf-8');
+    header('Cache-Control: no-store');
+    db_abweisung('Endpunkt', 'ENDPUNKT_AUS');
+    echo "FEHLER;OK=0;GRUND=ENDPUNKT_AUS\n";
+    echo db_t('EP.ENDPUNKT_AUS') . "\n";
     exit;
 }
 
@@ -355,71 +377,13 @@ if ($db_aktion === 'status') {
 header('Content-Type: application/json; charset=utf-8');
 
 if ($db_aktion === 'tafel') {
-    if (empty($db_cfg['tafelsteuerung'])) {
-        db_json_raus(array('ok' => 0, 'grund' => 'GESPERRT',
-                           'meldung' => db_t('EP.TAFEL_GESPERRT')), 403);
-    }
-    /* ERST alles pruefen, DANN einmal schreiben. Bis 0.9.12 schrieb jeder
-     * Zweig einzeln: ein Aufruf mit gueltiger Seite und ungueltigem 'hell'
-     * hatte die Seite schon umgeschaltet, bevor er mit 400 abgewiesen wurde -
-     * eine abgewiesene Anfrage, die trotzdem gewirkt hat. */
-    $db_getan = array();
-    $db_felder = array();
-    if ($db_seite !== '') {
-        if (db_seite($db_seite) === null) {
-            db_json_raus(array('ok' => 0, 'grund' => 'SEITE_UNBEKANNT',
-                               'meldung' => db_t('EP.SEITE_UNBEKANNT')), 404);
-        }
-        $db_felder['seite'] = $db_seite;
-        $db_getan[] = 'seite=' . $db_seite;
-    }
-    // C5: jede Angabe VOR der Umwandlung auf ihre Art geprueft.
-    $db_v = db_get('wach');
-    if ($db_v !== null) {
-        if (!is_string($db_v) || !preg_match('/^[01]$/', $db_v)) {
-            db_json_raus(array('ok' => 0, 'grund' => 'WERT_UNGUELTIG',
-                               'meldung' => db_t('EP.WACH')), 400);
-        }
-        $db_felder['wach'] = (int) $db_v;
-        $db_getan[] = 'wach=' . (int) $db_v;
-    }
-    $db_h = db_get('hell');
-    if ($db_h !== null) {
-        if (!is_string($db_h) || !preg_match('/^[0-9]{1,3}$/', $db_h) || (int) $db_h > 100) {
-            db_json_raus(array('ok' => 0, 'grund' => 'WERT_UNGUELTIG',
-                               'meldung' => db_t('EP.HELL')), 400);
-        }
-        $db_felder['hell'] = (int) $db_h;
-        $db_getan[] = 'hell=' . (int) $db_h;
-    }
-    $db_r = db_get('ruhe');
-    if ($db_r !== null) {
-        if (!is_string($db_r) || !preg_match('/^[01]$/', $db_r)) {
-            db_json_raus(array('ok' => 0, 'grund' => 'WERT_UNGUELTIG',
-                               'meldung' => db_t('EP.RUHE')), 400);
-        }
-        if (empty($db_cfg['ruhe_nach'])) {
-            /* Nicht stillschweigend nichts tun: wer das Ruhebild aus Loxone
-             * schaltet und es ist gar nicht eingerichtet, sucht sonst am
-             * falschen Ende. */
-            db_json_raus(array('ok' => 0, 'grund' => 'RUHE_AUS',
-                               'meldung' => db_t('EP.RUHE_AUS')), 409);
-        }
-        $db_felder['ruhe'] = (int) $db_r;
-        $db_getan[] = 'ruhe=' . (int) $db_r;
-    }
-    if (!$db_getan) {
-        db_json_raus(array('ok' => 0, 'grund' => 'NICHTS_ANGEGEBEN',
-                           'meldung' => db_t('EP.NICHTS')), 400);
-    }
-    /* C8 (Durchgang 29.09.2026): ein misslungenes Schreiben ist ein Fehler.
-     * Bis 0.9.25 wurde der Rueckgabewert verworfen und {"ok":1} gemeldet,
-     * obwohl tafel.json unveraendert blieb (gemessen, E8). */
-    if (!db_tafel_befehl($db_felder)) {
-        db_json_raus(array('ok' => 0, 'grund' => 'SCHREIBFEHLER',
-                           'meldung' => db_t('EP.SCHREIBFEHLER')), 500);
-    }
-    db_json_raus(array('ok' => 1, 'meldung' => implode(', ', $db_getan)));
+    /* Gruppe 12 (0.9.37, Entwurf 3.4): die Pruefung steht EINMAL in db_tafel_steuern() (db_lib.php) - fuer diesen
+     * Endpunkt und die Befehlsbruecke (<praefix>/befehl/seite|wecken|hell|ruhe). Felder, Reihenfolge der Pruefungen,
+     * Antworten und Codes sind dieselben wie bis 0.9.36 hier (Pruefstand: byte-gleich). Die Seiten-Musterpruefung
+     * steht weiter vorn. */
+    list($db_code, $db_daten) = db_tafel_steuern(array('seite' => $db_seite, 'wach' => db_get('wach'),
+                                                       'hell' => db_get('hell'), 'ruhe' => db_get('ruhe')), $db_cfg);
+    db_json_raus($db_daten, $db_code);
 }
 
 /* ================= Schaltende Aktionen ================= */

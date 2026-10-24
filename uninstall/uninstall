@@ -27,6 +27,19 @@
 # Aufruf: <ZUFALLSKENNUNG> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <TEMPFOLDER>
 # ACHTUNG: $1 ist NICHT der Arbeitsordner, sondern eine zehnstellige
 # Zufallskennung. Gearbeitet wird deshalb mit $3 und $5.
+#
+# Seit 0.9.37 (Gruppe 12) dazu die Befehlsbruecke: Dienst und mosquitto_sub, die Optionsdateien mit dem
+# Broker-Kennwort und der Ordner befehle/ (zugleich die Warteschlange des Dienstes).
+
+# PRAEFIXSCHUTZ (seit 0.9.37, Gruppe 12; Uninstall-Praefix-Falle, am Geraet gemessen 08.10.2026 an zigbee2mqtt/
+# zigbee2mqttng): plugininstall.pl fuehrt beim Deinstallieren JEDES data/system/uninstall/<name>* aus - auch dieses
+# Skript, wenn ein Plugin deinstalliert wird, dessen NAME mit "dashboard" beginnt; $2 ist dann DESSEN Name. Dann
+# gehoert der Lauf nicht uns: nichts tun - keinen Dienst und keine Bruecke anhalten, nichts loeschen. Verglichen
+# wird ohne Gross- und Kleinschreibung (NAME in plugin.cfg: dashboard). Bauart Sprachsteuerung 0.12.7.
+if [ -n "${2:-}" ] && [ "$(printf '%s' "$2" | tr 'A-Z' 'a-z')" != "dashboard" ]; then
+    echo "<INFO> Deinstallation von '$2' - dieses Skript gehoert zu 'dashboard' und tut nichts."
+    exit 0
+fi
 
 # Aufwaerts suchen, bis ein Verzeichnis gefunden ist, das nachweislich eine
 # LoxBerry-Wurzel IST. Eine feste Zahl '..' waere nur die naechste Wette:
@@ -51,6 +64,11 @@ lb_wurzel_suchen() {
 }
 
 UN_FOLDER="${3:-dashboard}"
+# D6 + E6 (0.9.37): die Schranke steht jetzt VOR jedem Anhalten und Loeschen (bis 0.9.36 erst hinter dem
+# Loeschen der Zweitschriften - ein Handaufruf mit "../<anderes>" traf die eines fremden Plugins, Pruefbericht D6).
+case "$UN_FOLDER" in
+    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$UN_FOLDER' - nichts angehalten, nichts entfernt."; exit 0 ;;
+esac
 UN_BASE="${5:-$LBHOMEDIR}"
 if [ -z "$UN_BASE" ] || [ ! -d "$UN_BASE" ]; then
     UN_BASE=$(lb_wurzel_suchen)
@@ -78,6 +96,54 @@ if [ -x "$DIENST" ]; then
     else
         echo "<WARNING> Der Dienst liess sich nicht anhalten (Rueckgabewert $UN_RC): $UN_AUS"
     fi
+fi
+
+# Die Befehlsbruecke (seit 0.9.37, Gruppe 12). Erst befehlsbruecke.sh stop, dann nachzaehlen: ein Bruecken-Dienst
+# dieses Ordners (php, genau zwei Argumente, argv[1] der eigene Pfad) und ein mosquitto_sub mit der eigenen
+# Optionsdatei werden hart beendet. Die Optionsdateien tragen das Broker-Kennwort - vor dem Loeschen ueberschreiben,
+# dann den Ordner befehle/ entfernen (er ist auch die Warteschlange des Dienstes, der schon steht). Im Broker bleibt
+# nichts: Quittungen und status/befehle sind nie retained. Bauart Sprachsteuerung 0.12.7.
+UN_PBIN="$UN_BASE/bin/plugins/$UN_FOLDER"
+UN_PBIN_P=$(cd "$UN_PBIN" 2>/dev/null && pwd -P)
+BBSH="$UN_PBIN/befehlsbruecke.sh"
+BBPHP="$UN_PBIN/befehlsbruecke.php"
+BBDIR="$UN_BASE/data/plugins/$UN_FOLDER/befehle"
+if [ -f "$BBSH" ] && command -v bash >/dev/null 2>&1; then
+    echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 9>&- | head -n 1)"
+fi
+BB_REST=0
+for bb_d in /proc/[0-9]*; do
+    grep -qaF "befehlsbruecke.php" "$bb_d/cmdline" 2>/dev/null || continue
+    bb_a0=$(tr '\0' '\n' < "$bb_d/cmdline" 2>/dev/null | sed -n 1p)
+    bb_a1=$(tr '\0' '\n' < "$bb_d/cmdline" 2>/dev/null | sed -n 2p)
+    bb_n=$(tr '\0' '\n' < "$bb_d/cmdline" 2>/dev/null | grep -c '')
+    case "${bb_a0##*/}" in php|php[0-9]*) ;; *) continue ;; esac
+    if [ "$bb_n" = 2 ] && { [ "$bb_a1" = "$BBPHP" ] || { [ -n "$UN_PBIN_P" ] && [ "$bb_a1" = "$UN_PBIN_P/befehlsbruecke.php" ]; }; }; then
+        kill -9 "${bb_d#/proc/}" 2>/dev/null && BB_REST=$((BB_REST + 1))
+    fi
+done
+BB_ABOS=0
+for bb_d in /proc/[0-9]*; do
+    [ "$(cat "$bb_d/comm" 2>/dev/null)" = "mosquitto_sub" ] || continue
+    if tr '\0' '\n' < "$bb_d/environ" 2>/dev/null | grep -qxF "XDG_CONFIG_HOME=$BBDIR/mosquitto"; then
+        kill -9 "${bb_d#/proc/}" 2>/dev/null && BB_ABOS=$((BB_ABOS + 1))
+    fi
+done
+[ "$BB_REST" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_REST Dienst(e) erst mit kill -9 beendet."
+[ "$BB_ABOS" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_ABOS mosquitto_sub erst mit kill -9 beendet."
+if [ -d "$BBDIR" ] && [ ! -L "$BBDIR" ]; then
+    for bb_f in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub"; do
+        if [ -f "$bb_f" ] && [ ! -L "$bb_f" ]; then
+            bb_n=$(stat -c %s "$bb_f" 2>/dev/null || echo 64)
+            head -c "$bb_n" /dev/zero > "$bb_f" 2>/dev/null
+        fi
+    done
+    case "$BBDIR" in
+        */data/plugins/?*/befehle) rm -rf "${BBDIR:?}" ;;
+    esac
+fi
+if [ -e "$BBDIR/mosquitto/mosquitto_sub" ] || [ -e "$BBDIR/mosquitto/mosquitto_pub" ]; then
+    echo "<WARNING> Befehlsbruecke: Optionsdateien liegen noch unter $BBDIR/mosquitto - von Hand entfernen."
 fi
 
 # Der Punkt hinter dem Ordnernamen ist Absicht: er trennt den Nachbarn vom
