@@ -1966,6 +1966,163 @@ function db_pruef_namen($cfg, $namen = null)
     return array(1, db_e(sprintf(db_t('MQTT.T_NAMEN'), count($namen))));
 }
 
+/* ---------------- Gateway V2: Selbsttest der Haken (Nachtwelle N8, 0.9.38) ---------------- */
+
+/**
+ * Die Fassung des MQTT-Gateways (config/system/general.json Mqtt.Gatewayversion), 0 = nicht feststellbar. Frisch
+ * gelesen fuer db_v2_haken_lage() (bis 0.9.37 las das Plugin die Fassung nirgends).
+ */
+function db_v2_gateway_fassung($home)
+{
+    $g = @json_decode((string) @file_get_contents($home . '/config/system/general.json'), true);
+    foreach (array('Mqtt', 'mqtt') as $a) {
+        if (is_array($g) && isset($g[$a]) && is_array($g[$a])) {
+            foreach (array('Gatewayversion', 'gatewayversion') as $b) {
+                if (isset($g[$a][$b]) && is_scalar($g[$a][$b]) && (string) $g[$a][$b] !== '') {
+                    return (int) $g[$a][$b];
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+/**
+ * Die Abos des MQTT-Gateways V2 aus config/system/subscriptions.json (Subscriptions[].Id je Thema, Noncached):
+ * array(Thema => Noncached ja/nein), null = nicht lesbar. Form wie MGiSmart 1.1.28 mg_v2_abos() und Govee 0.9.30
+ * gv_mqtt_v2_haken_lage(); die Datei liest db_v2_haken_lage().
+ */
+function db_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Soll gegen Ist, rein (liest nichts): array(1|0, fehlt[], noncached_fehlt[], noncached_zu_viel[], angehakt, soll).
+ * Soll je Zeile array('thema' => volles Thema, 'name' => Gateway-Name, 'noncached' => bool). Noncached wird in
+ * beide Richtungen verglichen: fehlt es, reicht das Gateway einen gleichen Wert nicht weiter (nach einem Neustart
+ * des Miniservers bliebe der Eingang stehen); steht es zu viel, geht jeder Wert erneut an den Miniserver.
+ */
+function db_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc_fehlt = array();
+    $nc_zuviel = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ($e['noncached'] && !$abo[$e['thema']]) {
+            $nc_fehlt[] = $e['name'];
+        } elseif (!$e['noncached'] && $abo[$e['thema']]) {
+            $nc_zuviel[] = $e['name'];
+        }
+    }
+    return array(($fehlt || $nc_fehlt || $nc_zuviel) ? 0 : 1, $fehlt, $nc_fehlt, $nc_zuviel, $da, count($soll));
+}
+
+/**
+ * Das Soll fuer den Selbsttest: db_mqtt_namen() - DIESELBE Funktion wie Namenstabelle und Hakenliste im Reiter
+ * Einbindung (Regeln/07; 6 Haken, alle Zahlen). Noncached wie in der Liste: ok, bausteine, seiten, kacheln, alter
+ * (nicht status/zaehler).
+ */
+function db_v2_haken_soll($cfg)
+{
+    $aus = array();
+    foreach (db_mqtt_namen($cfg) as $z) {
+        $aus[] = array('thema' => $z['voll'], 'name' => $z['name'], 'noncached' => $z['v2'] === 'N');
+    }
+    return $aus;
+}
+
+/**
+ * Selbsttestzeile "Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?" (Nachtwelle N8, Vorschrift Punkt 4):
+ * array(1|0|2, Text ohne Markup). 1 alle Haken da und Noncached wie in der Hakenliste; 0 es fehlt ein Haken oder
+ * Noncached stimmt nicht (mit Namen); 2 trifft nicht zu (MQTT dieses Plugins aus, Gateway V1) oder nicht
+ * feststellbar (Fassung 0, keine Wurzel, subscriptions.json nicht lesbar). Liest nur.
+ */
+function db_v2_haken_lage($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = db_config();
+    }
+    if ((int) $cfg['mqtt_ein'] !== 1) {
+        return array(2, db_t('MQTT.V2_AUS'));
+    }
+    $home = (string) db_paths()['home'];
+    $fassung = $home === '' ? 0 : db_v2_gateway_fassung($home);
+    if ($fassung === 0 || $home === '') {
+        return array(2, db_t('MQTT.V2_UNKLAR'));
+    }
+    if ($fassung < 2) {
+        return array(2, db_t('MQTT.V2_V1'));
+    }
+    $abo = db_v2_abos(@json_decode((string) @file_get_contents($home . '/config/system/subscriptions.json'), true));
+    if ($abo === null) {
+        return array(2, db_t('MQTT.V2_UNKLAR'));
+    }
+    $liste = db_v2_haken_soll($cfg);
+    if (!$liste) {
+        return array(2, db_t('MQTT.V2_LEER'));   // leere Hakenliste: kein Urteil (Hausform wie N7)
+    }
+    list($ok, $fehlt, $nc_fehlt, $nc_zuviel, $da, $soll) = db_v2_haken_abgleich($liste, $abo);
+    $txt = sprintf(db_t('MQTT.V2_ZAHL'), $da, $soll);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(db_t('MQTT.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' …' : ''));
+    }
+    if ($nc_fehlt) {
+        $txt .= ' ' . sprintf(db_t('MQTT.V2_NC_FEHLT'), implode(', ', $nc_fehlt));
+    }
+    if ($nc_zuviel) {
+        $txt .= ' ' . sprintf(db_t('MQTT.V2_NC_ZUVIEL'), implode(', ', $nc_zuviel));
+    }
+    return array($ok, $txt);
+}
+
+/** Die Pruefzeile fuer db_test.php: array(1|0|-1, HTML) wie die uebrigen db_pruef_*(). */
+function db_v2_haken_zeile($cfg)
+{
+    list($s, $t) = db_v2_haken_lage($cfg);
+    return array($s === 2 ? -1 : $s, db_e($t));
+}
+
 /** Abo-Datei fuer das Gateway V1: liegt sie und passt sie zum Praefix? */
 function db_pruef_abo($cfg)
 {

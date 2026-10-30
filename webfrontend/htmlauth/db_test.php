@@ -374,6 +374,7 @@ function db_pruefungen()
                    array('MQTT.F_GLEICH', db_pruef_status_gleich($cfg)),
                    array('MQTT.F_NAMEN', db_pruef_namen($cfg)),
                    array('MQTT.F_ABO', db_pruef_abo($cfg)),
+                   array('MQTT.F_V2_HAKEN', db_v2_haken_zeile($cfg)),  // Nachtwelle N8 (0.9.38)
                    array('MQTT.F_PRAEFIX', db_pruef_praefix($cfg)),
                    array('BEFEHL.F_BRUECKE', db_pruef_bruecke($cfg)),
                    array('BEFEHL.F_EINRICHTUNG', db_pruef_bruecke_einrichtung($cfg)),
