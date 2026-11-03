@@ -19,7 +19,10 @@
 BBSH="REPLACELBPBINDIR/befehlsbruecke.sh"
 ERR="REPLACELBPLOGDIR/cron.err"
 mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
-if touch "$ERR" 2>/dev/null; then
+# 0.9.39 (Nachzug 01.11.2026, Bauart Renault NG 2.1.23): touch allein genuegt nicht - es gelingt auch auf einem
+# Verzeichnis und, beim Eigentuemer, auf einer schreibgeschuetzten Datei. Bis 0.9.38 brach dann die Umlenkung
+# den Befehl ab, BEVOR er startete.
+if touch "$ERR" 2>/dev/null && [ -f "$ERR" ] && [ -w "$ERR" ]; then
     if [ "$(stat -c %s "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
         tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
     fi

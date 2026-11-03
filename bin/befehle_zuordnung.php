@@ -7,8 +7,10 @@
  * Bruecke selbst (bin/befehlsbruecke.php und .sh) ist byte-gleich die Stammfassung Werkzeuge/gemeinsam/ - linieneigen ist
  * nur diese Datei.
  *
- * Themen: <praefix>/befehl/seite | wecken | hell | ruhe (E1) - fuer ALLE Tablets (die Anzeige kennt keine Tafelnamen;
- * flache Namen, spaeter tafel/{tafel}/... ohne Bruch, E2). seite nimmt den Schluessel einer Seite oder ihre Nummer
+ * Themen: <praefix>/befehl/seite | wecken | hell | ruhe (E1) - fuer ALLE Tablets, unveraendert. Seit 0.9.39 (E2, ohne Bruch)
+ * dieselben vier fuer EINE Tafel: <praefix>/befehl/tafel/<name>/seite | wecken | hell | ruhe. Das Muster des Teils {tafel}
+ * ist die Namensregel aus db_tafel_name_gueltig(); db_tafel_steuern() prueft Name und Erlaubnis noch einmal.
+ * seite nimmt den Schluessel einer Seite oder ihre Nummer
  * (1 = erste Seite im Reiter Dashboards), wecken weckt die Bildschirme, hell setzt die Helligkeit 0..100, ruhe legt das
  * Ruhebild auf (1) oder nimmt es weg (0).
  *
@@ -38,12 +40,13 @@ if (!function_exists('db_bb_tun')) {
     }
 }
 /* Ein Eintrag: Art, Titel, Kachel, Sperre mit Begruendung, Quittung. tun() reicht Name und Wert an db_bb_tun(). */
+$db_bb_g = 'Wie derselbe Befehl an alle: das eigene Tablet soll einem zweiten Befehl binnen einer Minute folgen.';
 $db_bb_e = function ($name, $art, $titel, $kachel, $grund, $extra = array()) {
     return array_merge(array(
         'art' => $art, 'eingreifend' => false, 'titel' => 'Dashboard ' . $titel . ' (MQTT)',
         'kachel' => $kachel, 'quittung' => 'ausgefuehrt', 'sperre_s' => 0, 'begruendung' => $grund,
         'tun' => function ($w, $t) use ($name) {
-            return db_bb_tun($name, (string) $w);
+            return db_bb_tun($name, (string) $w, isset($t['tafel']) ? (string) $t['tafel'] : '');
         }), $extra);
 };
 return array(
@@ -58,6 +61,8 @@ return array(
     'protokoll' => function ($stufe, $text) {
         db_bb_protokoll($stufe, $text);
     },
+    'teile'   => array('tafel' => '[a-z][a-z0-9_]{0,23}'),
+    'ausser'  => array('tafel' => array('alle', 'unbenannt')),
     'befehle' => array(
         'seite'  => $db_bb_e('seite', 'text', 'Tafelseite', 'BEFEHL.K_SEITE',
                              'Klingel und Heimkehr schalten mehrmals in der Minute auf dieselbe Seite; ist ein Tablet '
@@ -71,5 +76,10 @@ return array(
                              array('min' => 0, 'max' => 100)),
         'ruhe'   => $db_bb_e('ruhe', 'schalter', 'Ruhebild', 'BEFEHL.K_RUHE',
                              'Anwesenheit wechselt ein-aus-ein binnen einer Minute; ein gleicher Wert aendert nichts.'),
+        'tafel/{tafel}/seite'  => $db_bb_e('seite', 'text', 'Seite einer Tafel', 'BEFEHL.K_Z_SEITE', $db_bb_g, array('max_byte' => 60)),
+        'tafel/{tafel}/wecken' => $db_bb_e('wecken', 'puls', 'Eine Tafel wecken', 'BEFEHL.K_Z_WECKEN', $db_bb_g),
+        'tafel/{tafel}/hell'   => $db_bb_e('hell', 'ganz', 'Helligkeit einer Tafel', 'BEFEHL.K_Z_HELL', $db_bb_g,
+                                           array('min' => 0, 'max' => 100)),
+        'tafel/{tafel}/ruhe'   => $db_bb_e('ruhe', 'schalter', 'Ruhebild einer Tafel', 'BEFEHL.K_Z_RUHE', $db_bb_g),
     ),
 );

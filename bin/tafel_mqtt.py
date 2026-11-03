@@ -9,9 +9,10 @@ steuern" an ist (tafel_mqtt, ab Werk aus):
                                   Nummer (1 = erste Seite im Reiter Dashboards)
     <praefix>/tafel/alle/wecken   Nutzlast: 1 = Bildschirm wecken
 
-"alle" heisst: jede Tafel. Die Anzeigeseite kennt keine Namen je Tablet -
-auch der virtuelle Ausgang schaltet alle Tafeln zugleich. Ein anderer Name
-wird abgewiesen und steht gebremst im Protokoll.
+"alle" heisst: jede Tafel. Ein anderer Name wird auf diesem alten Weg
+abgewiesen und steht gebremst im Protokoll; eine einzelne Tafel erreicht man
+seit 0.9.39 ueber die Befehlsbruecke (<praefix>/befehl/tafel/<name>/...) und
+den Endpunkt (&tafel=<name>), mit denselben Pruefungen wie dort.
 
 Der Weg zur Tafel ist DERSELBE wie beim virtuellen Ausgang: der Befehl landet
 in data/plugins/<ordner>/tafel.json, unter derselben Sperre (tafel.sperre),

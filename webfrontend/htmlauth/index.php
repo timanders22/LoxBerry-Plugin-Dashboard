@@ -1024,6 +1024,21 @@ if ($db_post && isset($_POST['db_verlauf_weg'])) {
     $db_tab = 'tab-settings';
 }
 
+/* 0.9.39: eine Tafel aus der Liste nehmen. Haekchen wie beim Verlauf (Regeln/04), Wert streng in db_tafel_vergessen(). */
+if ($db_post && isset($_POST['tafel_weg'])) {
+    if (!isset($_POST['tafel_weg_ok']) || $_POST['tafel_weg_ok'] !== '1') {
+        $db_fehler[] = db_t('BOARD.WEG_BESTAETIGEN');
+    } else {
+        $db_tw = db_tafel_vergessen($_POST['tafel_weg']);
+        if ($db_tw) {
+            $db_meldungen[] = db_t('BOARD.WEG_OK');
+        } else {
+            $db_fehler[] = db_t('BOARD.WEG_FEHL');
+        }
+    }
+    $db_tab = 'tab-boards';
+}
+
 /* ---------------- O17: Dienst nachziehen ----------------
  * Der Dienst liest seine Einstellungen und den Zugang beim Start. Bis 0.9.25
  * wirkten Takt, Miniserver, TLS und HTTP-Rueckfall nach "gespeichert" und
@@ -1791,6 +1806,62 @@ if (!$db_vliste) { ?>
 <div class="sm-hinweis"><?= db_t('BOARD.ADRESSE_HINWEIS') ?></div>
 <?php } ?>
 
+<?php /* 0.9.39: die Tafelliste. Keine IP-Adressen; die Tafel meldet Name oder Kennung, Seite und Wake Lock. */
+$db_tl = db_tafeln_lage();
+$db_tl_seiten = array();
+foreach ($db_seiten as $db_s) { $db_tl_seiten[(string) $db_s['schluessel']] = (string) $db_s['name']; } ?>
+<h2 id="db-tafelliste"><?= db_e(db_t('BOARD.H_TAFELN')) ?></h2>
+<p class="sm-hilfe"><?= sprintf(db_t('BOARD.TAFELN_TEXT'), (int) (DB_TAFEL_AUS_S / 60)) ?></p>
+<?php if (!$db_tl['zeilen']) { ?>
+<p class="sm-hilfe" id="db-tafeln-leer"><?= db_e(db_t('BOARD.TAFELN_KEINE')) ?></p>
+<?php } else { ?>
+<form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-boards">
+<div class="sm-breit">
+<table class="sm-tabelle" id="db-tafeln">
+<tr><th><?= db_e(db_t('BOARD.T_TAFEL')) ?></th><th><?= db_e(db_t('BOARD.T_ZUSTAND')) ?></th><th><?= db_e(db_t('BOARD.T_LETZTE')) ?></th>
+    <th><?= db_e(db_t('BOARD.T_SEITE')) ?></th><th><?= db_e(db_t('BOARD.T_WACH')) ?></th><th>&nbsp;</th></tr>
+<?php foreach ($db_tl['zeilen'] as $db_tz) {
+    $db_tw_wert = $db_tz['name'] !== '' ? 'n:' . $db_tz['name'] : 'u:' . $db_tz['kennung']; ?>
+<tr>
+  <td><?php if ($db_tz['name'] !== '') { ?><span class="sm-mono"><?= db_e($db_tz['name']) ?></span><?php } else { ?><i><?= db_e(db_tafel_anzeigename($db_tz)) ?></i><?php } ?>
+      <?php if ($db_tz['falsch']) { ?><div class="sm-hilfe"><?= db_e(db_t('BOARD.NAME_FALSCH')) ?></div><?php } ?>
+      <?php if ($db_tz['doppelt']) { ?><div class="sm-hilfe"><?= db_e(db_t('BOARD.DOPPELT')) ?></div><?php } ?></td>
+  <td><?php if ($db_tz['aus'] && $db_tz['name'] !== '') { ?><b style="color:#b00000"><?= db_e(db_t('BOARD.Z_AUS')) ?></b><?php } else { ?><?= db_e(db_t('BOARD.Z_OK')) ?><?php } ?></td>
+  <td><?= db_e(date('d.m.Y H:i:s', $db_tz['ts'])) ?><div class="sm-hilfe"><?= db_e(db_tafel_alter_text($db_tz['alter'])) ?></div></td>
+  <td><?= db_e(isset($db_tl_seiten[$db_tz['seite']]) ? $db_tl_seiten[$db_tz['seite']] : $db_tz['seite']) ?></td>
+  <td><?= db_e(db_tafel_wl_text($db_tz)) ?></td>
+  <td><button data-role="none" class="sm-btn sm-b-aktion" name="tafel_weg" value="<?= db_e($db_tw_wert) ?>"><?= db_e(db_t('BOARD.K_WEG')) ?></button></td>
+</tr>
+<?php } ?>
+</table>
+</div>
+  <label><input data-role="none" type="checkbox" name="tafel_weg_ok" value="1"> <?= db_e(db_t('BOARD.L_WEG_OK')) ?></label>
+</form>
+<?php } ?>
+<h3><?= db_e(db_t('BOARD.H_NAME')) ?></h3>
+<p class="sm-hilfe"><?= db_t('BOARD.NAME_TEXT') ?></p>
+<label><?= db_e(db_t('BOARD.L_NAME')) ?>
+  <input data-role="none" type="text" id="db-tafel-name" maxlength="24" size="24" autocomplete="off" spellcheck="false"></label>
+<div class="sm-hilfe sm-mono" id="db-tafel-adresse" data-basis="<?= db_e(db_tafel_adresse()) ?>"><?= db_e(db_tafel_adresse()) ?></div>
+<div class="sm-warnung" id="db-tafel-name-fehl" hidden><?= db_t('BOARD.NAME_FEHL') ?></div>
+<script>
+(function () {
+	var ein = document.getElementById('db-tafel-name');
+	var aus = document.getElementById('db-tafel-adresse');
+	var fehl = document.getElementById('db-tafel-name-fehl');
+	if (!ein || !aus || !fehl) { return; }
+	var basis = aus.getAttribute('data-basis') || '';
+	ein.addEventListener('input', function () {
+		var w = ein.value;
+		var gut = /^[a-z][a-z0-9_]{0,23}$/.test(w) && w !== 'alle' && w !== 'unbenannt';
+		fehl.hidden = (w === '' || gut);
+		aus.textContent = gut ? basis + '&tafel=' + w : basis;
+	});
+})();
+</script>
+
 <?php /* Der Reiter mit: $db_ausgabe traegt auch die Ausgabe von Selbsttest,
         Anmelde- und HTTP-Probe aus dem Reiter Test. Ohne diese Bedingung stand
         das Ergebnis einer Anmeldeprobe zusaetzlich hier unter "Ausgabe" -
@@ -1951,6 +2022,29 @@ $db_mq_praefix = db_mqtt_praefix($db_cfg); ?>
 <div class="sm-hinweis"><?= db_t('LOX.M3_HEIMNETZ') ?></div>
 </div>
 
+<div class="sm-step" id="db-tafel-einzeln">
+<h3><?= db_e(db_t('LOX.M4_TITEL')) ?></h3>
+<p class="sm-hilfe"><?= sprintf(db_t('LOX.M4_TEXT'), db_e(db_t('REITER.DASHBOARDS'))) ?></p>
+<div class="sm-breit">
+<table class="sm-tabelle" id="db-tafel-einzeln-tabelle">
+<tr><th><?= db_e(db_t('LOX.T_THEMA')) ?></th><th><?= db_e(db_t('LOX.T_BEDEUTUNG')) ?></th></tr>
+<tr><td class="sm-mono"><?= db_e($db_mq_praefix) ?>/befehl/tafel/&lt;name&gt;/seite</td><td><?= db_t('LOX.M4_SEITE') ?></td></tr>
+<tr><td class="sm-mono"><?= db_e($db_mq_praefix) ?>/befehl/tafel/&lt;name&gt;/wecken</td><td><?= db_t('LOX.M4_WECKEN') ?></td></tr>
+<tr><td class="sm-mono"><?= db_e($db_mq_praefix) ?>/befehl/tafel/&lt;name&gt;/hell</td><td><?= db_t('LOX.M4_HELL') ?></td></tr>
+<tr><td class="sm-mono"><?= db_e($db_mq_praefix) ?>/befehl/tafel/&lt;name&gt;/ruhe</td><td><?= db_t('LOX.M4_RUHE') ?></td></tr>
+</table>
+</div>
+<p class="sm-hilfe"><?= db_t('LOX.M4_REGEL') ?></p>
+<p class="sm-hilfe"><?= db_t('LOX.M4_AUSFALL') ?></p>
+</div>
+
+<div class="sm-step" id="db-loxi2do">
+<h3><?= db_e(db_t('LOX.M5_TITEL')) ?></h3>
+<p class="sm-hilfe"><?= db_t('LOX.M5_TEXT') ?></p>
+<p class="sm-hilfe"><?= db_t('LOX.M5_SO') ?></p>
+<div class="sm-hinweis"><?= db_t('LOX.M5_GRENZE') ?></div>
+</div>
+
 <details class="sm-zu" id="db-http-weg"<?= (int) $db_cfg['endpunkt_ein'] === 1 ? ' open' : '' ?>>
 <summary><?= db_e(db_t('LOX.HTTP_TITEL')) ?></summary>
 <div class="sm-step">
@@ -2031,6 +2125,7 @@ foreach (array('vi' => 'VI_DASHBOARD_STATUS.xml', 'vq' => 'VQ_DASHBOARD_STEUERUN
 <?php } ?>
 <tr><td class="sm-mono">…&amp;aktion=tafel&amp;wach=1</td><td><?= db_t('LOX.SOUT_WACH') ?></td></tr>
 <tr><td class="sm-mono">…&amp;aktion=tafel&amp;hell=&lt;v.0&gt;</td><td><?= db_t('LOX.SOUT_HELL') ?></td></tr>
+<tr><td class="sm-mono">…&amp;aktion=tafel&amp;tafel=&lt;name&gt;&amp;wach=1</td><td><?= db_t('LOX.SOUT_TAFEL') ?></td></tr>
 <?php /* Nur zeigen, wenn das Ruhebild eingerichtet ist - der Endpunkt weist
         den Befehl sonst mit GRUND=RUHE_AUS ab, und eine Zeile, die etwas
         verspricht, was 409 antwortet, schickt den Anwender nach Loxone
@@ -2236,6 +2331,7 @@ foreach ($db_bs_seiten as $db_bs_s) { ?>
 <h2><?= db_e(db_t('TEST.H_SELBSTPRUEFUNG')) ?></h2>
 <p class="sm-hilfe"><?= db_t('TEST.EINLEITUNG') ?></p>
 <?= db_pruefungen_html() ?>
+<div class="sm-hinweis" id="db-wach-hinweis"><?= db_t('TEST.WACH_HINWEIS') ?></div>
 
 <h2><?= db_e(db_t('TEST.H_LESEN')) ?></h2>
 <div class="sm-legende">

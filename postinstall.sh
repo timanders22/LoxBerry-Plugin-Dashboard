@@ -523,7 +523,7 @@ LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 # I1/I3: Langzeitwerte und "lief vorher" gelten nur bei einer Aktualisierung
 # (Marke), nie aus einem frueheren Vorgang.
 if [ "$DB_UPGRADE" = 1 ] && [ -d "$LANG_SICHER" ]; then
-    for LANG_F in verlauf.json; do
+    for LANG_F in verlauf.json tafeln.json; do
         if [ -f "$LANG_SICHER/$LANG_F" ] \
            && [ ! -s "$BASE/data/plugins/$PFOLDER/$LANG_F" ]; then
             mkdir -p "$BASE/data/plugins/$PFOLDER" 2>/dev/null

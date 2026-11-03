@@ -135,6 +135,8 @@ DATEI_TAFEL_SPERRE = os.path.join(DATADIR, "tafel.sperre")
 DATEI_TAFEL_MQTT = os.path.join(DATADIR, "tafel_mqtt.json")
 # Gruppe 12 (0.9.37): der Stand des Senders der Zustandswerte (bin/status_mqtt.py) fuer den Reiter Test.
 DATEI_STATUS_MQTT = os.path.join(DATADIR, "status_mqtt.json")
+# 0.9.39: die Tafelliste; sie schreibt der Endpunkt (aktion=melden), der Dienst liest nur.
+DATEI_TAFELN = os.path.join(DATADIR, "tafeln.json")
 
 
 def _in_der_anlage() -> bool:
@@ -1040,7 +1042,7 @@ def status_mqtt_starten(laeuft):
         general_pfad=os.path.join(HOME, "config", "system", "general.json"),
         abbild_pfad=DATEI_ABBILD, struktur_pfad=DATEI_STRUKTUR, seiten_pfad=DATEI_DASHBOARD,
         stand_pfad=DATEI_STATUS_MQTT, json_lesen=json_lesen, json_schreiben=json_schreiben, log=_LOG,
-        laeuft=laeuft)
+        laeuft=laeuft, tafeln_pfad=DATEI_TAFELN)
     return asyncio.ensure_future(sender.laufen()), sender
 
 

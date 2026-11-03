@@ -19,12 +19,13 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/db_lib.php';
 
-$cfg = db_config();
+/* bis 0.9.38 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
+$db_lauf_cfg = db_config();
 /* C5 (Durchgang 29.09.2026): Token und Angabe aus der Adresse als
  * Zeichenkette geprueft, bevor verglichen wird - bis 0.9.25 lieferte
  * ?token=Array bzw. ?token[]=x die Anzeigeseite aus, wenn das Token als Liste
  * in einer Sicherung stand (gemessen). */
-$soll = db_token_soll($cfg);
+$soll = db_token_soll($db_lauf_cfg);
 $ist = db_get('token');
 if (!is_string($ist)) { $ist = ''; }
 /* O13: die Sprache der Anlage (Base.Lang), nicht fest Deutsch. */
@@ -50,54 +51,62 @@ if ($soll === '' || !hash_equals($soll, $ist)) {
     exit;
 }
 
+/* 0.9.39: der Name dieser Tafel steht in ihrer Adresse (&tafel=flur) und reist bei jedem Seitenwechsel mit. Was dem
+ * Muster nicht genuegt, gilt als "kein Name"; die Tafel sagt das und meldet sich als unbenannt. */
+$db_tafel_roh = db_get('tafel');
+$db_tafel_name = db_tafel_name_gueltig($db_tafel_roh) ? $db_tafel_roh : '';
+$db_tafel_falsch = ($db_tafel_name === '' && $db_tafel_roh !== null && $db_tafel_roh !== '') ? 1 : 0;
+$db_tafel_anhang = $db_tafel_name !== '' ? '&tafel=' . $db_tafel_name : '';
+
 $seiten = db_seiten();
 $wunsch = db_get('seite');
 if (!is_string($wunsch)) { $wunsch = ''; }
 if ($wunsch !== '' && !preg_match('/^[a-z0-9-]{1,60}$/', $wunsch)) { $wunsch = ''; }
 if ($wunsch === '' && $seiten) { $wunsch = (string) $seiten[0]['schluessel']; }
-$daten = $wunsch !== '' ? db_seite_daten($wunsch) : null;
+$daten = $wunsch !== '' ? db_tafel_ziel_anhaengen(db_seite_daten($wunsch), $db_tafel_name) : null;
 
-$dunkel = ((string) $cfg['farbe']) !== 'hell';
-$basis = '/plugins/' . db_paths()['plugin'] . '/index.php?token=' . rawurlencode($ist);
+$dunkel = ((string) $db_lauf_cfg['farbe']) !== 'hell';
+$basis = '/plugins/' . db_paths()['plugin'] . '/index.php?token=' . rawurlencode($ist) . $db_tafel_anhang;
 
 /* Was die Anzeigeseite von der Konfiguration wissen muss - und nur das.
  * Zugangsdaten, Token des Miniservers und Pfade gehen sie nichts an. */
 $konf = array(
-    'takt'      => max(1, min(30, (int) $cfg['takt'])),
-    'sse'       => !empty($cfg['sse']) ? 1 : 0,
-    'rotation'  => max(0, min(3600, (int) $cfg['rotation'])),
-    'nacht_von' => preg_match('/^\d{1,2}:\d{2}$/', (string) $cfg['nacht_von'])
-                   ? (string) $cfg['nacht_von'] : '',
-    'nacht_bis' => preg_match('/^\d{1,2}:\d{2}$/', (string) $cfg['nacht_bis'])
-                   ? (string) $cfg['nacht_bis'] : '',
-    'nacht_hell' => max(0, min(100, (int) $cfg['nacht_helligkeit'])),
-    'verlauf'   => !empty($cfg['verlauf']) ? 1 : 0,
-    'haptik'    => !empty($cfg['haptik']) ? 1 : 0,
-    'vollbild'  => !empty($cfg['vollbild']) ? 1 : 0,
-    'wach'      => !empty($cfg['wach']) ? 1 : 0,
+    'takt'      => max(1, min(30, (int) $db_lauf_cfg['takt'])),
+    'sse'       => !empty($db_lauf_cfg['sse']) ? 1 : 0,
+    'rotation'  => max(0, min(3600, (int) $db_lauf_cfg['rotation'])),
+    'nacht_von' => preg_match('/^\d{1,2}:\d{2}$/', (string) $db_lauf_cfg['nacht_von'])
+                   ? (string) $db_lauf_cfg['nacht_von'] : '',
+    'nacht_bis' => preg_match('/^\d{1,2}:\d{2}$/', (string) $db_lauf_cfg['nacht_bis'])
+                   ? (string) $db_lauf_cfg['nacht_bis'] : '',
+    'nacht_hell' => max(0, min(100, (int) $db_lauf_cfg['nacht_helligkeit'])),
+    'verlauf'   => !empty($db_lauf_cfg['verlauf']) ? 1 : 0,
+    'haptik'    => !empty($db_lauf_cfg['haptik']) ? 1 : 0,
+    'vollbild'  => !empty($db_lauf_cfg['vollbild']) ? 1 : 0,
+    'wach'      => !empty($db_lauf_cfg['wach']) ? 1 : 0,
+    'melde_s'   => DB_TAFEL_MELDE_S,
     /* Das Ruhebild. Grenzen stehen hier UND im Speicher-Handler der
      * Oberflaeche - beide lesen dieselben Konstanten aus db_lib.php, damit
      * nicht wieder eine Grenze an zwei Stellen mit zwei Zahlen steht. */
-    'ruhe_nach'    => ((int) $cfg['ruhe_nach'] <= 0) ? 0
-                      : max(DB_RUHE_NACH_MIN, min(DB_RUHE_NACH_MAX, (int) $cfg['ruhe_nach'])),
-    'ruhe_uhr'     => !empty($cfg['ruhe_uhr']) ? 1 : 0,
-    'ruhe_wetter'  => !empty($cfg['ruhe_wetter']) ? 1 : 0,
-    'ruhe_kacheln' => max(0, min(DB_RUHE_KACHELN_MAX, (int) $cfg['ruhe_kacheln'])),
-    'ruhe_seite'   => preg_match('/^[a-z0-9-]{1,60}$/', (string) $cfg['ruhe_seite'])
-                      ? (string) $cfg['ruhe_seite'] : '',
-    'ruhe_hell'    => max(DB_RUHE_HELL_MIN, min(DB_RUHE_HELL_MAX, (int) $cfg['ruhe_hell'])),
+    'ruhe_nach'    => ((int) $db_lauf_cfg['ruhe_nach'] <= 0) ? 0
+                      : max(DB_RUHE_NACH_MIN, min(DB_RUHE_NACH_MAX, (int) $db_lauf_cfg['ruhe_nach'])),
+    'ruhe_uhr'     => !empty($db_lauf_cfg['ruhe_uhr']) ? 1 : 0,
+    'ruhe_wetter'  => !empty($db_lauf_cfg['ruhe_wetter']) ? 1 : 0,
+    'ruhe_kacheln' => max(0, min(DB_RUHE_KACHELN_MAX, (int) $db_lauf_cfg['ruhe_kacheln'])),
+    'ruhe_seite'   => preg_match('/^[a-z0-9-]{1,60}$/', (string) $db_lauf_cfg['ruhe_seite'])
+                      ? (string) $db_lauf_cfg['ruhe_seite'] : '',
+    'ruhe_hell'    => max(DB_RUHE_HELL_MIN, min(DB_RUHE_HELL_MAX, (int) $db_lauf_cfg['ruhe_hell'])),
     /* Nur die Tatsache, dass eines hinterlegt ist - der Dateiname geht die
      * Anzeigeseite nichts an, sie holt es ueber aktion=ruhebild. */
-    'ruhe_bild'    => ((string) $cfg['ruhe_bild'] !== '' && is_file(db_paths()['ruhebild'])) ? 1 : 0,
+    'ruhe_bild'    => ((string) $db_lauf_cfg['ruhe_bild'] !== '' && is_file(db_paths()['ruhebild'])) ? 1 : 0,
     /* Der Ambient-Modus: Uhr, Datum und Wetter dauerhaft ueber den Kacheln,
      * das Hintergrundbild dahinter. Die Kacheln bleiben stehen und bleiben
      * bedienbar - das ist der Unterschied zum Ruhebild. */
-    'ambient'      => !empty($cfg['ambient']) ? 1 : 0,
+    'ambient'      => !empty($db_lauf_cfg['ambient']) ? 1 : 0,
     /* Der Eco-Modus: Absenkung nach Untaetigkeit, die Kacheln bleiben stehen.
      * 0 heisst nie - dann ruehrt die Anzeigeseite den Schleier gar nicht an. */
-    'eco_nach'     => (int) $cfg['eco_nach'] > 0
-                      ? max(DB_ECO_NACH_MIN, min(DB_ECO_NACH_MAX, (int) $cfg['eco_nach'])) : 0,
-    'eco_hell'     => max(DB_ECO_HELL_MIN, min(DB_ECO_HELL_MAX, (int) $cfg['eco_hell'])),
+    'eco_nach'     => (int) $db_lauf_cfg['eco_nach'] > 0
+                      ? max(DB_ECO_NACH_MIN, min(DB_ECO_NACH_MAX, (int) $db_lauf_cfg['eco_nach'])) : 0,
+    'eco_hell'     => max(DB_ECO_HELL_MIN, min(DB_ECO_HELL_MAX, (int) $db_lauf_cfg['eco_hell'])),
 );
 /* O13 (Durchgang 29.09.2026): jeder Text der Anzeigeseite kommt aus den
  * Sprachdateien (Abschnitt TAFEL). Bis 0.9.25 rief die Tafel db_t() genau
@@ -117,7 +126,8 @@ foreach (array('ABBRECHEN', 'WEITER', 'PIN_TITEL', 'ANTWORT_UNLESBAR', 'OHNE_BES
                'AKTIV_KLEIN', 'KEINE_EINTRAEGE', 'HANDBETRIEB', 'KEINE_WERTE', 'FEHLT',
                'NICHT_DARSTELLBAR', 'MARKE_GESICHERT', 'MARKE_NURLESEN', 'SCHUB_FEHL', 'ERSATZWEG',
                'LB_ANTWORTET_NICHT', 'BAND_LB', 'KEINE_MS', 'BAND_MS', 'WERTE_ALT', 'WERTE_ZU_ALT',
-               'BAND_ALT', 'KEINE_WERTE_DA', 'BAND_KEINE', 'VERBUNDEN', 'UEBER_HTTP') as $db_k) {
+               'BAND_ALT', 'KEINE_WERTE_DA', 'BAND_KEINE', 'VERBUNDEN', 'UEBER_HTTP', 'WACH_HINWEIS',
+               'NAME_FALSCH') as $db_k) {
     $db_tafeltexte[strtolower($db_k)] = db_t('TAFEL.' . $db_k);
 }
 
@@ -167,6 +177,7 @@ header h1{font-size:1.35rem;margin:0;font-weight:650;letter-spacing:-.01em}
   color:var(--leise);background:var(--kachel);border:1px solid var(--rand);font-size:.86rem}
 .seiten a.hier{color:var(--text);border-color:var(--an);background:var(--anweich)}
 .zeile{display:flex;align-items:center;gap:10px;padding:0 18px 10px;font-size:.8rem;color:var(--leise)}
+.wachhinweis{flex:1 1 0;min-width:0;text-align:right;cursor:pointer;text-decoration:underline dotted}
 /* Abdunkeln bei Verbindungsverlust.
    Auf einem Wandtablet sieht man einen neun Pixel grossen Punkt aus drei
    Metern nicht. Also wird das ganze Raster gedaempft und ein Band eingeblendet
@@ -327,7 +338,7 @@ input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px
   <nav class="seiten">
     <?php foreach ($seiten as $s) {
         $k = (string) $s['schluessel']; ?>
-      <a href="?token=<?= db_e($ist) ?>&amp;seite=<?= db_e($k) ?>"<?= $k === $wunsch ? ' class="hier"' : '' ?>><?= db_e($s['name']) ?></a>
+      <a href="?token=<?= db_e($ist) ?>&amp;seite=<?= db_e($k) ?><?= db_e($db_tafel_anhang) ?>"<?= $k === $wunsch ? ' class="hier"' : '' ?>><?= db_e($s['name']) ?></a>
     <?php } ?>
   </nav>
   <?php } ?>
@@ -342,6 +353,7 @@ input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px
 <div class="zeile">
   <span class="punkt" id="punkt"></span>
   <span id="stand">&nbsp;</span>
+  <span class="wachhinweis" id="wachhinweis" role="status" hidden></span>
 </div>
 
 <main id="raster" style="--spalten:<?= (int) $daten['spalten'] ?>"></main>
@@ -376,6 +388,8 @@ input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px
  * der Kommentar es beschreibt. Ein Beispiel, das den beschriebenen Fehler
  * selbst begeht, ist kein Beispiel. */
 var BASIS = <?= json_encode($basis, $db_jf) ?>;
+var ANHANG = <?= json_encode($db_tafel_anhang, $db_jf) ?>;
+var NAME_FALSCH = <?= (int) $db_tafel_falsch ?>;
 var SEITE = <?= json_encode($wunsch, $db_jf) ?>;
 var DATEN = <?= json_encode($daten, $db_jf) ?>;
 var KONF  = <?= json_encode($konf, $db_jf) ?>;
@@ -1134,6 +1148,7 @@ document.addEventListener("change", function(ev){
 /* ---------- Werte holen ---------- */
 var fehlversuche = 0;
 var letzte_tafel_nr = (DATEN.tafel && DATEN.tafel.nr) || 0;
+var letzte_ziel_nr = (DATEN.tafel_ziel && DATEN.tafel_ziel.nr) || 0;
 
 function uebernehmen(d){
   fehlversuche = 0;
@@ -1148,6 +1163,8 @@ function uebernehmen(d){
   zeichnen();
   stand_zeigen(d);
   if (d.tafel) { tafel_befolgen(d.tafel); }
+  /* Der Befehl an genau diese Tafel nach dem an alle: das Genauere gewinnt. */
+  if (d.tafel_ziel) { ziel_befolgen(d.tafel_ziel); }
   if (ruhe_an) { ruhe_fuellen(); }
 }
 
@@ -1266,6 +1283,14 @@ var hand_von_beruehrung = false;
 function tafel_befolgen(t){
   if (!t || !t.nr || t.nr <= letzte_tafel_nr) { return; }
   letzte_tafel_nr = t.nr;
+  tafel_anwenden(t);
+}
+function ziel_befolgen(t){
+  if (!t || !t.nr || t.nr <= letzte_ziel_nr) { return; }
+  letzte_ziel_nr = t.nr;
+  tafel_anwenden(t);
+}
+function tafel_anwenden(t){
   if (t.hell >= 0) { hand_hell = t.hell; hand_von_beruehrung = false; schleier_setzen(); }
   /* "wach" heisst wach: das hebt auch den Eco-Modus auf, und seine Frist
      laeuft von vorn an - sonst kaeme er eine Sekunde spaeter zurueck. */
@@ -1283,7 +1308,7 @@ function tafel_befolgen(t){
   if (t.ruhe === 0) { ruhe_sperre_bis = 0; ruhe_wegnehmen(); ruhe_frist_neu(); }
   if (t.seite && t.seite !== SEITE) {
     location.href = "?token="+encodeURIComponent(<?= json_encode($ist, $db_jf) ?>)
-                  + "&seite="+encodeURIComponent(t.seite);
+                  + "&seite="+encodeURIComponent(t.seite) + ANHANG;
   }
 }
 
@@ -1397,18 +1422,76 @@ if (KONF.rotation > 0 && LISTE.length > 1) {
     var naechste = LISTE[(i+1) % LISTE.length].schluessel;
     if (naechste && naechste !== SEITE) {
       location.href = "?token="+encodeURIComponent(<?= json_encode($ist, $db_jf) ?>)
-                    + "&seite="+encodeURIComponent(naechste);
+                    + "&seite="+encodeURIComponent(naechste) + ANHANG;
     }
   }, KONF.rotation * 1000);
 }
 
 /* ---------- Wandtablet-Kleinigkeiten ---------- */
 var sperre = null;
+/* 0.9.39: bis 0.9.38 brach wach() ohne navigator.wakeLock still ab. Browser geben den Wake Lock nur in einer sicheren
+   Umgebung (HTTPS oder localhost); am iPad 10. Generation ueber http:// gemessen: wakeLock fehlt, isSecureContext false.
+   Jetzt kennt die Tafel ihren Stand: "aus" (Einstellung), "offen" (noch keine Antwort), "ok", "fehlt", "abgelehnt". */
+var wl_lage = KONF.wach ? "offen" : "aus";
+var melde_bereit = false;
+var hinweis_weg = false;
+try { hinweis_weg = localStorage.getItem("db_tafel_wachhinweis") === "weg"; } catch(x){}
+function wl_setzen(lage){
+  if (wl_lage === lage) { return; }
+  wl_lage = lage;
+  wach_hinweis();
+  melden();
+}
 function wach(){
   if(!KONF.wach) return;
-  if(!("wakeLock" in navigator)) return;
-  navigator.wakeLock.request("screen").then(function(s){ sperre=s; }).catch(function(){});
+  if(!("wakeLock" in navigator)) { wl_setzen("fehlt"); return; }
+  navigator.wakeLock.request("screen").then(function(s){ sperre=s; wl_setzen("ok"); }).catch(function(){ wl_setzen("abgelehnt"); });
 }
+function wach_hinweis(){
+  var el = document.getElementById("wachhinweis");
+  if (!el) { return; }
+  var text = "";
+  if (NAME_FALSCH) { text = T.name_falsch; }
+  else if (!hinweis_weg && (wl_lage === "fehlt" || wl_lage === "abgelehnt")) { text = T.wach_hinweis; }
+  el.textContent = text;
+  el.hidden = (text === "");
+}
+(function(){
+  var el = document.getElementById("wachhinweis");
+  if (!el) { return; }
+  el.addEventListener("click", function(){
+    if (NAME_FALSCH) { return; }
+    hinweis_weg = true;
+    try { localStorage.setItem("db_tafel_wachhinweis", "weg"); } catch(x){}
+    wach_hinweis();
+  });
+})();
+/* Die Kennung unterscheidet Tafeln ohne Namen. Fehlt der Speicher (privates Fenster), gilt sie bis zum naechsten Laden. */
+var KENNUNG = (function(){
+  var k = "";
+  try { k = localStorage.getItem("db_tafel_kennung") || ""; } catch(x){}
+  if (!/^[a-z0-9]{4,12}$/.test(k)) {
+    k = (Math.random().toString(36).slice(2, 10) + "abcd").slice(0, 8);
+    try { localStorage.setItem("db_tafel_kennung", k); } catch(x){}
+  }
+  return k;
+})();
+function melden(){
+  if (!melde_bereit) { return; }
+  fetch(BASIS + "&aktion=melden&kennung=" + KENNUNG + "&seite=" + encodeURIComponent(SEITE) + "&wl=" + wl_lage
+        + "&api=" + (("wakeLock" in navigator) ? 1 : 0) + "&sc=" + (window.isSecureContext ? 1 : 0)
+        + "&falsch=" + NAME_FALSCH, {cache:"no-store"}).catch(function(){});
+}
+/* Der erste Bericht nach 3 s: bis dahin hat der Browser auf den Wake Lock geantwortet. */
+setTimeout(function(){
+  melde_bereit = true;
+  melden();
+  setInterval(melden, KONF.melde_s * 1000);
+}, 3000);
+document.addEventListener("visibilitychange", function(){
+  if (document.visibilityState === "visible") { melden(); }
+});
+wach_hinweis();
 if (KONF.wach) {
   document.addEventListener("visibilitychange", function(){
     if(document.visibilityState==="visible"){ wach(); werte_holen(); }
@@ -1830,7 +1913,7 @@ if (ruhe_moeglich()) {
       ruhe_wegnehmen();
       if (ruhe_ziel) {
         location.href = "?token="+encodeURIComponent(<?= json_encode($ist, $db_jf) ?>)
-                      + "&seite="+encodeURIComponent(ruhe_ziel);
+                      + "&seite="+encodeURIComponent(ruhe_ziel) + ANHANG;
         return;
       }
     }

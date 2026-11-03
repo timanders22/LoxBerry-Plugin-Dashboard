@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.38 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.39 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,17 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.39
+
+* **Eine Tafel einzeln ansprechen.** Eine Tafel bekommt ihren Namen in der Adresse: `tafel.php?token=…&tafel=flur`. Erlaubt sind a bis z, Ziffern und Unterstrich, vorn ein Buchstabe, höchstens 24 Zeichen. Befehle an sie gehen über die Befehlsbrücke (`<Präfix>/befehl/tafel/<name>/seite`, `wecken`, `hell`, `ruhe`) oder den Endpunkt (`&aktion=tafel&tafel=<name>&…`). Es gelten dieselben Prüfungen wie für alle, dazu zwei neue Gründe: `TAFEL_UNGUELTIG` und `TAFEL_UNBEKANNT`. **Befehle ohne Namen wirken unverändert auf alle Tafeln.**
+* **Tafelliste im Reiter Dashboards.** Jede offene Tafel meldet sich jede Minute (`aktion=melden`): Name, letzte Meldung, aktive Seite, Stand des Wake Lock. Ohne Namen steht sie als „unbenannt“ darin und fällt nach einer Stunde Stille heraus. Keine IP-Adressen. Höchstens 24 benannte und 16 unbenannte Tafeln; die Liste übersteht ein Update.
+* **Ausfall über MQTT, nie retained.** `tafeln/zahl`, `tafeln/aus` und je benannte Tafel `tafel/<name>/ok` (1 meldet sich, 0 länger als 5 Minuten still, -1 aus der Liste genommen). Unter Gateway V2 gehören sie angehakt, mit Noncached; die Prüfzeile im Reiter Test nennt, was fehlt. Die Vorlage „MQTT-Befehle“ führt je benannte Tafel ihre Befehle hinter den bestehenden. Die Zustandszeile des HTTP-Endpunkts bleibt, wie sie ist.
+* **Reiter Einbindung:** Abschnitt zum Zusammenspiel mit dem fremden Plugin [LOXi2DO](https://github.com/BastyJuice/LOXi2DO) (nur Android 11 oder neuer): LOXi2DO weckt das Display und öffnet die Tafel als Webseite, der Dashboard-Designer zeigt an. Davon ist hier nichts enthalten.
+* **Bildschirm wach halten.** Ohne `navigator.wakeLock` brach die Tafel bisher still ab. Jetzt sagt sie es, meldet es in ihrer Rückmeldung, die Liste zeigt es, und der Reiter Test sagt, was zu tun ist: automatische Sperre des Tablets auf „Nie“. Am iPad gilt außerdem: dunkler Bildschirm heißt, die Seite läuft nicht.
+* **Nachzüge:** `?selftest=0` und `?selftest=` gelten nicht mehr als Selbsttest. Eine stillgelegte `cron.err` hält den Wächter nicht mehr an. Auf der Tafel heißt die Konfiguration nicht mehr `$cfg`, weil das LoxBerry-SDK dieses Feld überschreibt.
+
+**English:** A display can now be addressed on its own: its name is part of its address (`&tafel=hall`), commands go via `<prefix>/befehl/tafel/<name>/…` or the endpoint with `&tafel=<name>`, with the same checks as for all displays. Commands without a name still act on all displays. The Dashboards tab lists every open display: name, last report, active page, wake lock state, no IP addresses. Failure of a named display goes out over MQTT, never retained: `tafeln/zahl`, `tafeln/aus`, `tafel/<name>/ok`. The Integration tab has a short section on working together with the third-party plugin LOXi2DO (Android 11 or newer only). Without a wake lock (no HTTPS) the display now says so, and the Test tab says what to do: set the tablet's auto-lock to “Never”. On an iPad a dark screen means the page is not running.
 
 ## Neu in 0.9.38
 

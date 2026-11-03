@@ -724,6 +724,354 @@ function db_tafel_lesen()
     );
 }
 
+/* ---------------- Tafeln einzeln ansprechen und Tafelliste (0.9.39, Entscheidung Hausherr 02.11.2026) ----
+ *
+ * Name: vergibt der Anwender in der Adresse der Tafel (tafel.php?...&tafel=flur). Bewusst kein Schluessel im Browser
+ * des Tablets: der kann verschwinden (Safari raeumt Seitendaten ab), die Adresse bleibt, und ein fremdes Plugin wie
+ * LOXi2DO oeffnet genau sie. Erlaubt: kleiner Buchstabe vorn, dann a-z, 0-9, _ , hoechstens 24 Zeichen - keine
+ * MQTT-Sonderzeichen, und jede Ebene passt in die Regel der Befehlsbruecke (bb_ebene_gueltig: kein Bindestrich).
+ *
+ * Befehl an eine Tafel: liegt NICHT in tafel.json. Das ist die Datei der Befehle an alle, mit eigener laufender Nummer,
+ * und der alte Weg bin/tafel_mqtt.py schreibt sie als Ganzes neu. tafel_ziele.json haelt je Name einen Befehl mit eigener
+ * Nummer, unter derselben Sperre und nach derselben Zusammenfuehrung; ein Befehl an Tafel A kann so den an Tafel B nicht
+ * verdraengen, auch wenn beide in einen Anzeigetakt fallen. Wer keinen Namen traegt, liest diese Datei nie.
+ *
+ * Tafelliste: jede offene Tafel meldet sich mit aktion=melden (alle 60 s). tafeln.json traegt Name oder Kennung, letzte
+ * Meldung, aktive Seite und den Stand des Wake Lock - nie eine IP-Adresse. Laenge begrenzt: hoechstens DB_TAFEL_MAX_NAMEN
+ * benannte und DB_TAFEL_MAX_UNBENANNT unbenannte; unbenannte fallen nach DB_TAFEL_UNBENANNT_S von selbst heraus.
+ * Ausgefallen ist eine benannte Tafel nach DB_TAFEL_AUS_S ohne Meldung. Dieselbe Regel rechnet bin/status_mqtt.py. */
+if (!defined('DB_TAFEL_AUS_S')) { define('DB_TAFEL_AUS_S', 300); }
+if (!defined('DB_TAFEL_MELDE_S')) { define('DB_TAFEL_MELDE_S', 60); }
+if (!defined('DB_TAFEL_MAX_NAMEN')) { define('DB_TAFEL_MAX_NAMEN', 24); }
+if (!defined('DB_TAFEL_MAX_UNBENANNT')) { define('DB_TAFEL_MAX_UNBENANNT', 16); }
+if (!defined('DB_TAFEL_UNBENANNT_S')) { define('DB_TAFEL_UNBENANNT_S', 3600); }
+if (!defined('DB_TAFEL_WEG_S')) { define('DB_TAFEL_WEG_S', 3600); }
+
+/** Ein Tafelname: streng, VOR jeder Umwandlung. "alle" und "unbenannt" sind vergeben. */
+function db_tafel_name_gueltig($n)
+{
+    return is_string($n) && preg_match('/^[a-z][a-z0-9_]{0,23}\z/', $n) === 1
+        && !in_array($n, array('alle', 'unbenannt'), true);
+}
+
+function db_tafeln_datei()
+{
+    return db_paths()['datadir'] . '/tafeln.json';
+}
+
+/** tafeln.json in fester Form; was nicht passt, faellt beim Lesen heraus. */
+function db_tafeln_lesen()
+{
+    $d = db_json_lesen(db_tafeln_datei());
+    $aus = array('namen' => array(), 'unbenannt' => array(), 'weg' => array());
+    foreach (array('namen', 'unbenannt') as $art) {
+        foreach ((isset($d[$art]) && is_array($d[$art])) ? $d[$art] : array() as $k => $e) {
+            $k = (string) $k;
+            $gut = $art === 'namen' ? db_tafel_name_gueltig($k) : preg_match('/^[a-z0-9]{4,12}\z/', $k) === 1;
+            if ($gut && is_array($e) && isset($e['ts']) && is_numeric($e['ts'])) {
+                $aus[$art][$k] = $e;
+            }
+        }
+    }
+    foreach ((isset($d['weg']) && is_array($d['weg'])) ? $d['weg'] : array() as $k => $t) {
+        if (db_tafel_name_gueltig((string) $k) && is_numeric($t) && !isset($aus['namen'][(string) $k])) {
+            $aus['weg'][(string) $k] = (int) $t;
+        }
+    }
+    return $aus;
+}
+
+/** Abgelaufene Eintraege heraus: unbenannte nach einer Stunde Stille, die Merker "aus der Liste genommen" ebenso. */
+function db_tafeln_kuerzen(array $d, $jetzt)
+{
+    foreach ($d['unbenannt'] as $k => $e) {
+        if ($jetzt - (int) $e['ts'] > DB_TAFEL_UNBENANNT_S) { unset($d['unbenannt'][$k]); }
+    }
+    foreach ($d['weg'] as $k => $t) {
+        if ($jetzt - (int) $t > DB_TAFEL_WEG_S) { unset($d['weg'][$k]); }
+    }
+    return $d;
+}
+
+/**
+ * Die Meldung einer Tafel (aktion=melden). Rueckgabe array(HTTP-Code, Antwort). Nimmt nur, was den Mustern genuegt; keine
+ * IP-Adresse, kein Browsername. Unveraendert und juenger als 20 s: kein Schreiben (eine Tafel, die neu laedt, meldet
+ * sich sofort wieder).
+ */
+function db_tafel_melden($tafel, $kennung, $seite, $wl, $api, $sc, $falsch, $jetzt = null)
+{
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $name = '';
+    if ($tafel !== null && $tafel !== '') {
+        if (!db_tafel_name_gueltig($tafel)) {
+            return array(400, array('ok' => 0, 'grund' => 'TAFEL_UNGUELTIG', 'meldung' => db_t('EP.TAFEL_NAME')));
+        }
+        $name = $tafel;
+    }
+    $k = (is_string($kennung) && preg_match('/^[a-z0-9]{4,12}\z/', $kennung)) ? $kennung : '';
+    if ($name === '' && $k === '') {
+        return array(400, array('ok' => 0, 'grund' => 'KENNUNG_UNGUELTIG', 'meldung' => db_t('EP.TAFEL_KENNUNG')));
+    }
+    if (!is_dir(db_paths()['datadir'])) {
+        return array(503, array('ok' => 0, 'grund' => 'KEIN_DATENORDNER', 'meldung' => db_t('EP.SCHREIBFEHLER')));
+    }
+    $e = array('ts' => $jetzt,
+               'seite' => (is_string($seite) && preg_match('/^[a-z0-9-]{1,60}\z/', $seite)) ? $seite : '',
+               'wl' => (is_string($wl) && in_array($wl, array('ok', 'fehlt', 'abgelehnt', 'aus', 'offen'), true)) ? $wl : 'offen',
+               'api' => $api === '1' ? 1 : 0, 'sc' => $sc === '1' ? 1 : 0);
+    $datei = db_tafeln_datei();
+    return db_mit_sperre(db_paths()['datadir'] . '/tafeln.sperre', function () use ($name, $k, $e, $falsch, $jetzt, $datei) {
+        $d = db_tafeln_kuerzen(db_tafeln_lesen(), $jetzt);
+        if ($name !== '') {
+            $alt = isset($d['namen'][$name]) ? $d['namen'][$name] : null;
+            if ($alt === null && count($d['namen']) >= DB_TAFEL_MAX_NAMEN) {
+                return array(409, array('ok' => 0, 'grund' => 'TAFEL_VOLL', 'meldung' => sprintf(db_t('EP.TAFEL_VOLL'), DB_TAFEL_MAX_NAMEN)));
+            }
+            $e['kennung'] = $k;
+            /* Zwei Geraete mit demselben Namen: jedes bekaeme jeden Befehl, und die Liste zeigte abwechselnd beide. */
+            if ($alt !== null && $k !== '' && isset($alt['kennung']) && $alt['kennung'] !== '' && $alt['kennung'] !== $k
+                    && $jetzt - (int) $alt['ts'] <= 2 * DB_TAFEL_MELDE_S) {
+                $e['doppelt'] = $jetzt;
+            } elseif ($alt !== null && isset($alt['doppelt']) && $jetzt - (int) $alt['doppelt'] <= DB_TAFEL_AUS_S) {
+                $e['doppelt'] = (int) $alt['doppelt'];
+            }
+            if ($alt !== null && $jetzt - (int) $alt['ts'] < 20 && !isset($d['weg'][$name])) {
+                $vgl = $alt;
+                unset($vgl['ts']);
+                $neu = $e;
+                unset($neu['ts']);
+                if ($vgl == $neu) { return array(200, array('ok' => 1)); }
+            }
+            $d['namen'][$name] = $e;
+            unset($d['weg'][$name]);
+            if ($k !== '') { unset($d['unbenannt'][$k]); }
+        } else {
+            $alt = isset($d['unbenannt'][$k]) ? $d['unbenannt'][$k] : null;
+            $e['falsch'] = $falsch === '1' ? 1 : 0;
+            if ($alt !== null && $jetzt - (int) $alt['ts'] < 20) {
+                $vgl = $alt;
+                unset($vgl['ts']);
+                $neu = $e;
+                unset($neu['ts']);
+                if ($vgl == $neu) { return array(200, array('ok' => 1)); }
+            }
+            if ($alt === null && count($d['unbenannt']) >= DB_TAFEL_MAX_UNBENANNT) {
+                /* Laenge begrenzt: die am laengsten stille unbenannte Tafel geht. */
+                $aeltester = null;
+                foreach ($d['unbenannt'] as $u => $x) {
+                    if ($aeltester === null || (int) $x['ts'] < (int) $d['unbenannt'][$aeltester]['ts']) { $aeltester = $u; }
+                }
+                unset($d['unbenannt'][$aeltester]);
+            }
+            $d['unbenannt'][$k] = $e;
+        }
+        if (!db_json_schreiben($datei, $d)) {
+            return array(500, array('ok' => 0, 'grund' => 'SCHREIBFEHLER', 'meldung' => db_t('EP.SCHREIBFEHLER')));
+        }
+        return array(200, array('ok' => 1));
+    });
+}
+
+/**
+ * Eine Tafel aus der Liste nehmen (Reiter Dashboards). $wer: "n:<name>" oder "u:<kennung>". Eine benannte bleibt eine
+ * Stunde als Merker stehen: so lange sendet der Dienst -1 auf ihr ok (Regeln/07, Wachliste: ein verschwundener Eintrag
+ * bekommt einen eigenen Wert, nicht gar keinen). Rueckgabe true/false, null = kein gueltiger Eintrag.
+ */
+function db_tafel_vergessen($wer, $jetzt = null)
+{
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    if (!is_string($wer) || !preg_match('/^(n|u):([a-z0-9_]{1,24})\z/', $wer, $m)) { return null; }
+    $datei = db_tafeln_datei();
+    return db_mit_sperre(db_paths()['datadir'] . '/tafeln.sperre', function () use ($m, $jetzt, $datei) {
+        $d = db_tafeln_kuerzen(db_tafeln_lesen(), $jetzt);
+        if ($m[1] === 'n') {
+            if (!isset($d['namen'][$m[2]])) { return null; }
+            unset($d['namen'][$m[2]]);
+            $d['weg'][$m[2]] = $jetzt;
+        } else {
+            if (!isset($d['unbenannt'][$m[2]])) { return null; }
+            unset($d['unbenannt'][$m[2]]);
+        }
+        return db_json_schreiben($datei, $d);
+    });
+}
+
+/**
+ * Die Lage aller Tafeln - EINE Regel fuer Liste, Reiter Test und Hakenliste (bin/status_mqtt.py rechnet dieselbe):
+ * zahl (benannte), aus (davon ausgefallen), je (Name => 1 meldet sich, 0 ausgefallen, -1 aus der Liste genommen),
+ * zeilen (benannte, dann unbenannte, je Name/Kennung geordnet). $d und $jetzt nur fuer den Pruefstand.
+ */
+function db_tafeln_lage($d = null, $jetzt = null)
+{
+    if (!is_array($d)) { $d = db_tafeln_lesen(); }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $d = db_tafeln_kuerzen($d, $jetzt);
+    $aus = array('zahl' => 0, 'aus' => 0, 'je' => array(), 'zeilen' => array());
+    ksort($d['namen'], SORT_STRING);
+    ksort($d['unbenannt'], SORT_STRING);
+    foreach (array('namen', 'unbenannt') as $art) {
+        foreach ($d[$art] as $k => $e) {
+            $k = (string) $k;
+            $alter = max(0, $jetzt - (int) $e['ts']);
+            $still = $alter > DB_TAFEL_AUS_S;
+            $aus['zeilen'][] = array(
+                'name' => $art === 'namen' ? $k : '', 'kennung' => $art === 'namen' ? '' : $k,
+                'ts' => (int) $e['ts'], 'alter' => $alter, 'aus' => $still,
+                'seite' => isset($e['seite']) ? (string) $e['seite'] : '',
+                'wl' => isset($e['wl']) ? (string) $e['wl'] : 'offen',
+                'api' => !empty($e['api']), 'sc' => !empty($e['sc']),
+                'falsch' => !empty($e['falsch']), 'doppelt' => !empty($e['doppelt']));
+            if ($art === 'namen') {
+                $aus['zahl']++;
+                $aus['aus'] += $still ? 1 : 0;
+                $aus['je'][$k] = $still ? 0 : 1;
+            }
+        }
+    }
+    foreach ($d['weg'] as $k => $t) {
+        $aus['je'][(string) $k] = -1;
+    }
+    return $aus;
+}
+
+/** Die Namen, die Befehle bekommen duerfen: gemeldet und nicht aus der Liste genommen. */
+function db_tafeln_namen()
+{
+    return array_keys(db_tafeln_lesen()['namen']);
+}
+
+/** Der Befehl an EINE Tafel - Regeln wie db_tafel_befehl(), eigene Datei und eigene laufende Nummer (Kopf oben). */
+function db_tafel_ziel_befehl($name, $felder)
+{
+    $p = db_paths();
+    $cfg = db_config();
+    $fenster = max(2, 2 * max(1, min(30, (int) $cfg['takt'])));
+    $bekannt = db_tafeln_namen();
+    return db_mit_sperre($p['datadir'] . '/tafel.sperre', function () use ($p, $name, $felder, $fenster, $bekannt) {
+        $datei = $p['datadir'] . '/tafel_ziele.json';
+        $alle = array_intersect_key(db_json_lesen($datei), array_flip($bekannt));
+        $alt = (isset($alle[$name]) && is_array($alle[$name])) ? $alle[$name] : array();
+        $d = array('seite' => '', 'wach' => 0, 'hell' => -1, 'ruhe' => -1);
+        $ts = isset($alt['ts']) && is_numeric($alt['ts']) ? (int) $alt['ts'] : 0;
+        $abstand = time() - $ts;
+        if ($ts > 0 && $abstand >= 0 && $abstand < $fenster) {
+            foreach (array_keys($d) as $f) {
+                if (array_key_exists($f, $alt)) { $d[$f] = $alt[$f]; }
+            }
+        }
+        foreach (array('seite', 'wach', 'hell', 'ruhe') as $f) {
+            if (array_key_exists($f, (array) $felder)) { $d[$f] = $felder[$f]; }
+        }
+        $d['ts'] = time();
+        $d['nr'] = (int) (isset($alt['nr']) ? $alt['nr'] : 0) + 1;
+        $alle[$name] = $d;
+        return db_json_schreiben($datei, $alle);
+    });
+}
+
+/** Der letzte Befehl an diese Tafel, Form wie db_tafel_lesen(). */
+function db_tafel_ziel_lesen($name)
+{
+    $alle = db_json_lesen(db_paths()['datadir'] . '/tafel_ziele.json');
+    $d = (isset($alle[$name]) && is_array($alle[$name])) ? $alle[$name] : array();
+    return array('nr' => (int) (isset($d['nr']) ? $d['nr'] : 0),
+                 'seite' => (string) (isset($d['seite']) ? $d['seite'] : ''),
+                 'wach' => (int) (isset($d['wach']) ? $d['wach'] : 0),
+                 'hell' => (int) (isset($d['hell']) ? $d['hell'] : -1),
+                 'ruhe' => (int) (isset($d['ruhe']) ? $d['ruhe'] : -1),
+                 'ts' => (int) (isset($d['ts']) ? $d['ts'] : 0));
+}
+
+/** Die Nutzlast fuer die Tafel um ihren eigenen Befehl ergaenzen; ohne Namen unveraendert. */
+function db_tafel_ziel_anhaengen($daten, $name)
+{
+    if (is_array($daten) && $name !== '') { $daten['tafel_ziel'] = db_tafel_ziel_lesen($name); }
+    return $daten;
+}
+
+/** Sekunden als kurze Angabe fuer die Liste. */
+function db_tafel_alter_text($s)
+{
+    $s = (int) $s;
+    if ($s < 120) { return sprintf(db_t('BOARD.ALTER_S'), $s); }
+    if ($s < 7200) { return sprintf(db_t('BOARD.ALTER_MIN'), (int) floor($s / 60)); }
+    return sprintf(db_t('BOARD.ALTER_H'), (int) floor($s / 3600));
+}
+
+/** Der Stand "Bildschirm wach halten" einer Tafel als Text fuer Liste und Reiter Test (ohne Markup). */
+function db_tafel_wl_text(array $z)
+{
+    switch ($z['wl']) {
+        case 'ok':
+            return db_t('BOARD.WL_OK');
+        case 'fehlt':
+            return db_t('BOARD.WL_FEHLT');
+        case 'abgelehnt':
+            return db_t('BOARD.WL_ABGELEHNT');
+        case 'aus':
+            return db_t('BOARD.WL_AUS');
+    }
+    return db_t('BOARD.WL_OFFEN');
+}
+
+/** Name fuer die Anzeige: der vergebene, sonst "unbenannt (Kennung)". Ohne Markup. */
+function db_tafel_anzeigename(array $z)
+{
+    return $z['name'] !== '' ? $z['name'] : sprintf(db_t('BOARD.UNBENANNT'), $z['kennung']);
+}
+
+/** Pruefzeile: melden sich die Tafeln? Grau ohne Tafel, rot bei Ausfall oder doppeltem Namen. array(stand, HTML). */
+function db_pruef_tafeln()
+{
+    $l = db_tafeln_lage();
+    if (!$l['zeilen']) {
+        return array(-1, db_e(db_t('TEST.A_TAFELN_KEINE')));
+    }
+    $weg = array();
+    $doppelt = array();
+    $unbenannt = 0;
+    foreach ($l['zeilen'] as $z) {
+        if ($z['name'] === '') { $unbenannt++; continue; }
+        if ($z['aus']) { $weg[] = $z['name'] . ' (' . db_tafel_alter_text($z['alter']) . ')'; }
+        if ($z['doppelt']) { $doppelt[] = $z['name']; }
+    }
+    if ($weg) {
+        return array(0, db_e(sprintf(db_t('TEST.A_TAFELN_AUS'), implode(', ', $weg))));
+    }
+    if ($doppelt) {
+        return array(0, db_e(sprintf(db_t('TEST.A_TAFELN_DOPPELT'), implode(', ', $doppelt))));
+    }
+    return array(1, db_e(sprintf(db_t('TEST.A_TAFELN'), (int) $l['zahl'], $unbenannt)));
+}
+
+/**
+ * Pruefzeile: bleibt der Bildschirm wach? Grau, nicht rot: ohne HTTPS kann die Tafel es nicht selbst, das ist kein Fehler
+ * der Anlage - die Zeile nennt die Tafeln und sagt, was zu tun ist. array(stand, HTML).
+ */
+function db_pruef_wachhalten()
+{
+    $l = db_tafeln_lage();
+    if (!$l['zeilen']) {
+        return array(-1, db_e(db_t('TEST.A_WACH_KEINE')));
+    }
+    $ohne = array();
+    $offen = 0;
+    foreach ($l['zeilen'] as $z) {
+        if ($z['wl'] === 'fehlt' || $z['wl'] === 'abgelehnt') {
+            $ohne[] = db_tafel_anzeigename($z);
+        } elseif ($z['wl'] !== 'ok') {
+            $offen++;
+        }
+    }
+    if ($ohne) {
+        return array(-1, db_e(sprintf(db_t('TEST.A_WACH_FEHLT'), implode(', ', $ohne))) . ' ' . db_t('TEST.WACH_TUN'));
+    }
+    if ($offen) {
+        return array(-1, db_e(db_t('TEST.A_WACH_OFFEN')));
+    }
+    return array(1, db_e(db_t('TEST.A_WACH_OK')));
+}
+
 /* ---------------- Tafel-1: Tafeln ueber MQTT (Verbesserungsbau 30.09.2026) ----
  *
  * Das Abo haelt der Dienst (bin/tafel_mqtt.py); er schreibt den Befehl auf
@@ -1408,6 +1756,9 @@ function db_befehl_absetzen($befehl, $wartezeit = null)
  * dieselben (Pruefstand: Antworten byte-gleich). $roh: 'seite' (Schluessel, schon nach Muster geprueft, '' = keine),
  * 'wach', 'hell', 'ruhe' (Zeichenketten wie aus der Adresse, null = nicht genannt). ERST alles pruefen, DANN einmal
  * schreiben (0.9.12). Rueckgabe array(HTTP-Code, array(ok, grund, meldung)).
+ * 0.9.39: 'tafel' nennt das Ziel. null, '' und 'alle' heissen alle Tafeln, unveraendert auf tafel.json und mit derselben
+ * Antwort wie bisher. Ein Name muss gueltig sein und sich gemeldet haben (TAFEL_UNGUELTIG, TAFEL_UNBEKANNT); die Erlaubnis
+ * steht davor, alle uebrigen Pruefungen gelten gleich.
  */
 function db_tafel_steuern(array $roh, $cfg = null)
 {
@@ -1417,6 +1768,16 @@ function db_tafel_steuern(array $roh, $cfg = null)
     }
     $getan = array();
     $felder = array();
+    $ziel = array_key_exists('tafel', $roh) ? $roh['tafel'] : null;
+    if ($ziel === '' || $ziel === 'alle') { $ziel = null; }
+    if ($ziel !== null) {
+        if (!db_tafel_name_gueltig($ziel)) {
+            return array(400, array('ok' => 0, 'grund' => 'TAFEL_UNGUELTIG', 'meldung' => db_t('EP.TAFEL_NAME')));
+        }
+        if (!in_array($ziel, db_tafeln_namen(), true)) {
+            return array(404, array('ok' => 0, 'grund' => 'TAFEL_UNBEKANNT', 'meldung' => db_t('EP.TAFEL_UNBEKANNT')));
+        }
+    }
     $seite = isset($roh['seite']) ? $roh['seite'] : '';
     if ($seite !== '' && $seite !== null) {
         if (db_seite($seite) === null) {
@@ -1460,9 +1821,10 @@ function db_tafel_steuern(array $roh, $cfg = null)
     }
     /* C8 (Durchgang 29.09.2026): ein misslungenes Schreiben ist ein Fehler. Bis 0.9.25 wurde der Rueckgabewert
      * verworfen und {"ok":1} gemeldet, obwohl tafel.json unveraendert blieb (gemessen, E8). */
-    if (!db_tafel_befehl($felder)) {
+    if (!($ziel !== null ? db_tafel_ziel_befehl($ziel, $felder) : db_tafel_befehl($felder))) {
         return array(500, array('ok' => 0, 'grund' => 'SCHREIBFEHLER', 'meldung' => db_t('EP.SCHREIBFEHLER')));
     }
+    if ($ziel !== null) { array_unshift($getan, 'tafel=' . $ziel); }
     return array(200, array('ok' => 1, 'meldung' => implode(', ', $getan)));
 }
 
@@ -1524,8 +1886,9 @@ function db_bb_seite_aufloesen($text)
  * von der Bruecke gepruefte Wert (Text bis 60 Byte, 1, 0..100, 0/1). Upgrade-Marke -> AKTUALISIERUNG (gilt 3600 s, E5);
  * dann db_tafel_steuern() - also auch "Loxone darf die Anzeigeseite umschalten" (GESPERRT, E3) und das Ruhebild
  * (RUHE_AUS) wie beim HTTP-Endpunkt. Kein Dienst, kein HTTP, kein Kindprozess. Rueckgabe array(bool ok, grund ASCII).
+ * $ziel (0.9.39): der Tafelname aus dem Thema tafel/<name>/..., '' = alle.
  */
-function db_bb_tun($name, $wert)
+function db_bb_tun($name, $wert, $ziel = '')
 {
     $name = (string) $name;
     $wert = trim((string) $wert);
@@ -1549,6 +1912,7 @@ function db_bb_tun($name, $wert)
     } else {
         return array(false, 'UNBEKANNT');
     }
+    if ((string) $ziel !== '') { $roh['tafel'] = (string) $ziel; }
     list(, $d) = db_tafel_steuern($roh);
     if (!empty($d['ok'])) {
         return array(true, '');
@@ -1723,6 +2087,21 @@ function db_mqtt_befehle($cfg = null)
     if (!empty($cfg['ruhe_nach'])) {
         $aus[] = array('titel' => 'Dashboard: Ruhebild', 'name' => 'ruhe', 'ein' => '1', 'aus' => '0', 'analog' => false);
     }
+    /* 0.9.39: je benannte Tafel dieselben Befehle einzeln - HINTER den bestehenden Zeilen, deren Titel und Reihenfolge
+     * sich nicht aendern. Die Titel beginnen mit dem Tafelnamen in Kleinschrift, "Tablets" kann keiner sein. */
+    foreach (db_tafeln_namen() as $t) {
+        $v = 'tafel/' . $t . '/';
+        foreach (db_tafel_befehle() as $b) {
+            $aus[] = array('titel' => 'Dashboard: ' . $t . ' auf ' . $b['name'], 'name' => $v . 'seite',
+                           'ein' => $b['wert'], 'aus' => '', 'analog' => false);
+        }
+        $aus[] = array('titel' => 'Dashboard: ' . $t . ' wecken', 'name' => $v . 'wecken', 'ein' => '1', 'aus' => '', 'analog' => false);
+        $aus[] = array('titel' => 'Dashboard: ' . $t . ' Helligkeit', 'name' => $v . 'hell', 'ein' => '<v.0>', 'aus' => '',
+                       'analog' => true);
+        if (!empty($cfg['ruhe_nach'])) {
+            $aus[] = array('titel' => 'Dashboard: ' . $t . ' Ruhebild', 'name' => $v . 'ruhe', 'ein' => '1', 'aus' => '0', 'analog' => false);
+        }
+    }
     return $aus;
 }
 
@@ -1767,17 +2146,25 @@ function db_vi_name($thema, $cfg = null)
 /**
  * Die Themen, die der Dienst sendet, mit V2-Kennzeichen (Musterprojekt, 6 Haken, 5 Noncached), Grenzen und Bedeutung.
  * Nichts ist retained (Entwurf 2.2). Je Zeile: thema, n (Noncached), min, max, bedeutung (Sprachschluessel).
+ * 0.9.39: tafeln/zahl, tafeln/aus und je benannte Tafel tafel/<name>/ok (bin/status_mqtt.py); -1 auf ok geht nach dem
+ * Herausnehmen aus der Liste noch eine Stunde hinaus, steht aber nicht mehr in der Hakenliste.
  */
 function db_mqtt_themen()
 {
-    return array(
+    $aus = array(
         array('thema' => 'ok', 'n' => true, 'min' => 0, 'max' => 1, 'bedeutung' => 'MQTT.B_OK'),
         array('thema' => 'bausteine', 'n' => true, 'min' => 0, 'max' => 65535, 'bedeutung' => 'MQTT.B_BAUSTEINE'),
         array('thema' => 'seiten', 'n' => true, 'min' => 0, 'max' => 255, 'bedeutung' => 'MQTT.B_SEITEN'),
         array('thema' => 'kacheln', 'n' => true, 'min' => 0, 'max' => 65535, 'bedeutung' => 'MQTT.B_KACHELN'),
         array('thema' => 'alter', 'n' => true, 'min' => -1, 'max' => 2147483647, 'bedeutung' => 'MQTT.B_ALTER'),
         array('thema' => 'status/zaehler', 'n' => false, 'min' => 0, 'max' => 999, 'bedeutung' => 'MQTT.B_ZAEHLER'),
+        array('thema' => 'tafeln/zahl', 'n' => true, 'min' => 0, 'max' => DB_TAFEL_MAX_NAMEN, 'bedeutung' => 'MQTT.B_TAFELN_ZAHL'),
+        array('thema' => 'tafeln/aus', 'n' => true, 'min' => 0, 'max' => DB_TAFEL_MAX_NAMEN, 'bedeutung' => 'MQTT.B_TAFELN_AUS'),
     );
+    foreach (db_tafeln_namen() as $t) {
+        $aus[] = array('thema' => 'tafel/' . $t . '/ok', 'n' => true, 'min' => -1, 'max' => 1, 'bedeutung' => 'MQTT.B_TAFEL_OK');
+    }
+    return $aus;
 }
 
 /**
@@ -2059,8 +2446,8 @@ function db_v2_haken_abgleich(array $soll, array $abo)
 
 /**
  * Das Soll fuer den Selbsttest: db_mqtt_namen() - DIESELBE Funktion wie Namenstabelle und Hakenliste im Reiter
- * Einbindung (Regeln/07; 6 Haken, alle Zahlen). Noncached wie in der Liste: ok, bausteine, seiten, kacheln, alter
- * (nicht status/zaehler).
+ * Einbindung (Regeln/07; 8 feste Haken und einer je benannte Tafel, alle Zahlen). Noncached wie in der Liste: alle ausser
+ * status/zaehler.
  */
 function db_v2_haken_soll($cfg)
 {

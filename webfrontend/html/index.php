@@ -40,6 +40,11 @@
  *            Nur wenn die Tafelsteuerung eingeschaltet ist. Sie wirkt allein
  *            auf die Anzeige, nie auf ein Geraet - deshalb ohne PIN.
  *            &ruhe=1 legt das Ruhebild sofort auf, &ruhe=0 nimmt es weg.
+ *            &tafel=<name> (0.9.39) schickt den Befehl nur an diese Tafel;
+ *            ohne die Angabe oder mit &tafel=alle wirkt er wie bisher auf alle.
+ *   melden   &tafel=<name> | &kennung=<id>, &seite, &wl, &api, &sc, &falsch
+ *            Die Rueckmeldung einer offenen Tafel fuer die Tafelliste (0.9.39).
+ *            Tablet-Weg: haengt nicht am Haken endpunkt_ein.
  *
  * Der Endpunkt spricht NIE selbst mit dem Miniserver. Er liest den
  * Zwischenspeicher und legt Befehle in einer Warteschlange ab, die der
@@ -70,7 +75,9 @@ if (!is_string($db_ist)) { $db_ist = ''; }
  * Geraetekontakt, schreibt nichts und protokolliert nichts. Ein falsches
  * Token bekommt dieselbe Abweisung wie sonst auch.
  */
-if (isset($_GET['selftest'])) {
+/* 0.9.39 (Nachzug 01.11.2026, wie Renault NG 2.1.23): !empty statt isset - bis 0.9.38 galt auch ?selftest=0 und ?selftest= als Selbsttest,
+ * und eine Adresse mit diesem Anhang tat nie etwas anderes. */
+if (!empty($_GET['selftest'])) {
     header('Content-Type: text/plain; charset=utf-8');
     header('Cache-Control: no-store');
     if ($db_soll === '') {
@@ -118,7 +125,7 @@ if (!hash_equals($db_soll, $db_ist)) {
 
 /* ---------------- Aktion (Weissliste) ---------------- */
 $db_lesend = array('status', 'seiten', 'seite', 'werte', 'strom', 'roh', 'ruhebild', 'symbol');
-$db_schaltend = array('befehl', 'szene', 'tafel');
+$db_schaltend = array('befehl', 'szene', 'tafel', 'melden');
 $db_aktion = db_get('aktion');
 if ($db_aktion === null) { $db_aktion = 'status'; }
 if (!is_string($db_aktion) || !in_array($db_aktion, array_merge($db_lesend, $db_schaltend), true)) {
@@ -177,6 +184,23 @@ function db_json_raus($daten, $code = 200)
     header('Cache-Control: no-store');
     echo json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
+}
+
+/* 0.9.39: der Name der Tafel in der Adresse - bestimmt, welchen Einzelbefehl sie mitbekommt. Was dem Muster nicht
+ * genuegt, zaehlt beim Lesen als "kein Name"; aktion=tafel und aktion=melden weisen es dagegen ab. */
+$db_ziel_roh = db_get('tafel');
+$db_ziel = db_tafel_name_gueltig($db_ziel_roh) ? $db_ziel_roh : '';
+
+/* Die Rueckmeldung der Tafel: schreibt allein tafeln.json, unter Sperre, begrenzt. Waehrend eines Updates nichts - der
+ * Installer raeumt den Datenordner gerade ab. */
+if ($db_aktion === 'melden') {
+    $db_mk = db_upgrade_marke();
+    if (!empty($db_mk[1])) {
+        db_json_raus(array('ok' => 0, 'grund' => 'AKTUALISIERUNG', 'meldung' => db_t('EP.AKTUALISIERUNG')), 503);
+    }
+    list($db_code, $db_daten) = db_tafel_melden($db_ziel_roh, db_get('kennung'), $db_seite, db_get('wl'), db_get('api'),
+                                                db_get('sc'), db_get('falsch'));
+    db_json_raus($db_daten, $db_code);
 }
 
 /* ================= Lesende Aktionen ================= */
@@ -287,7 +311,7 @@ if ($db_aktion === 'seite' || $db_aktion === 'werte') {
         db_json_raus(array('ok' => 0, 'grund' => 'SEITE_UNBEKANNT',
                            'meldung' => db_t('EP.SEITE_UNBEKANNT')), 404);
     }
-    db_json_raus($d);
+    db_json_raus(db_tafel_ziel_anhaengen($d, $db_ziel));
 }
 
 /* ---------------- Werte schieben statt abfragen ----------------
@@ -328,6 +352,7 @@ if ($db_aktion === 'strom') {
         if (connection_aborted()) { break; }
         $d = db_seite_werte($db_seite);
         if ($d === null) { break; }
+        $d = db_tafel_ziel_anhaengen($d, $db_ziel);
         $j = json_encode($d, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($j !== $db_letzte) {
             $db_letzte = $j;
@@ -382,7 +407,8 @@ if ($db_aktion === 'tafel') {
      * Antworten und Codes sind dieselben wie bis 0.9.36 hier (Pruefstand: byte-gleich). Die Seiten-Musterpruefung
      * steht weiter vorn. */
     list($db_code, $db_daten) = db_tafel_steuern(array('seite' => $db_seite, 'wach' => db_get('wach'),
-                                                       'hell' => db_get('hell'), 'ruhe' => db_get('ruhe')), $db_cfg);
+                                                       'hell' => db_get('hell'), 'ruhe' => db_get('ruhe'),
+                                                       'tafel' => db_get('tafel')), $db_cfg);
     db_json_raus($db_daten, $db_code);
 }
 

@@ -11,11 +11,16 @@ Der Dienst sendet jede Minute ueber den UDP-Eingang des LoxBerry-MQTT-Gateways (
     kacheln         Zahl aller Kacheln
     alter           Alter des Abbilds in s, -1 = kein Abbild / Zeitstempel unbrauchbar
     status/zaehler  Lebenszeichen 0..999, je Takt +1, laeuft um
+    tafeln/zahl     Zahl der benannten Tafeln (seit 0.9.39)
+    tafeln/aus      davon ausgefallen: laenger als TAFEL_AUS_S ohne Meldung
+    tafel/<name>/ok 1 = meldet sich, 0 = ausgefallen, -1 = aus der Liste genommen (noch eine Stunde)
 
 Die Werte entstehen nach DERSELBEN Regel wie db_status_werte() in webfrontend/html/db_lib.php (ok: Abbild ok=1 UND
 0 <= alter <= Frist; Frist 3 x max(takt, 30 s), im Notnagel 3 x http_takt). Der Reiter Test haelt beide gegeneinander
 (EINE Regel, zwei Sprachen - wie VORGABEN/db_vorgaben). Nichts ist retained: ok und alter sind Dienstaussagen bzw. ein
-Alter (Regel 18.09.), die Zahlen kommen ohnehin jede Minute (Entwurf Gruppe 12, 2.2/2.3).
+Alter (Regel 18.09.), die Zahlen kommen ohnehin jede Minute (Entwurf Gruppe 12, 2.2/2.3). Auch die Aussage ueber eine
+Tafel ist nicht retained: sie sagt der Dienst aus einer Frist, nicht die Tafel selbst, und stirbt der Dienst, bliebe sonst
+eine zurueckbehaltene 1 stehen. tafel_lage() rechnet dieselbe Regel wie db_tafeln_lage(); IP-Adressen gehen nicht hinaus.
 
 Bauart wie tafel_mqtt.py: reine Funktionen und EINE asyncio-Aufgabe neben der Miniserver-Verbindung - sie haengt
 nicht an ihr, sendet also auch im Notnagel und in der Wartezeit zwischen zwei Verbindungsversuchen. Senden nur mit
@@ -26,12 +31,17 @@ data/plugins/<ordner>/status_mqtt.json (lage, letzte Werte, zaehler, ts) fuer de
 from __future__ import annotations
 
 import asyncio
+import re
 import socket
 import time
 
 TAKT = 60                 # fest; zwei Takte = 120 s < Tmc 180 s der Analogwertvalidierung im Musterprojekt
-THEMEN = ("ok", "bausteine", "seiten", "kacheln", "alter", "status/zaehler")
+THEMEN = ("ok", "bausteine", "seiten", "kacheln", "alter", "status/zaehler", "tafeln/zahl", "tafeln/aus")
 UDP_VORGABE = 11884
+TAFEL_AUS_S = 300         # wie DB_TAFEL_AUS_S in db_lib.php
+TAFEL_WEG_S = 3600        # wie DB_TAFEL_WEG_S in db_lib.php
+MUSTER_TAFEL = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")
+TAFEL_VERGEBEN = ("alle", "unbenannt")
 
 
 def _ganz(w, ersatz: int = 0) -> int:
@@ -105,6 +115,40 @@ def werte(abbild: dict, cfg: dict, struktur: dict, seiten_d: dict, jetzt: int) -
             "kacheln": kacheln, "alter": a}
 
 
+def _tafel_gueltig(n) -> bool:
+    return isinstance(n, str) and MUSTER_TAFEL.match(n) is not None and n not in TAFEL_VERGEBEN
+
+
+def tafel_lage(d, jetzt: int) -> dict:
+    """Wie db_tafeln_lage(): zahl, aus, je (Name -> 1, 0 oder -1). Nur Namen, keine Adressen."""
+    d = d if isinstance(d, dict) else {}
+    namen = d.get("namen") if isinstance(d.get("namen"), dict) else {}
+    weg = d.get("weg") if isinstance(d.get("weg"), dict) else {}
+    aus = {"zahl": 0, "aus": 0, "je": {}}
+    for n in sorted(namen):
+        e = namen[n]
+        if not _tafel_gueltig(n) or not isinstance(e, dict):
+            continue
+        ts = e.get("ts")
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+            continue
+        still = max(0, jetzt - int(ts)) > TAFEL_AUS_S
+        aus["zahl"] += 1
+        aus["aus"] += 1 if still else 0
+        aus["je"][n] = 0 if still else 1
+    for n in sorted(weg):
+        t = weg[n]
+        if _tafel_gueltig(n) and n not in aus["je"] and not isinstance(t, bool) and isinstance(t, (int, float)) \
+                and jetzt - int(t) <= TAFEL_WEG_S:
+            aus["je"][n] = -1
+    return aus
+
+
+def tafel_zeilen(praefix: str, je: dict) -> list:
+    """Je Tafel eine Zeile, nie "retain". Die Namen kommen aus tafel_lage() und sind damit themenfest."""
+    return ["publish %s/tafel/%s/ok %d" % (praefix, n, int(je[n])) for n in sorted(je)]
+
+
 def zeilen(praefix: str, w: dict, zaehler) -> list:
     """Die Zeilen fuer den UDP-Eingang, in der Reihenfolge von THEMEN; status/zaehler nur, wenn zaehler nicht None.
     Immer "publish", nie "retain" (Regeln/07)."""
@@ -137,7 +181,7 @@ class StatusMqtt:
 
     def __init__(self, *, config, praefix_regel, general_pfad: str, abbild_pfad: str, struktur_pfad: str,
                  seiten_pfad: str, stand_pfad: str, json_lesen, json_schreiben, log, laeuft,
-                 sender=senden, takt: int = TAKT, uhr=time.time):
+                 sender=senden, takt: int = TAKT, uhr=time.time, tafeln_pfad: str = ""):
         self.config = config
         self.praefix_regel = praefix_regel
         self.general_pfad = general_pfad
@@ -152,6 +196,8 @@ class StatusMqtt:
         self.sender = sender
         self.takt = takt
         self.uhr = uhr
+        self.tafeln_pfad = tafeln_pfad
+        self._tafel_vorher: dict = {}
         self.zaehler = 0
         self.gesendet_einmal = False
         self._gemeldet = ""
@@ -164,6 +210,17 @@ class StatusMqtt:
         if self._gemeldet != schluessel:
             self._gemeldet = schluessel
             self.log.warning("%s", text)
+
+    def _tafeln(self, jetzt: int) -> dict:
+        """Die Lage der Tafeln; ein Wechsel steht einmal im Protokoll, nicht bei jedem Takt."""
+        lage = tafel_lage(self.json_lesen(self.tafeln_pfad) if self.tafeln_pfad else {}, jetzt)
+        for n, w in lage["je"].items():
+            if w == 0 and self._tafel_vorher.get(n) != 0:
+                self.log.warning("Tafel %s meldet sich seit mehr als %d s nicht.", n, TAFEL_AUS_S)
+            elif w == 1 and self._tafel_vorher.get(n) == 0:
+                self.log.info("Tafel %s meldet sich wieder.", n)
+        self._tafel_vorher = dict(lage["je"])
+        return lage
 
     def ein_takt(self) -> dict:
         """Ein Sendetakt. Rueckgabe: der geschriebene Stand."""
@@ -181,9 +238,12 @@ class StatusMqtt:
         abbild = self.json_lesen(self.abbild_pfad)
         abbild = abbild if isinstance(abbild, dict) else {}
         w = werte(abbild, cfg, self.json_lesen(self.struktur_pfad), self.json_lesen(self.seiten_pfad), jetzt)
+        tl = self._tafeln(jetzt)
+        w["tafeln/zahl"] = tl["zahl"]
+        w["tafeln/aus"] = tl["aus"]
         port = udp_port(self.json_lesen(self.general_pfad))
         try:
-            n = self.sender(zeilen(praefix, w, self.zaehler), port)
+            n = self.sender(zeilen(praefix, w, self.zaehler) + tafel_zeilen(praefix, tl["je"]), port)
             lage, fehler = "gesendet", ""
             self._gemeldet = ""
         except OSError as f:
@@ -191,7 +251,7 @@ class StatusMqtt:
             self._melden("fehler", "Zustand ueber MQTT: Senden an den UDP-Eingang %d misslungen (%s)." % (port, f))
         # "abbild": die Eingaben der Rechnung - der Reiter Test rechnet damit dieselbe Regel in PHP nach.
         stand = {"ts": jetzt, "lage": lage, "praefix": praefix, "port": port, "werte": w,
-                 "zaehler": self.zaehler, "zeilen": n, "fehler": fehler,
+                 "zaehler": self.zaehler, "zeilen": n, "fehler": fehler, "tafeln": tl["je"],
                  "abbild": {"ts": abbild.get("ts"), "weg": abbild.get("weg", ""), "ok": abbild.get("ok", 0)}}
         self.json_schreiben(self.stand_pfad, stand)
         self.zaehler = (self.zaehler + 1) % 1000

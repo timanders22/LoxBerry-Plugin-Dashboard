@@ -425,7 +425,7 @@ mkdir -p "$LANG_SICHER" 2>/dev/null
 chmod 0700 "$LANG_SICHER" 2>/dev/null
 # Der Sollmerker faehrt neben dem Ordner mit - derselbe Weg wie der Verlauf.
 [ "$LIEF_VORHER" = "1" ] && : > "$LANG_SICHER/lief_vorher"
-for LANG_F in verlauf.json; do
+for LANG_F in verlauf.json tafeln.json; do
     [ -f "$BASE/data/plugins/$PFOLDER/$LANG_F" ] \
         && cp -p "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F" 2>/dev/null
 done
