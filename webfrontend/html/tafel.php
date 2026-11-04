@@ -83,6 +83,10 @@ $konf = array(
     'haptik'    => !empty($db_lauf_cfg['haptik']) ? 1 : 0,
     'vollbild'  => !empty($db_lauf_cfg['vollbild']) ? 1 : 0,
     'wach'      => !empty($db_lauf_cfg['wach']) ? 1 : 0,
+    /* 0.9.40: Ansagen. Die Stimme folgt der Sprache des LoxBerry, in der die Plugins ihre Saetze bauen. */
+    'ansage_ein'  => !empty($db_lauf_cfg['ansage_ein']) ? 1 : 0,
+    'ansage_gong' => !empty($db_lauf_cfg['ansage_gong']) ? 1 : 0,
+    'ansage_lang' => $db_lang === 'en' ? 'en-US' : 'de-DE',
     'melde_s'   => DB_TAFEL_MELDE_S,
     /* Das Ruhebild. Grenzen stehen hier UND im Speicher-Handler der
      * Oberflaeche - beide lesen dieselben Konstanten aus db_lib.php, damit
@@ -127,7 +131,7 @@ foreach (array('ABBRECHEN', 'WEITER', 'PIN_TITEL', 'ANTWORT_UNLESBAR', 'OHNE_BES
                'NICHT_DARSTELLBAR', 'MARKE_GESICHERT', 'MARKE_NURLESEN', 'SCHUB_FEHL', 'ERSATZWEG',
                'LB_ANTWORTET_NICHT', 'BAND_LB', 'KEINE_MS', 'BAND_MS', 'WERTE_ALT', 'WERTE_ZU_ALT',
                'BAND_ALT', 'KEINE_WERTE_DA', 'BAND_KEINE', 'VERBUNDEN', 'UEBER_HTTP', 'WACH_HINWEIS',
-               'NAME_FALSCH') as $db_k) {
+               'NAME_FALSCH', 'TON_KNOPF', 'TON_HINWEIS', 'TON_GESPERRT', 'TON_AN') as $db_k) {
     $db_tafeltexte[strtolower($db_k)] = db_t('TAFEL.' . $db_k);
 }
 
@@ -312,6 +316,16 @@ input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px
   border:1px solid var(--rand)}
 .pin input{width:100%;font-size:1.5rem;text-align:center;letter-spacing:.4em;padding:12px;
   border-radius:10px;border:1px solid var(--rand);background:var(--kachel2);color:var(--text)}
+/* 0.9.40: Ansage ueber allem, auch ueber Ruhebild und Nachtschleier; sie nimmt keine Beruehrung weg. */
+#ansagetext{position:fixed;left:4vw;right:4vw;top:50%;transform:translateY(-50%);z-index:80;pointer-events:none;
+  background:rgba(0,0,0,.86);color:#fff;border-radius:18px;padding:4vh 4vw;text-align:center;font-weight:700;
+  font-size:clamp(1.8rem,6vw,4.5rem);line-height:1.2;overflow-wrap:anywhere}
+#ansagetext.dringend{background:rgba(150,0,0,.94)}
+#ansagetext[hidden],#ansagefeld[hidden]{display:none}
+#ansagefeld{position:fixed;left:14px;bottom:60px;right:14px;z-index:85;display:flex;flex-wrap:wrap;align-items:center;gap:12px;
+  background:var(--kachel);border:1px solid var(--rand);border-left:4px solid #e0a800;border-radius:12px;padding:10px 14px;color:var(--text);font-size:1rem}
+#ton_knopf{font-size:1.2rem;font-weight:700;padding:14px 22px;min-height:48px;border:0;border-radius:10px;background:#6dac20;color:#fff;cursor:pointer}
+#ton_satz{flex:1 1 14em}
 .blase{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;z-index:70;
   background:var(--kachel);border:1px solid var(--rand);border-left:4px solid var(--an);
   padding:11px 17px;border-radius:12px;font-size:.88rem;box-shadow:0 8px 28px rgba(0,0,0,.32);
@@ -370,6 +384,13 @@ input[type=range]{width:100%;margin:8px 0 2px;accent-color:var(--an);height:30px
   <div class="hinweis" id="ruhe_hinweis"></div>
 </div>
 <div id="nachtschleier"></div>
+<?php if (!empty($db_lauf_cfg['ansage_ein'])) { ?>
+<div id="ansagetext" role="alert" aria-live="assertive" hidden></div>
+<div id="ansagefeld" hidden>
+  <button type="button" id="ton_knopf"><?= db_e(db_t('TAFEL.TON_KNOPF')) ?></button>
+  <span id="ton_satz"></span>
+</div>
+<?php } ?>
 
 <script>
 "use strict";
@@ -1165,6 +1186,7 @@ function uebernehmen(d){
   if (d.tafel) { tafel_befolgen(d.tafel); }
   /* Der Befehl an genau diese Tafel nach dem an alle: das Genauere gewinnt. */
   if (d.tafel_ziel) { ziel_befolgen(d.tafel_ziel); }
+  if (d.ansage) { ans_annehmen(d.ansage); }
   if (ruhe_an) { ruhe_fuellen(); }
 }
 
@@ -1429,6 +1451,7 @@ if (KONF.rotation > 0 && LISTE.length > 1) {
 
 /* ---------- Wandtablet-Kleinigkeiten ---------- */
 var sperre = null;
+/* 0.9.40: Ton und letzte Ansage reisen mit melden(); die Werte stehen im Block Ansagen weiter unten. */
 /* 0.9.39: bis 0.9.38 brach wach() ohne navigator.wakeLock still ab. Browser geben den Wake Lock nur in einer sicheren
    Umgebung (HTTPS oder localhost); am iPad 10. Generation ueber http:// gemessen: wakeLock fehlt, isSecureContext false.
    Jetzt kennt die Tafel ihren Stand: "aus" (Einstellung), "offen" (noch keine Antwort), "ok", "fehlt", "abgelehnt". */
@@ -1480,7 +1503,7 @@ function melden(){
   if (!melde_bereit) { return; }
   fetch(BASIS + "&aktion=melden&kennung=" + KENNUNG + "&seite=" + encodeURIComponent(SEITE) + "&wl=" + wl_lage
         + "&api=" + (("wakeLock" in navigator) ? 1 : 0) + "&sc=" + (window.isSecureContext ? 1 : 0)
-        + "&falsch=" + NAME_FALSCH, {cache:"no-store"}).catch(function(){});
+        + "&falsch=" + NAME_FALSCH + "&ton=" + ans_ton + "&an=" + ans_an + "&ae=" + ans_ae, {cache:"no-store"}).catch(function(){});
 }
 /* Der erste Bericht nach 3 s: bis dahin hat der Browser auf den Wake Lock geantwortet. */
 setTimeout(function(){
@@ -1507,6 +1530,254 @@ if (KONF.vollbild) {
     var el = document.documentElement;
     if(el.requestFullscreen) el.requestFullscreen().catch(function(){});
   }, {once:true});
+}
+
+/* ---------- Ansagen auf der Tafel (0.9.40) ----------
+
+   Gemessen am iPad 10. Generation, iPadOS 27.0.1, Chrome, ueber http:// (02.11.2026):
+   - Ton und Sprache gehen nach EINEM Tippen, auch 4 Stunden spaeter ohne Beruehrung.
+   - Die Stimmenliste ist beim ersten Tippen leer, deutsch spricht trotzdem: lang setzen, auf die Liste nicht verlassen.
+   - Bildschirm dunkel oder Seite verborgen: nichts kommt an. Der Ablauf gilt deshalb auch hier, gerechnet aus der Restzeit vom Server.
+   - App-Wechsel waehrend einer Ansage: speaking bleibt wahr. Vor der naechsten Ansage cancel(), resume(), 300 ms warten.
+     Eine laufende Ansage bricht nichts ab: die Warteschlange reicht die naechste erst nach dem Ende weiter.
+   - Der Anfang der ersten Ausgabe war vielleicht abgeschnitten: stille Vorlaufzeit vor dem Gong. */
+var ANS_VORLAUF_MS = 600, ANS_GONG_MS = 1800, ANS_RUHE_MS = 300, ANS_START_MS = 5000, ANS_ANZEIGE_MS = 8000, ANS_Q_MAX = 20;
+var ans_ctx = null, ans_getippt = false, ans_gesehen = null, ans_q = [], ans_laeuft = false;
+var ans_ton = KONF.ansage_ein ? "gesperrt" : "aus", ans_an = 0, ans_ae = "", ans_rede = null, ans_ruhe_bis = 0, ans_sprache_gesperrt = false;
+var ans_text_seit = 0, ans_text_frist = null, ans_log_liste = [];
+function ans_log(t, w){
+  ans_log_liste.push({t:t, w:w === undefined ? "" : w, z:Date.now()});
+  if (ans_log_liste.length > 200) { ans_log_liste.shift(); }
+}
+/* Nur lesen: Lage fuer den Pruefstand und die Fehlersuche am Tablet. Kein Ansagetext. */
+window.db_ansage_lage = function(){
+  var s = window.speechSynthesis;
+  return {ton:ans_ton, getippt:ans_getippt, ctx:ans_ctx ? ans_ctx.state : "-", gesehen:ans_gesehen, warten:ans_q.length, laeuft:ans_laeuft, an:ans_an, ae:ans_ae,
+          spricht:s ? s.speaking : null, sprache_da:!!s, stimmen:s ? s.getVoices().length : 0, sichtbar:document.visibilityState, sicher:!!window.isSecureContext,
+          wakelock:("wakeLock" in navigator), log:ans_log_liste.slice()};
+};
+function ans_feld_zeigen(){
+  var f = document.getElementById("ansagefeld");
+  if (!f) { return; }
+  f.hidden = !(KONF.ansage_ein && ans_ton !== "frei");
+  document.getElementById("ton_satz").textContent = ans_getippt ? T.ton_gesperrt : T.ton_hinweis;
+}
+function ans_ton_setzen(l){
+  if (ans_ton === l) { return; }
+  ans_ton = l;
+  ans_log("ton", l);
+  ans_feld_zeigen();
+  melden();
+}
+function ans_lage_pruefen(){
+  if (!KONF.ansage_ein) { return; }
+  if (!ans_getippt || ans_sprache_gesperrt) { ans_ton_setzen("gesperrt"); return; }
+  if (!ans_ctx) { ans_ton_setzen(window.speechSynthesis ? "frei" : "gesperrt"); return; }
+  if (ans_ctx.state === "running") { ans_ton_setzen("frei"); return; }
+  /* suspended oder interrupted (iOS, etwa nach einem Anruf): erst aufwecken, dann urteilen. Eine verborgene Seite sagt nichts. */
+  ans_aufwecken(function(ok){
+    if (document.visibilityState === "visible") { ans_ton_setzen(ok ? "frei" : "gesperrt"); }
+  });
+}
+function ans_aufwecken(fertig){
+  if (!ans_ctx) { fertig(true); return; }
+  if (ans_ctx.state === "running") { fertig(true); return; }
+  ans_log("ctx", ans_ctx.state);
+  var fertig_einmal = function(){ var f = fertig; fertig = null; if (f) { f(ans_ctx.state === "running"); } };
+  var p = null;
+  try { p = ans_ctx.resume(); } catch(x) { ans_log("resume_fehler", String(x)); }
+  if (p && p.then) { p.then(fertig_einmal, function(x){ ans_log("resume_fehler", String(x)); fertig_einmal(); }); }
+  setTimeout(fertig_einmal, 1000);
+}
+/* Vorlauf: ein Ton mit der Lautstaerke fast null weckt den Ausgang; der eigentliche Gong kommt danach. */
+function ans_gong(vorlauf_s, laut){
+  if (!ans_ctx) { return; }
+  var n = ans_ctx.currentTime, v = (laut >= 1 ? laut / 100 : 1) * 0.5;
+  if (vorlauf_s > 0) {
+    var s = ans_ctx.createOscillator(), sg = ans_ctx.createGain();
+    sg.gain.value = 0.0001;
+    s.connect(sg); sg.connect(ans_ctx.destination);
+    s.start(n); s.stop(n + vorlauf_s);
+  }
+  [[660, 0], [495, 0.45]].forEach(function(f){
+    var o = ans_ctx.createOscillator(), g = ans_ctx.createGain(), t = n + vorlauf_s + f[1];
+    o.frequency.value = f[0];
+    o.connect(g); g.connect(ans_ctx.destination);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(v, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
+    o.start(t); o.stop(t + 1.3);
+  });
+  ans_log("gong", vorlauf_s);
+}
+function ans_haengt_beheben(warum){
+  ans_log("haengt", warum);
+  try { speechSynthesis.cancel(); speechSynthesis.resume(); } catch(x) {}
+  ans_ruhe_bis = Date.now() + ANS_RUHE_MS;
+}
+function ans_sprechen(text, laut, fertig){
+  var s = window.speechSynthesis;
+  if (!s || !window.SpeechSynthesisUtterance) { ans_log("sprache_fehlt"); fertig("fehler"); return; }
+  /* Unsere eigene Ansage ist hier zu Ende; steht speaking noch auf wahr, haengt es. */
+  if (s.speaking || s.pending || s.paused) { ans_haengt_beheben("vorher"); }
+  var warte = Math.max(0, ans_ruhe_bis - Date.now());
+  setTimeout(function(){
+    var u = new SpeechSynthesisUtterance(text), gestartet = false, fertig_ist = false, t0 = null, t1 = null;
+    u.lang = KONF.ansage_lang;
+    var v = s.getVoices().filter(function(x){ return x.lang && x.lang.indexOf(KONF.ansage_lang.slice(0, 2)) === 0; });
+    if (v.length) { u.voice = v[0]; }
+    if (laut >= 1) { u.volume = laut / 100; }
+    var ab = function(erg){
+      if (fertig_ist) { return; }
+      fertig_ist = true;
+      clearTimeout(t0); clearTimeout(t1);
+      ans_rede = null;
+      ans_log("sprache_ende", erg);
+      fertig(erg);
+    };
+    u.onstart = function(){ gestartet = true; ans_log("sprache_start"); };
+    u.onend = function(){ ab("gesprochen"); };
+    u.onerror = function(e){
+      ans_log("sprache_fehler", e.error);
+      if (e.error === "not-allowed") { ans_sprache_gesperrt = true; ans_lage_pruefen(); }
+      ab("fehler");
+    };
+    ans_rede = {u:u, ab:ab, verborgen:document.visibilityState !== "visible"};   /* die Referenz haelt u gegen die Muellabfuhr */
+    t0 = setTimeout(function(){ if (!gestartet) { ans_haengt_beheben("kein_start"); ab("fehler"); } }, ANS_START_MS);
+    t1 = setTimeout(function(){ ans_haengt_beheben("zu_lang"); ab("fehler"); }, Math.max(30000, text.length * 200));
+    s.speak(u);
+    ans_log("sprache_los", text.length);
+  }, warte);
+}
+function ans_text_zeigen(text, dringend){
+  var el = document.getElementById("ansagetext");
+  clearTimeout(ans_text_frist);
+  el.textContent = text;
+  el.className = dringend ? "dringend" : "";
+  el.hidden = false;
+  ans_text_seit = Date.now();
+}
+function ans_text_weg(){ document.getElementById("ansagetext").hidden = true; }
+function ans_ergebnis(e, erg){
+  ans_an = e.nr;
+  ans_ae = erg;
+  ans_log("ergebnis", e.nr + ":" + erg);
+  melden();
+}
+function ans_zu_ende(){
+  /* Der Text bleibt wenigstens kurz stehen; danach die naechste Ansage. */
+  var rest = Math.max(0, (ans_q.length ? 1500 : ANS_ANZEIGE_MS) - (Date.now() - ans_text_seit));
+  ans_text_frist = setTimeout(function(){
+    ans_laeuft = false;
+    ans_text_weg();
+    ans_weiter();
+  }, rest);
+}
+/* Eine Ansage, die beim Warten zu alt wurde oder in eine verborgene Phase fiel, wird neu bewertet: frisch genug zurueck in die Reihe, sonst verfallen. */
+function ans_zurueck(e){
+  ans_laeuft = false;
+  ans_text_weg();
+  ans_q.unshift(e);
+  ans_weiter();
+}
+function ans_weiter(){
+  if (ans_laeuft || document.visibilityState !== "visible") { return; }
+  var e = null;
+  while (ans_q.length) {
+    e = ans_q.shift();
+    if (Date.now() < e.ablauf) { break; }
+    ans_ergebnis(e, "verfallen");
+    e = null;
+  }
+  if (!e) { return; }
+  ans_laeuft = true;
+  ans_log("start", e.nr);
+  ans_text_zeigen(e.text, e.dringend);
+  if (ans_ton !== "frei") {
+    ans_ergebnis(e, "text");
+    ans_zu_ende();
+    return;
+  }
+  ans_aufwecken(function(ctx_ok){
+    if (!ctx_ok) { ans_log("ctx_nicht_bereit"); }
+    var gong = ctx_ok && (e.art === "gong" || (e.art === "beides" && KONF.ansage_gong));
+    if (gong) { ans_gong(ANS_VORLAUF_MS / 1000, e.laut); }
+    setTimeout(function(){
+      if (document.visibilityState !== "visible") { ans_zurueck(e); return; }
+      if (e.art === "gong") { ans_ergebnis(e, "gong"); ans_zu_ende(); return; }
+      if (Date.now() >= e.ablauf) { ans_ergebnis(e, "verfallen"); ans_zu_ende(); return; }
+      ans_sprechen(e.text, e.laut, function(erg){ ans_ergebnis(e, erg); ans_zu_ende(); });
+    }, gong ? ANS_VORLAUF_MS + ANS_GONG_MS : ANS_VORLAUF_MS);
+  });
+}
+/* Der Block aus den Werten. Beim ersten Mal (auch nach dem Neuladen) gilt nur die Nummer: Altes kommt nicht noch einmal. */
+function ans_annehmen(b){
+  if (!KONF.ansage_ein || !b || typeof b.nr !== "number") { return; }
+  if (ans_gesehen === null) { ans_gesehen = b.nr; return; }
+  if (b.nr < ans_gesehen) { ans_log("nr_neu", b.nr); ans_gesehen = 0; }   /* ansagen.json ist neu entstanden */
+  var lokal = Date.now();
+  if (b.neu && b.neu.length) {
+    b.neu.forEach(function(e){
+      if (e.nr <= ans_gesehen) { return; }
+      ans_log("neu", e.nr);
+      var rest = (e.ablauf - b.jetzt) * 1000;
+      if (rest <= 0) { return; }
+      var ein = {nr:e.nr, text:e.text, art:e.art, dringend:!!e.dringend, laut:e.laut, ablauf:lokal + rest};
+      /* Dringendes vor Gewoehnlichem, sonst der Reihe nach. Eine laufende Ansage bleibt unberuehrt. */
+      var i = ans_q.length;
+      if (ein.dringend) { i = 0; while (i < ans_q.length && ans_q[i].dringend) { i++; } }
+      ans_q.splice(i, 0, ein);
+    });
+    if (ans_q.length > ANS_Q_MAX) { ans_q.length = ANS_Q_MAX; }
+  }
+  if (b.nr > ans_gesehen) { ans_gesehen = b.nr; }
+  ans_weiter();
+}
+if (KONF.ansage_ein) {
+  /* Am Fenster, im Einfangen: das Ruhebild verbraucht sonst die Beruehrung, bevor sie den Knopf erreicht. Ein Tippen muss genuegen. */
+  window.addEventListener("click", function(ev){
+    if (!ev.target || ev.target.id !== "ton_knopf") { return; }
+    var C = window.AudioContext || window.webkitAudioContext;
+    ans_getippt = true;
+    ans_sprache_gesperrt = false;
+    ans_log("tipp");
+    if (C) {
+      try {
+        ans_ctx = ans_ctx || new C();
+        ans_ctx.onstatechange = function(){ ans_log("ctx", ans_ctx.state); ans_lage_pruefen(); };
+        ans_ctx.resume();
+        ans_gong(0, -1);
+      } catch(x) { ans_log("ctx_fehler", String(x)); }
+    }
+    /* Innerhalb derselben Beruehrung sprechen: so am iPad gemessen. Nur wenn nichts laeuft; eine laufende Ansage bleibt. */
+    if (window.speechSynthesis && window.SpeechSynthesisUtterance && !ans_laeuft) {
+      var u = new SpeechSynthesisUtterance(T.ton_an);
+      u.lang = KONF.ansage_lang;
+      u.onerror = function(e){ ans_log("sprache_fehler", e.error); };
+      window._ans_u = u;
+      speechSynthesis.speak(u);
+    }
+    ans_ton = "gesperrt";
+    ans_lage_pruefen();
+    setTimeout(ans_lage_pruefen, 500);
+  }, true);
+  document.addEventListener("visibilitychange", function(){
+    if (document.visibilityState !== "visible") {
+      if (ans_rede) { ans_rede.verborgen = true; }
+      return;
+    }
+    /* App-Wechsel oder dunkler Bildschirm mitten in der Sprache: sie haengt. Weg damit, die Warteschlange geht weiter. */
+    if (ans_rede && ans_rede.verborgen) {
+      ans_haengt_beheben("verborgen");
+      ans_rede.ab("fehler");
+    }
+    ans_lage_pruefen();
+    ans_weiter();
+  });
+  setInterval(ans_lage_pruefen, 30000);
+  if (window.speechSynthesis) { speechSynthesis.getVoices(); }
+  ans_feld_zeigen();
+  if (DATEN.ansage) { ans_annehmen(DATEN.ansage); }
 }
 
 /* ---------- Ambient-Modus ----------

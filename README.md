@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.39 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.40 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,18 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.40
+
+**Ansagen und Signale der Plugins erscheinen jetzt auf den offenen Tafeln.** Plugins mit Sprachmodul ab 1.4.0 geben sie hier ab; bis dahin ändert sich nichts. Ab Werk an. Ausschalten: Reiter *Einstellungen*, Haken „Ansagen der Plugins auf den offenen Tafeln annehmen“. Ein gespeichertes Aus bleibt.
+
+* **Am Tablet:** einmal auf „Ton einschalten“ tippen, nach jedem Neuladen wieder. Dann kommen Gong und Sprache, auch Stunden später ohne Berührung. Ohne Ton erscheint der Text trotzdem groß, und die Tafel sagt offen, dass der Ton gesperrt ist.
+* **Bildschirm dunkel oder Seite verborgen:** Es kommt nichts an. Eine Ansage gilt 60 Sekunden (einstellbar, 10 bis 300) und kommt danach beim Aufwachen nicht mehr.
+* **Regeln:** Nachtruhe, Wiederholsperre und der Schalter „Ansagen aus“ gelten im sendenden Plugin.
+* **Einzelne Tafeln:** Im sendenden Plugin lassen sich Tafelnamen eintragen; leer heißt alle offenen.
+* **Reiter *Test*:** zeigt je Tafel „Ton frei“ oder „Ton gesperrt“ und das Ergebnis der letzten Ansage; dazu ein Knopf für eine Testansage. Keine neuen MQTT-Themen.
+* **Gemessen** am iPad 10. Generation (iPadOS 27.0.1) über `http://` mit einer Testseite; gebaut nach diesen Messungen, die fertige Tafel an einem iPad noch nicht.
+* **Bild im Reiter *Einbindung* neu:** Es zeigt jetzt die beiden neuen Eingänge dashboard_tafeln_zahl und dashboard_tafeln_aus. Die Anordnung der Bausteine ist noch vorläufig und kann vom Musterprojekt zum Herunterladen abweichen.
 
 ## Neu in 0.9.39
 

@@ -212,6 +212,10 @@ VORGABEN = {
     "ruhe_nach": 0,          # Sekunden ohne Beruehrung, 0 = aus
     "ruhe_uhr": 1,           # Uhrzeit und Datum gross
     "ruhe_wetter": 1,        # Wetterzeile, wenn ein Wetterdienst da ist
+    # Ansagen auf den Tafeln (0.9.40). Der Dienst benutzt sie nicht; siehe oben.
+    "ansage_ein": 1,
+    "ansage_frist": 60,
+    "ansage_gong": 1,
     "ruhe_kacheln": 6,       # Verknuepfungen, 0 bis 12
     "ruhe_seite": "",        # leer = die Seite, die gerade offen ist
     "ruhe_hell": 60,         # Prozent - "unaufdringlich" heisst dunkler

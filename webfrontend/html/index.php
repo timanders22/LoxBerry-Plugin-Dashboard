@@ -45,6 +45,11 @@
  *   melden   &tafel=<name> | &kennung=<id>, &seite, &wl, &api, &sc, &falsch
  *            Die Rueckmeldung einer offenen Tafel fuer die Tafelliste (0.9.39).
  *            Tablet-Weg: haengt nicht am Haken endpunkt_ein.
+ *   ansage   nur POST (aktion, token, text, wahlfrei tafel, laut, dringend, art)
+ *            Plugins auf diesem LoxBerry geben eine Ansage fuer die offenen
+ *            Tafeln ab (0.9.40). POST, damit Text und Token in keiner Adresse
+ *            und in keinem Zugriffsprotokoll stehen. Antwort eine Zeile:
+ *            ANSAGE;OK=1;NR=..;TAFELN=..;FRIST=.. oder ANSAGE;OK=0;GRUND=..
  *
  * Der Endpunkt spricht NIE selbst mit dem Miniserver. Er liest den
  * Zwischenspeicher und legt Befehle in einer Warteschlange ab, die der
@@ -62,6 +67,9 @@ $db_cfg = db_config();
  * Befund 5 des Code-Pruefers, 7.4 und 8.5). */
 $db_soll = db_token_soll($db_cfg);
 $db_ist = db_get('token');
+/* 0.9.40: die Ansage kommt als POST; nur dieser eine Weg liest das Token aus dem Rumpf. */
+$db_ansage_post = isset($_POST['aktion']) && $_POST['aktion'] === 'ansage';
+if ($db_ansage_post) { $db_ist = isset($_POST['token']) ? $_POST['token'] : ''; }
 if (!is_string($db_ist)) { $db_ist = ''; }
 
 /* ---------------- Selbstpruefung ----------------
@@ -125,8 +133,8 @@ if (!hash_equals($db_soll, $db_ist)) {
 
 /* ---------------- Aktion (Weissliste) ---------------- */
 $db_lesend = array('status', 'seiten', 'seite', 'werte', 'strom', 'roh', 'ruhebild', 'symbol');
-$db_schaltend = array('befehl', 'szene', 'tafel', 'melden');
-$db_aktion = db_get('aktion');
+$db_schaltend = array('befehl', 'szene', 'tafel', 'melden', 'ansage');
+$db_aktion = $db_ansage_post ? 'ansage' : db_get('aktion');
 if ($db_aktion === null) { $db_aktion = 'status'; }
 if (!is_string($db_aktion) || !in_array($db_aktion, array_merge($db_lesend, $db_schaltend), true)) {
     http_response_code(400);
@@ -199,8 +207,28 @@ if ($db_aktion === 'melden') {
         db_json_raus(array('ok' => 0, 'grund' => 'AKTUALISIERUNG', 'meldung' => db_t('EP.AKTUALISIERUNG')), 503);
     }
     list($db_code, $db_daten) = db_tafel_melden($db_ziel_roh, db_get('kennung'), $db_seite, db_get('wl'), db_get('api'),
-                                                db_get('sc'), db_get('falsch'));
+                                                db_get('sc'), db_get('falsch'), null, db_get('ton'), db_get('an'), db_get('ae'));
     db_json_raus($db_daten, $db_code);
+}
+
+/* 0.9.40: eine Ansage annehmen. Die Antwortzeile traegt nur Zahlen und Kennungen. Waehrend eines Updates nichts: der Installer raeumt den Datenordner ab. */
+if ($db_aktion === 'ansage') {
+    header('Content-Type: text/plain; charset=utf-8');
+    header('Cache-Control: no-store');
+    $db_antwort = array(405, array('OK' => 0, 'GRUND' => 'NUR_POST'));
+    if ($db_ansage_post) {
+        $db_mk = db_upgrade_marke();
+        if (!empty($db_mk[1])) {
+            $db_antwort = array(503, array('OK' => 0, 'GRUND' => 'AKTUALISIERUNG'));
+        } else {
+            $db_af = function ($n) { return isset($_POST[$n]) ? $_POST[$n] : null; };
+            $db_antwort = db_ansage_annehmen($db_af('text'), $db_af('tafel'), $db_af('laut'), $db_af('dringend'), $db_af('art'));
+        }
+    }
+    if ($db_antwort[0] >= 400) { db_abweisung('Endpunkt', 'ANSAGE_' . $db_antwort[1]['GRUND']); }
+    http_response_code($db_antwort[0]);
+    echo db_ansage_zeile($db_antwort[1]) . "\n";
+    exit;
 }
 
 /* ================= Lesende Aktionen ================= */

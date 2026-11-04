@@ -336,6 +336,15 @@ if ($db_post && isset($_POST['speichern'])) {
         $db_cfg['nacht_bis'] = $db_nb;
     }
 
+    /* 0.9.40: die Haltbarkeit einer Ansage. */
+    $db_af = $db_sauber('ansage_frist');
+    if (!preg_match('/^[0-9]{1,4}$/', $db_af) || (int) $db_af < DB_ANSAGE_FRIST_MIN || (int) $db_af > DB_ANSAGE_FRIST_MAX) {
+        $db_bean[] = 'ansage_frist';
+        $db_fehler[] = sprintf(db_t('EINST.FEHLER_ANSAGE_FRIST'), DB_ANSAGE_FRIST_MIN, DB_ANSAGE_FRIST_MAX);
+    } else {
+        $db_cfg['ansage_frist'] = (int) $db_af;
+    }
+
     /* Das Ruhebild: 0 heisst 'aus', sonst mindestens DB_RUHE_NACH_MIN.
      * Deshalb NICHT in der Schleife oben - die kennt nur einen Bereich, und
      * '0 oder 10 bis 3600' ist keiner. */
@@ -437,7 +446,7 @@ if ($db_post && isset($_POST['speichern'])) {
     // Haken: isset() stellt sie beim Absenden DIESES Formulars. Alle Haken
     // dieses Reiters stehen deshalb in demselben Formular - sonst setzte das
     // Absenden eines anderen sie stillschweigend auf 0.
-    foreach (array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach',
+    foreach (array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'ansage_ein', 'ansage_gong',
                    'haptik', 'verlauf', 'sse', 'tafelsteuerung',
                    'gesichert_schalten', 'ruhe_uhr', 'ruhe_wetter',
                    'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein') as $db_h) {
@@ -872,6 +881,17 @@ if ($db_post && isset($_POST['log_leeren'])) {
 if ($db_post && isset($_POST['test'])) {
     list($db_stand, $db_text) = db_test_aktion((string) $_POST['test']);
     if ($db_stand === 1) { $db_meldungen[] = db_e($db_text); } else { $db_fehler[] = db_e($db_text); }
+    $db_tab = 'tab-test';
+}
+/* 0.9.40: eine Testansage an die Tafeln. Sie geht denselben Weg wie die Ansage eines Plugins, ohne die Regeln der Linien. */
+if ($db_post && isset($_POST['ansage_test'])) {
+    $db_at = isset($_POST['ansage_test_tafel']) && is_string($_POST['ansage_test_tafel']) ? trim($_POST['ansage_test_tafel']) : '';
+    list($db_atc, $db_atf) = db_ansage_annehmen(db_t('TEST.ANSAGE_TESTTEXT'), $db_at, null, null, null);
+    if ($db_atc === 200) {
+        $db_meldungen[] = db_e(sprintf(db_t('TEST.ANSAGE_TEST_OK'), (int) $db_atf['TAFELN'], (int) $db_atf['FRIST']));
+    } else {
+        $db_fehler[] = db_e(sprintf(db_t('TEST.ANSAGE_TEST_FEHL'), $db_atf['GRUND']));
+    }
     $db_tab = 'tab-test';
 }
 if ($db_post && isset($_POST['selbsttest'])) {
@@ -1408,6 +1428,17 @@ if (db_eingaben_aktiv('speichern')) {
 <label><input data-role="none" type="checkbox" name="wach" value="1"<?= !empty($db_cfg['wach']) ? ' checked' : '' ?>>
   <?= db_e(db_t('EINST.L_WACH')) ?></label>
 <p class="sm-hilfe"><?= db_t('EINST.H_WACH') ?></p>
+<label><input data-role="none" type="checkbox" name="ansage_ein" value="1"<?= !empty($db_cfg['ansage_ein']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_ANSAGE_EIN')) ?></label>
+<p class="sm-hilfe"><?= db_t('EINST.H_ANSAGE_EIN') ?></p>
+<label><input data-role="none" type="checkbox" name="ansage_gong" value="1"<?= !empty($db_cfg['ansage_gong']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_ANSAGE_GONG')) ?></label><br>
+<div class="sm-feld">
+  <label for="ansage_frist"><?= db_e(db_t('EINST.L_ANSAGE_FRIST')) ?></label>
+  <input data-role="none" type="number" min="10" max="300" name="ansage_frist" id="ansage_frist"<?= db_beanstandet_attr('speichern', 'ansage_frist') ?>
+         value="<?= db_e($db_cfg['ansage_frist']) ?>">
+  <div class="sm-hilfe"><?= db_t('EINST.H_ANSAGE_FRIST') ?></div>
+</div>
 <label><input data-role="none" type="checkbox" name="haptik" value="1"<?= !empty($db_cfg['haptik']) ? ' checked' : '' ?>>
   <?= db_e(db_t('EINST.L_HAPTIK')) ?></label>
 <p class="sm-hilfe"><?= db_t('EINST.H_HAPTIK') ?></p>
@@ -1821,7 +1852,7 @@ foreach ($db_seiten as $db_s) { $db_tl_seiten[(string) $db_s['schluessel']] = (s
 <div class="sm-breit">
 <table class="sm-tabelle" id="db-tafeln">
 <tr><th><?= db_e(db_t('BOARD.T_TAFEL')) ?></th><th><?= db_e(db_t('BOARD.T_ZUSTAND')) ?></th><th><?= db_e(db_t('BOARD.T_LETZTE')) ?></th>
-    <th><?= db_e(db_t('BOARD.T_SEITE')) ?></th><th><?= db_e(db_t('BOARD.T_WACH')) ?></th><th>&nbsp;</th></tr>
+    <th><?= db_e(db_t('BOARD.T_SEITE')) ?></th><th><?= db_e(db_t('BOARD.T_WACH')) ?></th><th><?= db_e(db_t('BOARD.T_TON')) ?></th><th>&nbsp;</th></tr>
 <?php foreach ($db_tl['zeilen'] as $db_tz) {
     $db_tw_wert = $db_tz['name'] !== '' ? 'n:' . $db_tz['name'] : 'u:' . $db_tz['kennung']; ?>
 <tr>
@@ -1832,6 +1863,7 @@ foreach ($db_seiten as $db_s) { $db_tl_seiten[(string) $db_s['schluessel']] = (s
   <td><?= db_e(date('d.m.Y H:i:s', $db_tz['ts'])) ?><div class="sm-hilfe"><?= db_e(db_tafel_alter_text($db_tz['alter'])) ?></div></td>
   <td><?= db_e(isset($db_tl_seiten[$db_tz['seite']]) ? $db_tl_seiten[$db_tz['seite']] : $db_tz['seite']) ?></td>
   <td><?= db_e(db_tafel_wl_text($db_tz)) ?></td>
+  <td><?= db_e(db_tafel_ton_text($db_tz)) ?><?php $db_ta = db_tafel_ansage_text($db_tz); if ($db_ta !== '') { ?><div class="sm-hilfe"><?= db_e($db_ta) ?></div><?php } ?></td>
   <td><button data-role="none" class="sm-btn sm-b-aktion" name="tafel_weg" value="<?= db_e($db_tw_wert) ?>"><?= db_e(db_t('BOARD.K_WEG')) ?></button></td>
 </tr>
 <?php } ?>
@@ -2207,6 +2239,8 @@ $db_bs_seiten = array(
         array(16, $db_bs_k('T_VALID'), $db_bs_k('S1_16_NAME'), $db_bs_k('S1_16_PARAM'), 'V = #14, En = #15'),
         array(17, $db_bs_k('T_ODER'), $db_bs_k('S1_17_NAME'), $db_bs_k('S1_17_PARAM'), $db_bs_k('S1_17_EIN')),
         array(18, $db_bs_k('T_STATUS'), $db_bs_k('S1_18_NAME'), $db_bs_k('S1_18_PARAM'), $db_bs_k('S1_18_EIN')),
+        array(19, $db_bs_k('T_VI'), $db_bs_k('S1_19_NAME'), $db_bs_k('S1_19_PARAM'), '&mdash;'),
+        array(20, $db_bs_k('T_VI'), $db_bs_k('S1_20_NAME'), $db_bs_k('S1_20_PARAM'), '&mdash;'),
         ),
         'schritte' => array(
             array('S1_SCHRITT1', array(db_t('REITER.EINSTELLUNGEN'), db_t('EINST.K_START'), db_t('REITER.DASHBOARDS'), db_t('BOARD.K_STRUKTUR'), db_t('BOARD.K_ENTWURF'), db_t('REITER.TEST'), db_t('TEST.K_STATUS'))),
@@ -2345,6 +2379,23 @@ foreach ($db_bs_seiten as $db_bs_s) { ?>
   <button data-role="none" class="sm-btn sm-b-lesen" name="test" value="status"><?= db_e(db_t('TEST.K_STATUS')) ?></button>
   <button data-role="none" class="sm-btn sm-b-technik" name="test" value="roh"><?= db_e(db_t('TEST.K_ROH')) ?></button>
   <button data-role="none" class="sm-btn sm-b-technik" name="selbsttest" value="1"><?= db_e(db_t('TEST.K_SELBSTTEST')) ?></button>
+  </div>
+</form>
+
+<h2><?= db_e(db_t('TEST.H_ANSAGE')) ?></h2>
+<p class="sm-hilfe"><?= db_t('TEST.ANSAGE_ERKLAERUNG') ?></p>
+<div class="sm-legende">
+  <span><i class="sm-punkt sm-b-aktion"></i> <?= db_t('LEGENDE.AKTION') ?></span>
+</div>
+<form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <div class="sm-feld">
+    <label for="ansage_test_tafel"><?= db_e(db_t('TEST.L_ANSAGE_TAFEL')) ?></label>
+    <input data-role="none" type="text" maxlength="200" name="ansage_test_tafel" id="ansage_test_tafel" value="">
+  </div>
+  <div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" name="ansage_test" value="1"><?= db_e(db_t('TEST.K_ANSAGE_TEST')) ?></button>
   </div>
 </form>
 

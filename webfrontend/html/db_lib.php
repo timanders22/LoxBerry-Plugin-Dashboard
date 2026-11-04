@@ -217,6 +217,10 @@ function db_vorgaben()
         'wartezeit'      => 8,
         'vollbild'       => 1,
         'wach'           => 1,
+        /* Ansagen auf den Tafeln (0.9.40): nie gesetzt = an; ein bewusstes AUS bleibt. */
+        'ansage_ein'     => 1,
+        'ansage_frist'   => 60,
+        'ansage_gong'    => 1,
         // Kurzes Ruetteln beim Antippen. Nur Android kann das; wo nicht,
         // passiert nichts.
         'haptik'         => 1,
@@ -798,7 +802,7 @@ function db_tafeln_kuerzen(array $d, $jetzt)
  * IP-Adresse, kein Browsername. Unveraendert und juenger als 20 s: kein Schreiben (eine Tafel, die neu laedt, meldet
  * sich sofort wieder).
  */
-function db_tafel_melden($tafel, $kennung, $seite, $wl, $api, $sc, $falsch, $jetzt = null)
+function db_tafel_melden($tafel, $kennung, $seite, $wl, $api, $sc, $falsch, $jetzt = null, $ton = null, $an = null, $ae = null)
 {
     $jetzt = $jetzt === null ? time() : (int) $jetzt;
     $name = '';
@@ -818,7 +822,11 @@ function db_tafel_melden($tafel, $kennung, $seite, $wl, $api, $sc, $falsch, $jet
     $e = array('ts' => $jetzt,
                'seite' => (is_string($seite) && preg_match('/^[a-z0-9-]{1,60}\z/', $seite)) ? $seite : '',
                'wl' => (is_string($wl) && in_array($wl, array('ok', 'fehlt', 'abgelehnt', 'aus', 'offen'), true)) ? $wl : 'offen',
-               'api' => $api === '1' ? 1 : 0, 'sc' => $sc === '1' ? 1 : 0);
+               'api' => $api === '1' ? 1 : 0, 'sc' => $sc === '1' ? 1 : 0,
+               // 0.9.40: Ton und letzte Ansage, nur nach Muster.
+               'ton' => (is_string($ton) && in_array($ton, array('frei', 'gesperrt', 'aus'), true)) ? $ton : 'offen',
+               'an' => (is_string($an) && preg_match('/^[0-9]{1,9}\z/', $an)) ? (int) $an : 0,
+               'ae' => (is_string($ae) && in_array($ae, array('gesprochen', 'gong', 'text', 'verfallen', 'fehler'), true)) ? $ae : '');
     $datei = db_tafeln_datei();
     return db_mit_sperre(db_paths()['datadir'] . '/tafeln.sperre', function () use ($name, $k, $e, $falsch, $jetzt, $datei) {
         $d = db_tafeln_kuerzen(db_tafeln_lesen(), $jetzt);
@@ -920,7 +928,9 @@ function db_tafeln_lage($d = null, $jetzt = null)
                 'seite' => isset($e['seite']) ? (string) $e['seite'] : '',
                 'wl' => isset($e['wl']) ? (string) $e['wl'] : 'offen',
                 'api' => !empty($e['api']), 'sc' => !empty($e['sc']),
-                'falsch' => !empty($e['falsch']), 'doppelt' => !empty($e['doppelt']));
+                'falsch' => !empty($e['falsch']), 'doppelt' => !empty($e['doppelt']),
+                'ton' => isset($e['ton']) ? (string) $e['ton'] : 'offen', 'an' => isset($e['an']) ? (int) $e['an'] : 0,
+                'ae' => isset($e['ae']) ? (string) $e['ae'] : '');
             if ($art === 'namen') {
                 $aus['zahl']++;
                 $aus['aus'] += $still ? 1 : 0;
@@ -986,6 +996,10 @@ function db_tafel_ziel_lesen($name)
 function db_tafel_ziel_anhaengen($daten, $name)
 {
     if (is_array($daten) && $name !== '') { $daten['tafel_ziel'] = db_tafel_ziel_lesen($name); }
+    if (is_array($daten)) {
+        $db_ab = db_ansage_block($name);        // 0.9.40
+        if ($db_ab !== null) { $daten['ansage'] = $db_ab; }
+    }
     return $daten;
 }
 
@@ -1070,6 +1084,176 @@ function db_pruef_wachhalten()
         return array(-1, db_e(db_t('TEST.A_WACH_OFFEN')));
     }
     return array(1, db_e(db_t('TEST.A_WACH_OK')));
+}
+
+/* ---------------- Ansagen auf den Tafeln (0.9.40, Auftrag des Hausherrn 02./03.11.2026) ----
+ *
+ * Plugins mit Sprachmodul ab 1.4.0 geben hier Text ab (aktion=ansage, POST an 127.0.0.1, Token wie beim Melden). ansagen.json haelt die
+ * letzten DB_ANSAGE_MAX Eintraege mit Ablauf, unter Sperre, 0600. Die Tafeln holen sie mit ihren Werten ab (db_tafel_ziel_anhaengen()) und
+ * sprechen im Browser; gemessen am iPad 10. Generation am 02.11.2026 (Ton nach einem Tippen, auch 4 Stunden spaeter).
+ *
+ * Haltbarkeit (ansage_frist, ab Werk 60 s): Bildschirm dunkel heisst, die Seite laeuft nicht. Eine liegen gebliebene Ansage darf beim Aufwachen
+ * nicht nachtraeglich kommen. Der Ablauf wird hier gefiltert und in der Tafel noch einmal, mit der Restzeit statt der Uhr des Tablets.
+ * Nachtruhe, Sperre und der Schalter haus/ansage/ruhe gelten im Stamm der sendenden Linie; hier gibt es keine zweite Regel. Kein Text im Protokoll.
+ * Kein neues MQTT-Thema: Ton und letzte Ansage stehen in tafeln.json und im Reiter Test. */
+if (!defined('DB_ANSAGE_MAX')) { define('DB_ANSAGE_MAX', 20); }
+if (!defined('DB_ANSAGE_TEXT_MAX')) { define('DB_ANSAGE_TEXT_MAX', 1000); }
+if (!defined('DB_ANSAGE_FRIST_MIN')) { define('DB_ANSAGE_FRIST_MIN', 10); }
+if (!defined('DB_ANSAGE_FRIST_MAX')) { define('DB_ANSAGE_FRIST_MAX', 300); }
+
+function db_ansagen_datei()
+{
+    return db_paths()['datadir'] . '/ansagen.json';
+}
+
+/** ansagen.json in fester Form; was nicht passt, faellt beim Lesen heraus. */
+function db_ansagen_lesen()
+{
+    $d = db_json_lesen(db_ansagen_datei());
+    $aus = array('nr' => (isset($d['nr']) && is_int($d['nr']) && $d['nr'] >= 0) ? $d['nr'] : 0, 'liste' => array());
+    foreach ((isset($d['liste']) && is_array($d['liste'])) ? $d['liste'] : array() as $e) {
+        if (is_array($e) && isset($e['nr'], $e['ablauf'], $e['text'], $e['art']) && is_int($e['nr']) && is_int($e['ablauf']) && is_string($e['text'])
+                && is_string($e['art'])) {
+            $aus['liste'][] = $e;
+        }
+    }
+    return $aus;
+}
+
+/** Die Ziele einer Ansage: '' und 'alle' heissen alle Tafeln. Rueckgabe die Liste der Namen (leer = alle) oder null, wenn ein Name nicht passt. */
+function db_ansage_ziele($w)
+{
+    if ($w === null || $w === '' || $w === 'alle') { return array(); }
+    if (!is_string($w) || strlen($w) > 400) { return null; }
+    $l = explode(',', $w);
+    foreach ($l as $n) {
+        if (!db_tafel_name_gueltig($n)) { return null; }
+    }
+    return array_values(array_unique($l));
+}
+
+/** Wie viele der genannten Tafeln (leer = alle, auch unbenannte) haben sich innerhalb der Frist gemeldet? */
+function db_ansage_offene(array $ziele, $jetzt)
+{
+    $n = 0;
+    foreach (db_tafeln_lage(null, $jetzt)['zeilen'] as $z) {
+        if ($z['aus']) { continue; }
+        if ($ziele && !in_array($z['name'], $ziele, true)) { continue; }
+        $n++;
+    }
+    return $n;
+}
+
+/**
+ * Eine Ansage annehmen. Rueckgabe array(HTTP-Code, Felder fuer die Antwortzeile). Alles wird geprueft, bevor geschrieben wird. Antwort: ANSAGE;OK=1;NR=..;TAFELN=..;FRIST=..
+ * art: 'beides' (Gong und Sprache, ab Werk), 'sprache', 'gong' (Signal: Gong und Text, nichts Gesprochenes).
+ */
+function db_ansage_annehmen($text, $tafel, $laut, $dringend, $art, $jetzt = null)
+{
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $cfg = db_config();
+    if (empty($cfg['ansage_ein'])) { return array(403, array('OK' => 0, 'GRUND' => 'ANSAGE_AUS')); }
+    if ($art === null || $art === '') { $art = 'beides'; }
+    if (!is_string($art) || !in_array($art, array('beides', 'sprache', 'gong'), true)) { return array(400, array('OK' => 0, 'GRUND' => 'ART_UNGUELTIG')); }
+    if (!is_string($text) || preg_match('//u', $text) !== 1 || preg_match('/[\x00-\x1F\x7F]/', $text)) { return array(400, array('OK' => 0, 'GRUND' => 'TEXT_UNGUELTIG')); }
+    if (trim($text) === '' && $art !== 'gong') { return array(400, array('OK' => 0, 'GRUND' => 'TEXT_LEER')); }
+    if (preg_match_all('/./us', $text) > DB_ANSAGE_TEXT_MAX) { return array(400, array('OK' => 0, 'GRUND' => 'TEXT_ZU_LANG')); }
+    $ziele = db_ansage_ziele($tafel);
+    if ($ziele === null) { return array(400, array('OK' => 0, 'GRUND' => 'TAFEL_UNGUELTIG')); }
+    $l = -1;
+    if ($laut !== null && $laut !== '') {
+        if (!is_string($laut) || !preg_match('/^[0-9]{1,3}\z/', $laut) || (int) $laut < 1 || (int) $laut > 100) {
+            return array(400, array('OK' => 0, 'GRUND' => 'LAUT_UNGUELTIG'));
+        }
+        $l = (int) $laut;
+    }
+    if (!is_dir(db_paths()['datadir'])) { return array(503, array('OK' => 0, 'GRUND' => 'KEIN_DATENORDNER')); }
+    $offen = db_ansage_offene($ziele, $jetzt);
+    if ($offen < 1) { return array(409, array('OK' => 0, 'GRUND' => 'KEINE_TAFEL')); }
+    $frist = max(DB_ANSAGE_FRIST_MIN, min(DB_ANSAGE_FRIST_MAX, (int) $cfg['ansage_frist']));
+    $e = array('ts' => $jetzt, 'ablauf' => $jetzt + $frist, 'text' => $text, 'art' => $art, 'dringend' => $dringend === '1' ? 1 : 0, 'laut' => $l, 'ziele' => $ziele);
+    $datei = db_ansagen_datei();
+    return db_mit_sperre(db_paths()['datadir'] . '/ansagen.sperre', function () use ($e, $datei, $jetzt, $offen, $frist) {
+        $d = db_ansagen_lesen();
+        $d['liste'] = array_values(array_filter($d['liste'], function ($x) use ($jetzt) { return $x['ablauf'] > $jetzt; }));
+        $d['nr']++;
+        $e['nr'] = $d['nr'];
+        $d['liste'][] = $e;
+        if (count($d['liste']) > DB_ANSAGE_MAX) { $d['liste'] = array_slice($d['liste'], -DB_ANSAGE_MAX); }
+        if (!db_json_schreiben($datei, $d, 0600)) { return array(500, array('OK' => 0, 'GRUND' => 'SCHREIBFEHLER')); }
+        return array(200, array('OK' => 1, 'NR' => $e['nr'], 'TAFELN' => $offen, 'FRIST' => $frist));
+    });
+}
+
+/** Die Felder als Antwortzeile: ANSAGE;OK=1;NR=7. Nur Zahlen und Kennungen, nie Text oder Token. */
+function db_ansage_zeile(array $f)
+{
+    $t = array('ANSAGE');
+    foreach ($f as $s => $w) { $t[] = $s . '=' . $w; }
+    return implode(';', $t);
+}
+
+/**
+ * Was eine Tafel mit den Werten bekommt: 'nr' immer; 'neu' und 'jetzt' nur, solange etwas fuer sie gilt. So bleibt die Zeile des Stroms ohne Ansage
+ * gleich und wird nicht jeden Takt neu geschickt. Die Tafel rechnet mit ablauf - jetzt; die Uhr des Tablets zaehlt nicht. Ohne Einstellung: null.
+ */
+function db_ansage_block($name, $jetzt = null)
+{
+    if (empty(db_config()['ansage_ein'])) { return null; }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $d = db_ansagen_lesen();
+    $aus = array('nr' => $d['nr']);
+    $neu = array();
+    foreach ($d['liste'] as $e) {
+        if ($e['ablauf'] <= $jetzt) { continue; }
+        $ziele = (isset($e['ziele']) && is_array($e['ziele'])) ? $e['ziele'] : array();
+        if ($ziele && !in_array($name, $ziele, true)) { continue; }
+        $neu[] = array('nr' => $e['nr'], 'ablauf' => $e['ablauf'], 'text' => $e['text'], 'art' => $e['art'],
+                       'dringend' => empty($e['dringend']) ? 0 : 1, 'laut' => isset($e['laut']) ? (int) $e['laut'] : -1);
+    }
+    if ($neu) {
+        $aus['neu'] = $neu;
+        $aus['jetzt'] = $jetzt;
+    }
+    return $aus;
+}
+
+/** Der Stand "Ton" einer Tafel als Text fuer Liste und Reiter Test (ohne Markup). */
+function db_tafel_ton_text(array $z)
+{
+    switch (isset($z['ton']) ? $z['ton'] : '') {
+        case 'frei':
+            return db_t('BOARD.TON_FREI');
+        case 'gesperrt':
+            return db_t('BOARD.TON_GESPERRT');
+        case 'aus':
+            return db_t('BOARD.TON_AUS');
+    }
+    return db_t('BOARD.TON_OFFEN');
+}
+
+/** Die letzte Ansage einer Tafel als kurzer Text oder ''. */
+function db_tafel_ansage_text(array $z)
+{
+    if (empty($z['an'])) { return ''; }
+    $e = in_array($z['ae'], array('gesprochen', 'gong', 'text', 'verfallen', 'fehler'), true) ? $z['ae'] : 'offen';
+    return sprintf(db_t('BOARD.AN_LETZTE'), (int) $z['an'], db_t('BOARD.AN_' . strtoupper($e)));
+}
+
+/** Pruefzeile: je offene Tafel "Ton frei" oder "Ton gesperrt". Grau, wenn eine gesperrt ist oder keine offen: das ist kein Fehler der Anlage. array(stand, HTML). */
+function db_pruef_ansagen()
+{
+    if (empty(db_config()['ansage_ein'])) { return array(-1, db_e(db_t('TEST.A_ANSAGE_AUS'))); }
+    $teile = array();
+    $alle = true;
+    foreach (db_tafeln_lage()['zeilen'] as $z) {
+        if ($z['aus']) { continue; }
+        $a = db_tafel_ansage_text($z);
+        $teile[] = db_tafel_anzeigename($z) . ': ' . db_tafel_ton_text($z) . ($a !== '' ? ' (' . $a . ')' : '');
+        if ($z['ton'] !== 'frei') { $alle = false; }
+    }
+    if (!$teile) { return array(-1, db_e(db_t('TEST.A_ANSAGE_KEINE'))); }
+    return array($alle ? 1 : -1, db_e(sprintf(db_t('TEST.A_ANSAGE'), implode('; ', $teile))) . ($alle ? '' : ' ' . db_e(db_t('TEST.A_ANSAGE_TIPPEN'))));
 }
 
 /* ---------------- Tafel-1: Tafeln ueber MQTT (Verbesserungsbau 30.09.2026) ----
@@ -3338,7 +3522,7 @@ function db_pin_frei($cfg = null)
  * nennt sie; jeder andere fehlende Schluessel bleibt eine Beanstandung. */
 function db_sicherung_nachgezogen()
 {
-    return array('pin_frei', 'tafel_mqtt', 'tafel_mqtt_praefix', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein');
+    return array('pin_frei', 'tafel_mqtt', 'tafel_mqtt_praefix', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein', 'ansage_ein', 'ansage_frist', 'ansage_gong');
 }
 
 /** Felder, die der Endpunkt als Zustandszeile liefert.
@@ -3621,8 +3805,9 @@ function db_sicherung_wert_pruefen($k, $w)
         'verlauf_punkte' => array(10, 240), 'ruhe_kacheln' => array(0, DB_RUHE_KACHELN_MAX),
         'ruhe_hell' => array(DB_RUHE_HELL_MIN, DB_RUHE_HELL_MAX),
         'eco_hell' => array(DB_ECO_HELL_MIN, DB_ECO_HELL_MAX),
+        'ansage_frist' => array(DB_ANSAGE_FRIST_MIN, DB_ANSAGE_FRIST_MAX),
     );
-    $haken = array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'haptik',
+    $haken = array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'haptik', 'ansage_ein', 'ansage_gong',
                    'verlauf', 'sse', 'tafelsteuerung', 'gesichert_schalten', 'ruhe_uhr',
                    'ruhe_wetter', 'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein');
     if (isset($ganz[$k])) {
@@ -4773,7 +4958,7 @@ function db_eingabe_felder()
             'z_benutzer' => 'text', 'z_passwort' => 'geheim', 'visu_pw' => 'geheim',
             'gesichert_schalten' => 'haken', 'takt' => 'text', 'http_rueckfall' => 'haken',
             'http_takt' => 'text', 'wartezeit' => 'text', 'sse' => 'haken', 'farbe' => 'text',
-            'vollbild' => 'haken', 'wach' => 'haken', 'haptik' => 'haken',
+            'vollbild' => 'haken', 'wach' => 'haken', 'haptik' => 'haken', 'ansage_ein' => 'haken', 'ansage_frist' => 'text', 'ansage_gong' => 'haken',
             'steuerung_ein' => 'haken', 'rotation' => 'text', 'nacht_von' => 'text',
             'nacht_bis' => 'text', 'nacht_helligkeit' => 'text', 'verlauf' => 'haken',
             'verlauf_punkte' => 'text', 'tafelsteuerung' => 'haken', 'tafel_mqtt' => 'haken',
@@ -5123,7 +5308,7 @@ function db_endpunkt_probe($token)
         }
         @fclose($s);
         if ($antwort === '') {
-            $erg = array(-1, sprintf(db_t('TEST.A_ENDPUNKT_NICHT_MESSBAR'), '127.0.0.1:' . $port, 'keine Antwort'));
+            $erg = array(-1, sprintf(db_t('TEST.A_ENDPUNKT_NICHT_MESSBAR'), '127.0.0.1:' . $port, db_t('TEST.A_ENDPUNKT_LEER')));
         } elseif (!preg_match('#^HTTP/\d\.\d (\d{3})#', $antwort, $m)) {
             $erg = array(0, sprintf(db_t('TEST.A_ENDPUNKT_FALSCH'), 0, db_e(substr($antwort, 0, 80))));
         } else {

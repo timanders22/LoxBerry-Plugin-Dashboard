@@ -382,7 +382,8 @@ function db_pruefungen()
                    array('MQTT.F_VORLAGE', db_pruef_vorlage_mqtt($cfg)),
                    array('MQTT.F_ABRUF', db_pruef_loxone_abruf($cfg)),
                    array('TEST.F_TAFELN', db_pruef_tafeln()),  // 0.9.39
-                   array('TEST.F_WACH', db_pruef_wachhalten())) as $db_pz) {
+                   array('TEST.F_WACH', db_pruef_wachhalten()),
+                   array('TEST.F_ANSAGE', db_pruef_ansagen())) as $db_pz) {     // 0.9.40
         $zeilen[] = db_pruefzeile($db_pz[1][0], db_t($db_pz[0]), $db_pz[1][1]);
     }
     // Antwortet der eigene Endpunkt? Ein echter Aufruf, drei Ausgaenge.
