@@ -215,6 +215,7 @@ $db_sauber = function ($feld) {
  * traegt kein Token. */
 if ($db_post && isset($_POST['vorlage_mqtt'])) {
     list($db_name, $db_xml) = db_vorlage_mqtt_out();
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $db_name . '"');
     echo $db_xml;
@@ -261,6 +262,7 @@ if ($db_post && (isset($_POST['vorlage']) || isset($_POST['vorlage_out']))) {
      * trotzdem - der Reiter zeigt dann "unbekannt" bzw. den alten Stand. */
     $db_va = isset($_POST['vorlage_out']) ? 'vq' : 'vi';
     db_vorlage_merken($db_va, db_vorlage_kennung($db_va));
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $db_name . '"');
     echo $db_xml;
@@ -950,6 +952,7 @@ if ($db_post && isset($_POST['db_sichern'])) {
             db_log('Sicherungsverlauf: der Eintrag zu "Einstellungen sichern" liess sich nicht anlegen.');
         }
         db_einmal_schreiben(array('meldungen' => $db_meldungen, 'fehler' => $db_fehler, 'ausgabe' => ''));
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="dashboard_einstellungen_'
                . date('Ymd_His') . '.json"');
@@ -1001,6 +1004,7 @@ $db_vname = isset($_POST['db_verlauf_name']) ? $_POST['db_verlauf_name'] : null;
 if ($db_post && isset($_POST['db_verlauf_laden'])) {
     list($db_vroh, $db_vgrund) = db_sicherungen_lesen($db_vname);
     if ($db_vroh !== null) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="dashboard_' . $db_vname . '"');
         echo $db_vroh;
