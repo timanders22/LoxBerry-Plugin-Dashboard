@@ -446,7 +446,7 @@ if [ "$BRAUCHT_PIP" = "1" ] && [ -x "$VENV/bin/pip" ]; then
         # D4 (0.9.37): die Ausgabe in einer Variable statt in einer festen Datei unter /tmp. Gehoerte die einem
         # anderen Benutzer, scheiterte schon die Umlenkung, pip lief gar nicht, und hier stand die falsche
         # Ursache (Pruefbericht D4). Erfolg am Rueckgabewert von pip.
-        PIPAUSGABE=$("$VENV/bin/pip" install --no-cache-dir "$PAKET" 2>&1); RC=$?
+        PIPAUSGABE=$(timeout 2400 "$VENV/bin/pip" install --disable-pip-version-check --no-cache-dir "$PAKET" 2>&1); RC=$?
         if [ "$RC" = 0 ]; then
             echo "<OK> Paket $PAKET ueber pip eingerichtet."
         else
@@ -523,7 +523,7 @@ LANG_SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 # I1/I3: Langzeitwerte und "lief vorher" gelten nur bei einer Aktualisierung
 # (Marke), nie aus einem frueheren Vorgang.
 if [ "$DB_UPGRADE" = 1 ] && [ -d "$LANG_SICHER" ]; then
-    for LANG_F in verlauf.json tafeln.json ansagen.json; do
+    for LANG_F in verlauf.json tafeln.json ansagen.json tafel.json tafel_ziele.json; do
         if [ -f "$LANG_SICHER/$LANG_F" ] \
            && [ ! -s "$BASE/data/plugins/$PFOLDER/$LANG_F" ]; then
             mkdir -p "$BASE/data/plugins/$PFOLDER" 2>/dev/null

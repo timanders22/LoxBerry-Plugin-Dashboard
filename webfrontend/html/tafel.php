@@ -1302,6 +1302,31 @@ var hand_hell = null;
    und die Fuenf-Minuten-Gnade nach einer Beruehrung. Der Eco-Modus darf die
    Gnade beenden, die Ansage nicht - also wird vermerkt, woher der Wert kam. */
 var hand_von_beruehrung = false;
+/* 0.9.42 (DB-1): ein Seitenwechsel laedt die Seite neu. Das nimmt eine laufende Ansage und die Warteschlange mit, und sie
+   kaemen nie wieder (ans_gesehen). Bis 0.9.41 schaltete die Tafel trotzdem sofort. Jetzt wartet der Wechsel, bis die
+   Ansagen durch sind, hoechstens zwei Minuten. Die Tonfreigabe rettet das nicht: der Browser verlangt auf jeder neu
+   geladenen Seite ein neues Tippen. */
+var seite_wunsch = "", seite_wunsch_seit = 0;
+function ans_beschaeftigt(){ return !!(ans_q && (ans_laeuft || ans_q.length)); }
+function seite_aufrufen(ziel){
+  location.href = "?token="+encodeURIComponent(<?= json_encode($ist, $db_jf) ?>)
+                + "&seite="+encodeURIComponent(ziel) + ANHANG;
+}
+function seite_wechseln(ziel){
+  if (ans_beschaeftigt()) {
+    if (!seite_wunsch) { seite_wunsch_seit = Date.now(); }
+    seite_wunsch = ziel;
+    return;
+  }
+  seite_aufrufen(ziel);
+}
+setInterval(function(){
+  if (seite_wunsch && (!ans_beschaeftigt() || Date.now() - seite_wunsch_seit > 120000)) {
+    var ziel = seite_wunsch;
+    seite_wunsch = "";
+    seite_aufrufen(ziel);
+  }
+}, 1000);
 function tafel_befolgen(t){
   if (!t || !t.nr || t.nr <= letzte_tafel_nr) { return; }
   letzte_tafel_nr = t.nr;
@@ -1328,10 +1353,8 @@ function tafel_anwenden(t){
      Spiel, und der naechste Druck soll sofort schalten koennen. */
   if (t.ruhe === 1) { ruhe_zeigen(); }
   if (t.ruhe === 0) { ruhe_sperre_bis = 0; ruhe_wegnehmen(); ruhe_frist_neu(); }
-  if (t.seite && t.seite !== SEITE) {
-    location.href = "?token="+encodeURIComponent(<?= json_encode($ist, $db_jf) ?>)
-                  + "&seite="+encodeURIComponent(t.seite) + ANHANG;
-  }
+  if (t.seite && t.seite !== SEITE) { seite_wechseln(t.seite); }
+  else if (t.seite) { seite_wunsch = ""; }
 }
 
 /* ---------- Nachtabsenkung ---------- */
@@ -1439,6 +1462,8 @@ if (KONF.rotation > 0 && LISTE.length > 1) {
        Seite neu, das Ruhebild waere weg und kaeme nach der Wartezeit wieder -
        ein Tablet, das sich nachts von selbst hell schaltet. */
     if (ruhe_an) { return; }
+    /* 0.9.42 (DB-1): und nicht, solange eine Ansage laeuft oder wartet. */
+    if (ans_beschaeftigt() || seite_wunsch) { return; }
     var i = 0;
     for (var n=0; n<LISTE.length; n++) { if (LISTE[n].schluessel === SEITE) { i = n; break; } }
     var naechste = LISTE[(i+1) % LISTE.length].schluessel;
@@ -2183,8 +2208,7 @@ if (ruhe_moeglich()) {
       ev.stopPropagation();
       ruhe_wegnehmen();
       if (ruhe_ziel) {
-        location.href = "?token="+encodeURIComponent(<?= json_encode($ist, $db_jf) ?>)
-                      + "&seite="+encodeURIComponent(ruhe_ziel) + ANHANG;
+        seite_wechseln(ruhe_ziel);
         return;
       }
     }

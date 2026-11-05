@@ -1695,6 +1695,12 @@ def einmallauf(lauf) -> int:
 def main() -> int:
     einmalig = ("--selbsttest", "--einmal", "--entwurf", "--anmeldeprobe",
                 "--httpprobe", "--visuprobe")
+    # 0.9.42 (K8a): ein unbekannter Schalter (Tippfehler --selbtest) startet nicht den Dauerdienst.
+    fremd = [a for a in sys.argv[1:] if a not in einmalig and a != "--von-vorn"]
+    if fremd:
+        sys.stderr.write("FEHLER: unbekannter Schalter %s. Erlaubt sind: %s. Es wurde nichts gestartet.\n"
+                         % (", ".join(fremd), ", ".join(einmalig + ("--von-vorn",))))
+        return 2
     log_einrichten(nach_stdout=any(a in sys.argv for a in einmalig))
     if "--selbsttest" in sys.argv:
         return selbsttest()

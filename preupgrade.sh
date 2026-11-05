@@ -16,7 +16,7 @@ PFOLDER="${ARGV3:-dashboard}"
 # preinstall.sh, direkt hinter der Ordnerbestimmung (plugininstall.pl laesst ohnehin nur [A-Za-z0-9_-] zu;
 # ein Handaufruf mit "../<anderes>" traf bis 0.9.36 die Zweitschriften eines fremden Plugins).
 case "$PFOLDER" in
-    ''|*/*|*..*) echo "<FAIL> preupgrade: unzulaessiger Ordnername '$PFOLDER' - es wurde nichts gesichert."; exit 1 ;;
+    ''|*/*|*..*) echo "<FAIL> preupgrade: unzulaessiger Ordnername '$PFOLDER' - es wurde nichts gesichert."; exit 2 ;;
 esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 
@@ -49,8 +49,8 @@ fi
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     echo "<FAIL> Kein LoxBerry-Wurzelverzeichnis gefunden - es wurde NICHTS gesichert."
     echo "<FAIL> Konfiguration, Dashboards und Zugangsdaten gehen bei diesem Update"
-    echo "<FAIL> verloren. Das Update jetzt abbrechen und von Hand sichern."
-    exit 1
+    echo "<FAIL> verloren. Das Update wird abgebrochen."
+    exit 2
 fi
 
 # ---------- Zuerst die Marke "Aktualisierung laeuft" ----------
@@ -105,10 +105,44 @@ date +%s > "$MARKE" 2>/dev/null
 if [ -s "$MARKE" ]; then
     echo "<OK> Dienststart und Oberflaeche bis zum Ende der Aktualisierung gesperrt."
 else
-    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - der Dienst"
-    echo "<WARNING> koennte waehrend der Aktualisierung anlaufen, und ein Aufruf der"
-    echo "<WARNING> Oberflaeche in dieser Zeit kann die Einstellungen kosten."
+    # 05.11.2026: ohne Marke haelt die Installation das Update fuer eine Neuinstallation und legt die Einstellungen beiseite; bis hierher nur eine Warnung.
+    rm -f "$MARKE" 2>/dev/null
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if { : > "$zs_neu"; } 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_sichere() {   # $1 Quelle, $2 Ziel: fehlt die Datei oder ist sie leer, ist ein Fehlschlag keiner
+    [ -f "$1" ] || return 0
+    zs_hinlegen "$1" "$2" && return 0
+    [ -s "$1" ] || return 1
+    echo "<WARNING> $(basename "$1") liess sich nicht sichern ($2)."
+    ZS_FEHL="$ZS_FEHL $(basename "$1")"
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    rm -f "$MARKE" 2>/dev/null
+    [ "$LIEF_VORHER" = "1" ] && : > "$BASE/data/plugins/$PFOLDER/soll_laufen"
+    exit 2
+}
 
 # ---------- Die Befehlsbruecke anhalten (seit 0.9.37, Gruppe 12) ----------
 # NACH der Marke: befehlsbruecke.sh start und der Waechter pruefen dieselbe Marke und starten nicht, solange sie
@@ -381,10 +415,11 @@ for f in dashboard.json seiten.json zugang.json; do
                 fi ;;
         esac
     fi
-    if cp -p "$CF" "$ZWEIT"; then
+    if zs_hinlegen "$CF" "$ZWEIT"; then
         echo "<INFO> $f gesichert."
     else
         echo "<WARNING> Die Zweitschrift von $f liess sich NICHT anlegen."
+        ZS_FEHL="$ZS_FEHL $f"
     fi
 done
 # zugang.json enthaelt Zugangsdaten - die Sicherung ebenso schuetzen.
@@ -425,12 +460,14 @@ mkdir -p "$LANG_SICHER" 2>/dev/null
 chmod 0700 "$LANG_SICHER" 2>/dev/null
 # Der Sollmerker faehrt neben dem Ordner mit - derselbe Weg wie der Verlauf.
 [ "$LIEF_VORHER" = "1" ] && : > "$LANG_SICHER/lief_vorher"
-for LANG_F in verlauf.json tafeln.json ansagen.json; do
-    [ -f "$BASE/data/plugins/$PFOLDER/$LANG_F" ] \
-        && cp -p "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F" 2>/dev/null
+# 0.9.42 (DB-2): tafel.json und tafel_ziele.json tragen die laufenden Nummern der Tafelbefehle. Gingen sie verloren, zaehlte
+# der Server ab 1, und eine offene Tafel verwarf jeden Befehl, bis die alte Nummer wieder erreicht war.
+for LANG_F in verlauf.json tafeln.json ansagen.json tafel.json tafel_ziele.json; do
+    zs_sichere "$BASE/data/plugins/$PFOLDER/$LANG_F" "$LANG_SICHER/$LANG_F"
 done
 # Die Wirkung pruefen, nicht den Rueckgabewert: liegt hinterher etwas da?
 if [ -n "$(ls -A "$LANG_SICHER" 2>/dev/null)" ]; then
     echo "<OK> Langzeitwerte gesichert."
 fi
+zs_schluss
 exit 0
