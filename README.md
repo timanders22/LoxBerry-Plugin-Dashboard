@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.42 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.43 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,12 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.43
+
+- **Konfiguration wird nach einem Update vervollständigt:** Fehlen in `dashboard.json` Einstellungen, die eine neuere Fassung mitbringt, trägt das Plugin sie jetzt einmal in die Datei ein – beim Start des Dienstes, bevor er die Konfiguration zum ersten Mal liest, und am Ende einer Aktualisierung in `postupgrade.sh`. Geschrieben wird über das neue Kommandozeilenstück `bin/db_vervollstaendigen.php` und damit über die Bibliothek der Oberfläche (`db_config_vervollstaendigen()` in `webfrontend/html/db_lib.php`), mit denselben Rechten (0600) wie beim Speichern im Formular. Das Protokoll `dashboard.log` nennt die ergänzten Namen in einer Zeile, keine Werte. Anlass: am LoxBerry fehlten nach dem Update am 11.11.2026 `ansage_ein`, `ansage_frist` und `ansage_gong` in der Datei; das Plugin las sie bisher nur im Speicher mit ihrer Vorgabe.
+- Geschrieben werden die Werte aus der Datei, wie sie dort stehen, plus die fehlenden Vorgaben; Schlüssel, die das Plugin nicht kennt, bleiben stehen. Was Oberfläche und Dienst aus der Konfiguration lesen, ändert sich dadurch nicht (für die Ansagen auf den Tafeln heißt das weiterhin „an“, bis jemand sie abschaltet). Nicht angefasst werden eine fehlende oder unlesbare `dashboard.json`, eine ohne gültiges Aktionstoken und jede Datei, solange die Marke „Aktualisierung läuft“ liegt. Weil `postinstall.sh` den Dienst bei einem Update noch mit liegender Marke startet, übernimmt dort `postupgrade.sh` das Vervollständigen.
+- Gemessen im Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, einschließlich eines Aufrufs der Startfunktion des Dienstes und eines Laufs von `postupgrade.sh` in einem nachgebildeten LoxBerry-Baum; am Gerät ist es noch nicht gemessen.
 
 ## Neu in 0.9.42
 

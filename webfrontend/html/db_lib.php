@@ -479,6 +479,88 @@ function db_config_speichern($cfg, $trotz_kaputt = false)
     return db_json_schreiben(db_paths()['config'], $cfg, 0600);
 }
 
+/** Leere Objekte des Rohtextes ($o, json_decode ohne true) im Feld $a wieder als Objekt fuehren (seit 0.9.43),
+ *  damit json_encode() sie als {} und nicht als [] schreibt. Nur fuer db_config_vervollstaendigen(). */
+function db_json_leere_objekte($a, $o)
+{
+    if (!is_array($a)) { return $a; }
+    if (is_object($o)) {
+        if (!get_object_vars($o) && $a === array()) { return new stdClass(); }
+        foreach ($a as $k => $v) {
+            $ks = (string) $k;
+            if (is_array($v) && property_exists($o, $ks)) { $a[$k] = db_json_leere_objekte($v, $o->$ks); }
+        }
+    } elseif (is_array($o)) {
+        foreach ($a as $k => $v) {
+            if (is_array($v) && array_key_exists($k, $o)) { $a[$k] = db_json_leere_objekte($v, $o[$k]); }
+        }
+    }
+    return $a;
+}
+
+/**
+ * Fehlende Vorgaben EINMAL in dashboard.json schreiben (seit 0.9.43, Regeln/05).
+ *
+ * Bis 0.9.42 ergaenzten db_config() und der Dienst (VORGABEN in bin/dashboard_dienst.py) fehlende Schluessel nur
+ * im Speicher; in die Datei kamen sie erst mit dem naechsten Speichern im Formular. Am Geraet fehlten am
+ * 11.11.2026 ansage_ein, ansage_frist und ansage_gong. Aufgerufen ueber bin/db_vervollstaendigen.php beim
+ * Dienststart (main() in bin/dashboard_dienst.py, vor dem ersten Lesen der Konfiguration) und aus postupgrade.sh
+ * (dort ist die Marke schon fort; den Dienst startet postinstall.sh bei einer Aktualisierung noch MIT Marke, und
+ * dann schreibt diese Funktion nichts).
+ *
+ * - Nur mit LoxBerry-Wurzel, nicht waehrend einer Aktualisierung (gueltige Marke, db_upgrade_marke()), und nur,
+ *   wenn dashboard.json ein Objekt ist und ein gueltiges Aktionstoken traegt (db_token_gueltig(), das Merkwort).
+ *   Eine fehlende, kaputte oder tokenlose Datei bleibt, wie sie ist (db_token() und das Speichern sind dafuer
+ *   zustaendig); es entsteht auch keine Abschrift .kaputt.
+ * - Geschrieben werden die WERTE AUS DER DATEI plus die fehlenden Vorgaben, nicht die von db_config()
+ *   zusammengefuehrten; fremde Schluessel bleiben stehen. db_config() kennt keine Lese-Regel fuer Bestandsdateien
+ *   (ein fehlender Schluessel liest die Vorgabe; fuer ansage_ein heisst das "an"), deshalb ist die Vorgabe hier
+ *   auch der geschriebene Wert. Den Uebergang von endpunkt_ein beim Update (E6) macht postinstall.sh vorher.
+ *   Nur die Schluessel aus db_vorgaben() - genau die, die das Speichern im Formular ohnehin schreibt.
+ * - Geschrieben wird ueber db_config_speichern() (0600, unteilbar). Eine Zweitschrift hat diese Linie nicht.
+ * - Genau eine Protokollzeile mit den Namen, nie mit Werten.
+ *
+ * Rueckgabe: array('stand' => ruht|ohne_datei|ohne_merkwort|vollstaendig|ergaenzt|fehler, 'schluessel' => array())
+ */
+function db_config_vervollstaendigen()
+{
+    $p = db_paths();
+    $marke = db_upgrade_marke();
+    if ($p['home'] === '' || $marke[1]) {
+        return array('stand' => 'ruht', 'schluessel' => array());
+    }
+    clearstatcache(true, $p['config']);
+    if (!is_file($p['config'])) {
+        return array('stand' => 'ohne_datei', 'schluessel' => array());
+    }
+    $roh = @file_get_contents($p['config']);
+    $datei = is_string($roh) ? json_decode($roh, true) : null;
+    if (!is_array($datei) || !isset($datei['aktionstoken']) || !db_token_gueltig($datei['aktionstoken'])) {
+        return array('stand' => 'ohne_merkwort', 'schluessel' => array());
+    }
+    $fehlend = array();
+    foreach (db_vorgaben() as $k => $w) {
+        if (!array_key_exists($k, $datei)) {
+            $datei[$k] = $w;
+            $fehlend[] = $k;
+        }
+    }
+    if (!$fehlend) {
+        return array('stand' => 'vollstaendig', 'schluessel' => array());
+    }
+    // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme als []
+    // zurueck - der Rohwert wird erhalten.
+    $datei = db_json_leere_objekte($datei, json_decode($roh));
+    if (!db_config_speichern($datei)) {
+        db_log('Konfiguration NICHT vervollstaendigt: dashboard.json liess sich nicht schreiben ('
+            . count($fehlend) . ' fehlende Schluessel).');
+        return array('stand' => 'fehler', 'schluessel' => $fehlend);
+    }
+    db_log('Konfiguration vervollstaendigt - ' . count($fehlend)
+        . ' fehlende Vorgaben in dashboard.json geschrieben: ' . implode(', ', $fehlend));
+    return array('stand' => 'ergaenzt', 'schluessel' => $fehlend);
+}
+
 /* ---------------- Zugangsdaten ----------------
  *
  * Zugangsdaten stehen NIE in der Konfiguration, die die Oberflaeche anzeigt,

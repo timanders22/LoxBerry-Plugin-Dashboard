@@ -1692,8 +1692,42 @@ def einmallauf(lauf) -> int:
     return asyncio.run(lauf())
 
 
+def konfiguration_vervollstaendigen() -> str:
+    """Seit 0.9.43 (Regeln/05): fehlende Vorgaben einmal in dashboard.json schreiben - beim Dienststart.
+
+    Geschrieben wird ueber bin/db_vervollstaendigen.php und damit ueber db_config_vervollstaendigen() in
+    db_lib.php, nicht von hier: ein Schreiber fuer ein Format. Am Geraet fehlten am 11.11.2026 ansage_ein,
+    ansage_frist und ansage_gong. Die Protokollzeile mit den Namen schreibt db_lib.php in dieselbe Datei; hier
+    steht eine Zeile nur, wenn der Aufruf scheiterte - nie ein Wert. Waehrend einer Aktualisierung (Marke)
+    schreibt das PHP-Stueck nichts; dann holt es postupgrade.sh nach.
+    Rueckgabe: die Ausgabezeile des Skripts oder "" (fuer die Pruefung)."""
+    import subprocess  # noqa: PLC0415
+    skript = os.path.join(str(HIER), "db_vervollstaendigen.php")
+    if not os.path.isfile(skript):
+        _LOG.warning("Konfiguration nicht vervollstaendigt: bin/db_vervollstaendigen.php fehlt.")
+        return ""
+    php = "php"
+    for k in ("/usr/bin/php", "/usr/local/bin/php"):
+        if os.path.isfile(k):
+            php = k
+            break
+    umgebung = dict(os.environ, LBHOMEDIR=HOME, LBPPLUGINDIR=ORDNER)
+    try:
+        r = subprocess.run([php, skript, ORDNER], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           env=umgebung, timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError) as fehler:
+        _LOG.warning("Konfiguration nicht vervollstaendigt: Aufruf von db_vervollstaendigen.php scheiterte (%s)",
+                     type(fehler).__name__)
+        return ""
+    zeilen = r.stdout.decode("utf-8", "replace").strip().splitlines()
+    zeile = zeilen[-1] if zeilen else ""
+    if r.returncode != 0 or not zeile.startswith("VERVOLLSTAENDIGEN;"):
+        _LOG.warning("Konfiguration nicht vervollstaendigt: Rueckgabe %s, Ausgabe %r", r.returncode, zeile[:200])
+    return zeile
+
+
 def main() -> int:
-    einmalig = ("--selbsttest", "--einmal", "--entwurf", "--anmeldeprobe",
+    einmalig =("--selbsttest", "--einmal", "--entwurf", "--anmeldeprobe",
                 "--httpprobe", "--visuprobe")
     # 0.9.42 (K8a): ein unbekannter Schalter (Tippfehler --selbtest) startet nicht den Dauerdienst.
     fremd = [a for a in sys.argv[1:] if a not in einmalig and a != "--von-vorn"]
@@ -1732,6 +1766,8 @@ def main() -> int:
         return 3
     with open(DATEI_PID, "w", encoding="utf-8") as fh:
         fh.write(str(os.getpid()))
+    # 0.9.43: fehlende Vorgaben einmal in die Datei, bevor der Dienst die Konfiguration liest (Regeln/05).
+    konfiguration_vervollstaendigen()
     d = Dienst()
     signal.signal(signal.SIGTERM, d.anhalten)
     signal.signal(signal.SIGINT, d.anhalten)
