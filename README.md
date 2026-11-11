@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.43 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.44 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,13 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.44
+
+- **Verbindung zum Miniserver wie LoxBerry:** Im Reiter *Einstellungen* steht statt des Hakens „Verschlüsselt verbinden“ die Auswahl *Verbindung zum Miniserver* mit *wie LoxBerry*, *unverschlüsselt* und *verschlüsselt (TLS)* (Schlüssel `tls` in `dashboard.json`: `"auto"`, `0`, `1`; jeder andere Wert wird abgewiesen, im Formular wie beim Zurückspielen einer Sicherung). *Wie LoxBerry* verbindet verschlüsselt, wenn `general.json` den Miniserver mit `Preferhttps` 1 oder `Transport` `https` führt, und nimmt dann `Porthttps` (fehlt er oder ist er ungültig: 443), sonst `Port` (fehlt er: 80); beim abweichenden Zugang gilt der dort eingetragene Port. Das gilt für den WebSocket und für jede HTTP-Abfrage des Dienstes (`jdev/cfg/api`, öffentlicher Schlüssel, HTTP-Rückfall), weil beide aus demselben Client-Objekt kommen. Eine Änderung startet den Dienst neu.
+- Neue Installationen beginnen mit *wie LoxBerry*. Eine bestehende Einstellung *unverschlüsselt* (`tls` 0) bleibt nach dem Update stehen; führt der LoxBerry den Miniserver mit https, ist die Zeile *Verbindung zum Miniserver* in der Übersicht und die Zeile *Passt die Verbindungsart zum LoxBerry?* im Reiter *Test* rot, mit dem Rat, auf *wie LoxBerry* zu stellen, und das Protokoll nennt den Widerspruch einmal je Lauf.
+- Leitet der Miniserver auf https um, schreibt der Dienst das einmal je Lauf als eigene Zeile ins Protokoll („Der Miniserver verlangt eine verschluesselte Verbindung (Umleitung auf https) …“), dazu in den Zustand, den der Reiter *Test* liest. Anlass: nach dem Update der Miniserver-Firmware auf 17.3.11.10 am 11.11.2026 leitete der Miniserver `ws://…:80` und `http://…:80` mit 308 auf `https://…dyndns.loxonecloud.com` um; websockets folgte und brach mit „isn't a valid URI: scheme isn't ws or wss“ ab, der HTTP-Rückfall kam ebenfalls nicht an.
+- Geprüft im Selbsttest des Dienstes und in einem Prüfstand auf dem Arbeitsrechner (nachgebildete `general.json` wie am Gerät gemessen); am Gerät ist die neue Fassung noch nicht gemessen.
 
 ## Neu in 0.9.43
 

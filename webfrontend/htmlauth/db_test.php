@@ -81,6 +81,19 @@ function db_pruefungen()
         // Der Wert des Kennworts wird NIE angezeigt - nur, ob eines da ist.
         $zeilen[] = db_pruefzeile(!empty($ms['passwort_da']) ? 1 : -1, db_t('TEST.F_KENNWORT'),
             !empty($ms['passwort_da']) ? db_t('TEST.A_KENNWORT_DA') : db_t('TEST.A_KENNWORT_LEER'));
+        /* Verbindungsart (seit 0.9.44, Punkt G3): tls=0, der LoxBerry fuehrt den Miniserver aber mit https -
+         * rot, mit dem Rat; der Wert wird nicht umgedeutet. Ein ungueltiger Wert ist ebenfalls rot. Der Port
+         * der Erreichbarkeit darunter ist derselbe, mit dem der Dienst verbindet. */
+        $vb = $ms['verbindung'];
+        if ($vb['tls'] === null) {
+            $zeilen[] = db_pruefzeile(0, db_t('TEST.F_VERBINDUNG'), db_e(db_t('EINST.FEHLER_TLS')));
+        } elseif ($vb['widerspruch']) {
+            $zeilen[] = db_pruefzeile(0, db_t('TEST.F_VERBINDUNG'), db_e(db_t('TEST.A_VB_WIDERSPRUCH')));
+        } else {
+            $zeilen[] = db_pruefzeile(1, db_t('TEST.F_VERBINDUNG'), db_e(sprintf(db_t('TEST.A_VB_OK'),
+                $vb['wahl'] === 'auto' ? 'auto' : (string) (int) $vb['wahl'], $vb['lb_https'] ? 'https' : 'http',
+                $vb['tls'] ? 'wss/https' : 'ws/http', (int) $vb['port'])));
+        }
         // Erreichbarkeit: nur der TCP-Port, kein Anmeldeversuch. Ein
         // fehlgeschlagener Anmeldeversuch je Seitenaufruf wuerde den
         // Miniserver irgendwann sperren.
@@ -147,6 +160,13 @@ function db_pruefungen()
         if (isset($a['weg']) && $a['weg'] === 'http') {
             $zeilen[] = db_pruefzeile(-1, db_t('TEST.F_WEG'), db_t('TEST.A_WEG_HTTP'));
         }
+    }
+    /* G4 (seit 0.9.44): hat der letzte Verbindungsversuch eine Umleitung auf https getroffen? Der Dienst schreibt
+     * dann UMLEITUNG_TEXT aus bin/dashboard_dienst.py nach zustand.json; die Zeile steht nur in diesem Fall. */
+    $zst = db_zustand();
+    if (isset($zst['ok'], $zst['fehler']) && (int) $zst['ok'] === 0 && is_string($zst['fehler'])
+            && strpos($zst['fehler'], '(Umleitung auf https)') !== false) {
+        $zeilen[] = db_pruefzeile(0, db_t('TEST.F_UMLEITUNG'), db_e(db_t('TEST.A_UMLEITUNG')));
     }
 
     $seiten = db_seiten();

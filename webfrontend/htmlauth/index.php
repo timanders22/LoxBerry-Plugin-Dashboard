@@ -448,11 +448,22 @@ if ($db_post && isset($_POST['speichern'])) {
     // Haken: isset() stellt sie beim Absenden DIESES Formulars. Alle Haken
     // dieses Reiters stehen deshalb in demselben Formular - sonst setzte das
     // Absenden eines anderen sie stillschweigend auf 0.
-    foreach (array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'ansage_ein', 'ansage_gong',
+    foreach (array('http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'ansage_ein', 'ansage_gong',
                    'haptik', 'verlauf', 'sse', 'tafelsteuerung',
                    'gesichert_schalten', 'ruhe_uhr', 'ruhe_wetter',
                    'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein') as $db_h) {
         $db_cfg[$db_h] = isset($_POST[$db_h]) ? 1 : 0;
+    }
+
+    /* Seit 0.9.44 (Punkt G2): "Verbindung zum Miniserver" ist eine Auswahl - auto (wie LoxBerry), 0, 1. Was nicht
+     * genau das ist, bleibt Text und wird abgewiesen (auch ein fehlendes Feld), nie still auf einen Wert gelegt. */
+    $db_tv = $db_sauber('tls');
+    $db_tls = $db_tv === '0' ? 0 : ($db_tv === '1' ? 1 : $db_tv);
+    if (db_wert_tls($db_tls) !== '') {
+        $db_bean[] = 'tls';
+        $db_fehler[] = db_wert_tls($db_tls);
+    } else {
+        $db_cfg['tls'] = $db_tls;
     }
 
     /* Eigene Zugangsdaten. Sie landen in zugang.json mit Rechten 0600 und
@@ -656,6 +667,11 @@ if ($db_post && isset($_POST['speichern'])) {
                 (string) $db_cfg_vorher['tafel_mqtt_praefix'] !== (string) $db_cfg['tafel_mqtt_praefix']));
             if ($db_bs !== '') {
                 $db_meldungen[] = $db_bs;
+            }
+            /* G2 (0.9.44): eine geaenderte Verbindungsart steht im Protokoll; den Neustart besorgt O17 darunter. */
+            if (json_encode($db_cfg_vorher['tls']) !== json_encode($db_cfg['tls'])) {
+                db_log('Verbindung zum Miniserver: tls=' . (is_string($db_cfg['tls']) ? $db_cfg['tls'] : (int) $db_cfg['tls'])
+                    . ' (vorher ' . (is_string($db_cfg_vorher['tls']) ? $db_cfg_vorher['tls'] : json_encode($db_cfg_vorher['tls'])) . ').');
             }
             // O17: was der Dienst beim Start liest
             foreach (array('miniserver', 'tls', 'takt', 'http_rueckfall', 'http_takt',
@@ -1262,6 +1278,13 @@ ob_start();
 <tr><td><?= db_e(db_t('ALLG.MINISERVER')) ?></td>
     <td><?= $db_ms ? db_e($db_ms['name'] . ' - ' . $db_ms['adresse'] . ':' . $db_ms['port'])
                    : '<span class="sm-aus">' . db_e(db_t('ALLG.KEIN_MS')) . '</span>' ?></td></tr>
+<?php /* G3 (0.9.44): die Verbindungsart, rot bei ungueltigem tls oder bei tls=0 gegen einen LoxBerry mit https. */
+$db_vb = isset($db_ms['verbindung']) ? $db_ms['verbindung'] : db_ms_verbindung($db_cfg); ?>
+<tr><td><?= db_e(db_t('ALLG.VERBINDUNG')) ?></td>
+    <td class="<?= ($db_vb['widerspruch'] || $db_vb['tls'] === null) ? 'sm-aus' : '' ?>"><?= db_e($db_vb['tls'] === null
+        ? db_t('EINST.TLS_UNGUELTIG')
+        : (($db_vb['tls'] ? 'wss/https' : 'ws/http') . ', Port ' . (int) $db_vb['port']
+           . ($db_vb['widerspruch'] ? ' ' . db_t('ALLG.VB_WIDERSPRUCH_KURZ') : ''))) ?></td></tr>
 <tr><td><?= db_e(db_t('ALLG.BAUSTEINE')) ?></td>
     <td><?= count($db_bausteine) ?><?= isset($db_struktur['lastModified'])
         ? ' <span class="sm-hilfe">(' . db_e($db_struktur['lastModified']) . ')</span>' : '' ?></td></tr>
@@ -1275,6 +1298,7 @@ ob_start();
           . (isset($db_zustand['weg']) && $db_zustand['weg'] === 'http'
              ? ' &mdash; ' . db_e(db_t('ALLG.UEBER_HTTP')) : '') ?></td></tr>
 </table>
+<?php if ($db_vb['widerspruch']) { ?><div class="sm-warnung"><?= db_e(db_t('TEST.A_VB_WIDERSPRUCH')) ?></div><?php } ?>
 
 <!-- Die Leiste steht AUSGESCHRIEBEN da, obwohl $db_reiter sie erzeugen
      koennte. Grund: hausstandard_pruefen.py sucht 'data-ziel="tab-…"' im
@@ -1355,8 +1379,26 @@ if (db_eingaben_aktiv('speichern')) {
   <?php } ?>
   </select>
 </div>
-<label><input data-role="none" type="checkbox" name="tls" value="1"<?= !empty($db_cfg['tls']) ? ' checked' : '' ?>>
-  <?= db_e(db_t('EINST.L_TLS')) ?></label>
+<?php
+/* Seit 0.9.44 (Punkt G2): die Wahl als Text fuer die Auswahl ('auto', '0', '1'); nach einer Beanstandung (X-2)
+ * steht hier die eingetippte Wahl, ein ungueltiger Wert bleibt sichtbar und wird nicht still ersetzt. */
+$db_tls_ist = array_key_exists('tls', $db_cfg) ? $db_cfg['tls'] : 'auto';
+$db_w_tls = is_int($db_tls_ist) ? (string) $db_tls_ist : (is_string($db_tls_ist) ? $db_tls_ist : 'ungueltig');
+$db_vb_form = isset($db_ms['verbindung']) ? $db_ms['verbindung'] : db_ms_verbindung($db_cfg_gespeichert);
+?>
+<div class="sm-feld">
+  <label for="tls"><?= db_e(db_t('EINST.L_TLS')) ?></label>
+  <select data-role="none" name="tls" id="tls"<?= db_beanstandet_attr('speichern', 'tls') ?>>
+    <option value="auto"<?= $db_w_tls === 'auto' ? ' selected' : '' ?>><?= db_e(db_t('EINST.TLS_AUTO')) ?></option>
+    <option value="0"<?= $db_w_tls === '0' ? ' selected' : '' ?>><?= db_e(db_t('EINST.TLS_AUS')) ?></option>
+    <option value="1"<?= $db_w_tls === '1' ? ' selected' : '' ?>><?= db_e(db_t('EINST.TLS_EIN')) ?></option>
+<?php if (!in_array($db_w_tls, array('auto', '0', '1'), true)) { ?>
+    <option value="<?= db_e($db_w_tls) ?>" selected><?= db_e($db_w_tls . ' ' . db_t('EINST.TLS_UNGUELTIG')) ?></option>
+<?php } ?>
+  </select>
+</div>
+<p class="sm-hilfe"><?= db_e(sprintf(db_t('EINST.TLS_HILFE'), $db_vb_form['lb_https'] ? 'https' : 'http',
+    $db_vb_form['tls'] === null ? '-' : (($db_vb_form['tls'] ? 'wss/https' : 'ws/http') . ', Port ' . (int) $db_vb_form['port']))) ?></p>
 <p class="sm-hilfe"><?= db_t('EINST.H_TLS') ?></p>
 
 <h3><?= db_e(db_t('EINST.H_ZUGANG')) ?></h3>

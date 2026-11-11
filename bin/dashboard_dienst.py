@@ -181,7 +181,10 @@ DATEI_SEITEN_SPERRE = os.path.join(CONFIGDIR, "seiten.sperre")
 # fehlte hier 'haptik', obwohl der Kommentar Gleichheit zusicherte.
 VORGABEN = {
     "miniserver": "1",
-    "tls": 0,
+    # Seit 0.9.44 (Punkt G1): "auto" = wie LoxBerry (Entscheidung des Hausherrn 11.11.2026), daneben 0 und 1.
+    # Eine dashboard.json mit Aktionstoken traegt tls schon (db_token() und das Formular schreiben alle Vorgaben);
+    # ein dort stehendes 0 bleibt 0 (G3) - gemeldet wird der Widerspruch, umgedeutet wird nichts.
+    "tls": "auto",
     "takt": 2,               # Sekunden zwischen zwei Abbildern
     "http_rueckfall": 1,
     "http_takt": 10,
@@ -525,13 +528,16 @@ def miniserver_daten(nummer: str = "1") -> dict:
                         "zugang.json.kaputt daneben. Reiter Einstellungen: Einstellungen "
                         "zurueckspielen, oder die Datei entfernen - dann gelten die "
                         "LoxBerry-Zugangsdaten." % lage)
-    if eigen.get("adresse") and eigen.get("benutzer"):
-        return {"quelle": "eigen", "name": eigen.get("name") or "eigener Zugang",
-                "adresse": str(eigen["adresse"]), "port": int(eigen.get("port") or 80),
-                "benutzer": str(eigen["benutzer"]), "passwort": str(eigen.get("passwort") or "")}
     d = json_lesen(os.path.join(HOME, "config", "system", "general.json"))
     alle = d.get("Miniserver") or {}
     ms = alle.get(str(nummer)) or (list(alle.values())[0] if alle else None)
+    if eigen.get("adresse") and eigen.get("benutzer"):
+        # Seit 0.9.44 (Punkt G1): auch beim eigenen Zugang sagt der LoxBerry-Eintrag des gewaehlten Miniservers,
+        # was "wie LoxBerry" heisst; der Port bleibt der eingetragene (verbindungsart()).
+        return {"quelle": "eigen", "name": eigen.get("name") or "eigener Zugang",
+                "adresse": str(eigen["adresse"]), "port": int(eigen.get("port") or 80),
+                "porthttps": None, "lb_https": lb_sagt_https(ms) if isinstance(ms, dict) else False,
+                "benutzer": str(eigen["benutzer"]), "passwort": str(eigen.get("passwort") or "")}
     if not isinstance(ms, dict):
         return {}
     adresse = ms.get("Ipaddress") or ms.get("IPAddress") or ""
@@ -542,11 +548,94 @@ def miniserver_daten(nummer: str = "1") -> dict:
         "name": ms.get("Name") or ("Miniserver " + str(nummer)),
         "adresse": str(adresse),
         "port": int(ms.get("Port") or 80),
+        # Seit 0.9.44 (Punkt G1): was der LoxBerry ueber die Verbindungsart sagt; die Wahl trifft
+        # verbindungsart() aus diesen Angaben und dem Schalter tls.
+        "porthttps": ms.get("Porthttps"),
+        "lb_https": lb_sagt_https(ms),
         # D9: Admin_raw/Pass_raw (Klartext, LoxBerry 2.2-4.x), sonst Admin/Pass uri_escape-kodiert -> unquote.
         # Bauform Sprachsteuerung miniserver_aus_general(). Leerer *_raw faellt auf unquote(Admin) zurueck.
         "benutzer": str(ms.get("Admin_raw") or urllib.parse.unquote(str(ms.get("Admin") or ms.get("Username") or ""))),
         "passwort": str(ms.get("Pass_raw") or urllib.parse.unquote(str(ms.get("Pass") or ms.get("Password") or ""))),
     }
+
+
+def lb_sagt_https(ms: dict) -> bool:
+    """Fuehrt der LoxBerry diesen Miniserver verschluesselt? Gemessen am Geraet 11.11.2026: Transport "https",
+    Preferhttps "1", Porthttps "443", Port "80" (general.json, Miniserver.1). Wahr bei Preferhttps 1 oder
+    Transport https (seit 0.9.44, Bauart Hausansicht 0.1.2 Punkt G)."""
+    pref = ms.get("Preferhttps")
+    if pref is True or (not isinstance(pref, bool) and str(pref).strip() == "1"):
+        return True
+    return str(ms.get("Transport") or "").strip().lower() == "https"
+
+
+TLS_ERLAUBT = ("auto", 0, 1)
+
+
+def verbindungsart(cfg: dict, d: dict) -> tuple[bool, int]:
+    """(TLS ja/nein, Port) aus dem Schalter tls und den Angaben des LoxBerry (seit 0.9.44, Punkt G1).
+
+    tls "auto": TLS genau dann, wenn der LoxBerry https sagt (lb_sagt_https); 1 immer, 0 nie. Ein anderer Wert
+    wird nicht gedeutet: LoxFehler. Port bei TLS Porthttps (fehlt oder ungueltig: 443), sonst Port (fehlt: 80).
+    Beim eigenen Zugang gilt in beiden Faellen der eingetragene Port. Eine bestehende tls=0 bleibt
+    unverschluesselt - der Reiter Test, die Statustabelle und das Protokoll melden den Widerspruch (G3).
+    Gilt fuer den WebSocket und fuer jede HTTP-Abfrage des Clients (Miniserver._http_basis): beide lesen tls und
+    port desselben Objekts, das nur _bauen() anlegt."""
+    wahl = cfg.get("tls", "auto")
+    # Nur genau "auto", 0 und 1 - kein True, kein 1.0, kein "1" (dieselbe Regel wie db_wert_tls() in db_lib.php).
+    if isinstance(wahl, bool) or not isinstance(wahl, (str, int)) or wahl not in TLS_ERLAUBT:
+        raise LoxFehler("Die Einstellung 'Verbindung zum Miniserver' (tls) hat den ungueltigen Wert %r; "
+                        "erlaubt sind auto, 0 und 1. Es wird nicht verbunden." % (wahl,))
+    tls = bool(d.get("lb_https")) if wahl == "auto" else wahl == 1
+    if d.get("quelle") == "eigen":
+        return tls, int(d.get("port") or 80)
+    if not tls:
+        return False, int(d.get("port") or 80)
+    roh = str(d.get("porthttps") if d.get("porthttps") is not None else "").strip()
+    port = int(roh) if re.match(r"^\d{1,5}$", roh) else 443
+    return True, (port if 1 <= port <= 65535 else 443)
+
+
+def widerspruch_tls(cfg: dict, d: dict | None = None) -> str:
+    """'' oder ein Satz, wenn tls=0 steht, der LoxBerry den Miniserver aber mit https fuehrt (seit 0.9.44,
+    Punkt G3: der Wert wird nicht still umgedeutet, nur gemeldet)."""
+    if type(cfg.get("tls")) is not int or cfg.get("tls") != 0:
+        return ""
+    if d is None:
+        try:
+            d = miniserver_daten(str(cfg.get("miniserver") or "1"))
+        except LoxFehler:
+            return ""
+    if d and d.get("lb_https"):
+        return ("Verbindungsart: eingestellt ist 'unverschluesselt' (tls=0), der LoxBerry fuehrt den Miniserver "
+                "aber mit https. Rat: im Reiter Einstellungen 'Verbindung zum Miniserver' auf 'wie LoxBerry' "
+                "stellen.")
+    return ""
+
+
+UMLEITUNG_TEXT = ("Der Miniserver verlangt eine verschluesselte Verbindung (Umleitung auf https). Im Reiter "
+                  "Einstellungen 'Verbindung zum Miniserver' auf 'wie LoxBerry' oder 'verschluesselt (TLS)' stellen.")
+
+
+def umleitung_erkannt(f: BaseException) -> bool:
+    """Ist das die Umleitung von ws:// oder http:// auf https (seit 0.9.44, Punkt G4)? Gemessen am Geraet
+    11.11.2026: websockets 15 folgt der Umleitung (308) des Miniservers und wirft "https://...dyndns.
+    loxonecloud.com/ws/rfc6455 isn't a valid URI: scheme isn't ws or wss" (InvalidURI). Dazu, nicht gemessen:
+    eine Antwort 301/302/307/308 mit einer Location auf https - InvalidStatus (websockets, .response) oder
+    urllib.error.HTTPError (.code, .headers) auf dem HTTP-Weg."""
+    text = str(f)
+    if type(f).__name__ == "InvalidURI" or ("isn't a valid URI" in text and "https://" in text):
+        return True
+    antwort = getattr(f, "response", None)
+    code = getattr(antwort, "status_code", None) or getattr(f, "status_code", None) or getattr(f, "code", None)
+    if code in (301, 302, 307, 308):
+        kopf = getattr(antwort, "headers", None) or getattr(f, "headers", None) or {}
+        try:
+            ort = str(kopf.get("Location") or kopf.get("location") or "")
+        except AttributeError:
+            ort = ""
+        return ort.lower().startswith("https://")
+    return False
 
 
 def token_merken(token: str, kennung: str, hashalg: str = "") -> None:
@@ -1054,6 +1143,7 @@ class Dienst:
     def __init__(self) -> None:
         self.laeuft = True
         self.ms: Miniserver | None = None
+        self.umleitung_gemeldet = False      # G4 (0.9.44): die klare Zeile einmal je Lauf
 
     def anhalten(self, *_a) -> None:
         self.laeuft = False
@@ -1070,10 +1160,23 @@ class Dienst:
             raise LoxFehler("Fuer den Miniserver '%s' ist kein Benutzer hinterlegt."
                             % d.get("name"))
         altes, kennung, alg = token_holen()
-        ms = Miniserver(d["adresse"], d["port"], d["benutzer"], d["passwort"],
-                        tls=bool(int(cfg.get("tls") or 0)), kennung=kennung,
-                        hashalg=alg)
+        # Seit 0.9.44 (Punkt G1): Verbindungsart und Port aus tls und dem LoxBerry. Bis 0.9.43 stand hier immer
+        # Miniserver.Port (80) und tls aus der Konfiguration - ein Miniserver mit Pflicht zu https leitete ws://
+        # auf eine https-Adresse um, und websockets lehnte sie ab (am Geraet gemessen 11.11.2026). Dieses Objekt
+        # traegt den WebSocket UND jede HTTP-Abfrage (Strukturdatei, Befehle, Zustaende, HTTP-Notnagel).
+        tls, port = verbindungsart(cfg, d)
+        ms = Miniserver(d["adresse"], port, d["benutzer"], d["passwort"],
+                        tls=tls, kennung=kennung, hashalg=alg)
         return ms, altes
+
+    def _umleitung_melden(self, f: BaseException) -> bool:
+        """G4 (seit 0.9.44): eine Umleitung auf https einmal je Lauf klar ins Protokoll. Rueckgabe: erkannt?"""
+        if not umleitung_erkannt(f):
+            return False
+        if not self.umleitung_gemeldet:
+            _LOG.error("%s", UMLEITUNG_TEXT)
+            self.umleitung_gemeldet = True
+        return True
 
     async def einmal_verbinden(self, cfg: dict, tabelle: dict) -> Miniserver:
         """Verbinden, anmelden, Struktur holen, Zustaende einschalten.
@@ -1107,6 +1210,11 @@ class Dienst:
         status_aufgabe, status_sender = status_mqtt_starten(lambda: self.laeuft)
         takt = max(1, min(30, int(cfg.get("takt") or 2)))
         wartezeit = 5
+        # G3 (0.9.44): tls=0 bei einem LoxBerry, der https fuehrt - einmal je Lauf melden, nicht umdeuten. Die
+        # Konfiguration liest dieser Lauf nur hier; ein Speichern mit geaenderter Verbindung startet ihn neu.
+        widerspruch = widerspruch_tls(cfg)
+        if widerspruch:
+            _LOG.warning("%s", widerspruch)
 
         while self.laeuft:
             ms = None
@@ -1192,9 +1300,12 @@ class Dienst:
                 raise
             except Exception as f:
                 _LOG.error("%s", f)
+                # G4 (0.9.44): die Umleitung auf https sagt, was zu tun ist - einmal je Lauf im Protokoll, im
+                # Zustand und im Abbild bei jedem Versuch.
+                grund = UMLEITUNG_TEXT if self._umleitung_melden(f) else str(f)
                 json_schreiben(DATEI_ZUSTAND, {"ok": 0, "ts": int(time.time()),
-                                               "weg": "", "fehler": str(f)})
-                abbild_gestoert(str(f))
+                                               "weg": "", "fehler": grund})
+                abbild_gestoert(grund)
                 if int(cfg.get("http_rueckfall") or 0):
                     await self.http_weg(cfg, tabelle)
             finally:
@@ -1300,7 +1411,9 @@ class Dienst:
                 marke = await schleife.run_in_executor(None, ms.http_marke)
             except Exception as f:
                 _LOG.warning("Der HTTP-Weg bekommt keine Beglaubigung: %s", f)
-                abbild_gestoert("Notnagel: keine Beglaubigung - %s" % f)
+                # G4 (0.9.44): auch der HTTP-Weg kann umgeleitet werden.
+                abbild_gestoert(UMLEITUNG_TEXT if self._umleitung_melden(f)
+                                else "Notnagel: keine Beglaubigung - %s" % f)
                 return
             fehler = 0
             for buuid, zuuid in paare:
@@ -1310,12 +1423,13 @@ class Dienst:
                 try:
                     ms.zustaende[zuuid] = await schleife.run_in_executor(
                         None, ms.http_zustand, buuid, marke)
-                except Exception:
+                except Exception as f_z:
                     fehler += 1
                     if fehler > 5:
                         _LOG.warning("Auch der HTTP-Weg antwortet nicht mehr "
                                      "(%d Fehlversuche hintereinander).", fehler)
-                        abbild_gestoert("Notnagel: der HTTP-Weg antwortet nicht mehr.")
+                        abbild_gestoert(UMLEITUNG_TEXT if self._umleitung_melden(f_z)
+                                        else "Notnagel: der HTTP-Weg antwortet nicht mehr.")
                         return
                 else:
                     fehler = 0
@@ -1357,7 +1471,10 @@ async def einmal() -> int:
         return 0
     except Exception as f:
         print("Fehlgeschlagen: %s" % f)
-        json_schreiben(DATEI_ZUSTAND, {"ok": 0, "ts": int(time.time()), "fehler": str(f)})
+        grund = UMLEITUNG_TEXT if umleitung_erkannt(f) else str(f)     # G4 (0.9.44)
+        if grund != str(f):
+            print(grund)
+        json_schreiben(DATEI_ZUSTAND, {"ok": 0, "ts": int(time.time()), "fehler": grund})
         return 1
     finally:
         if ms is not None:
@@ -1379,6 +1496,12 @@ async def anmeldeprobe() -> int:
     try:
         ms, altes = d._bauen(cfg)
         print("Miniserver %s:%d, Benutzer '%s'" % (ms.host, ms.port, ms.benutzer))
+        # G1/G3 (0.9.44): wie verbunden wird und warum.
+        print("Verbindung: %s, Port %d (Einstellung tls=%s)" % ("wss/https" if ms.tls else "ws/http", ms.port,
+                                                              cfg.get("tls")))
+        w = widerspruch_tls(cfg)
+        if w:
+            print("[INFO] %s" % w)
         print("Gespeichertes Token: %s" % ("vorhanden" if altes else "keines"))
         await ms.verbinden(altes_token=altes)
         token_merken(str(ms.token.get("token") or altes), ms.kennung, ms.hashalg)
@@ -1393,6 +1516,8 @@ async def anmeldeprobe() -> int:
         return 0
     except Exception as f:
         print("[FEHL] %s" % f)
+        if umleitung_erkannt(f):
+            print("       %s" % UMLEITUNG_TEXT)       # G4 (0.9.44)
         return 1
     finally:
         if ms is not None:
@@ -1474,6 +1599,8 @@ async def httpprobe() -> int:
         return 0
     except Exception as f:
         print("[FEHL] HTTP-Abfrage an '%s' misslungen: %s" % (name, f))
+        if umleitung_erkannt(f):
+            print("       %s" % UMLEITUNG_TEXT)       # G4 (0.9.44)
         print("       Der Notnagel traegt hier NICHT. Im Reiter Einstellungen")
         print("       abschalten, dann sucht der Dienst nicht vergeblich.")
         return 1
@@ -1524,6 +1651,86 @@ async def entwurf_erzeugen(von_vorn: bool = False) -> int:
     return 0
 
 
+def verbindungsart_pruefungen() -> list[tuple[bool, str]]:
+    """Seit 0.9.44 (Punkt G): die Wahl der Verbindungsart und die Erkennung der Umleitung, ohne Miniserver. Die
+    LoxBerry-Angaben wie am Geraet gemessen (11.11.2026: Transport https, Preferhttps "1", Porthttps "443",
+    Port "80"). Rueckgabe: (bestanden, Text) je Pruefung."""
+    e: list[tuple[bool, str]] = []
+    e.append((VORGABEN.get("tls") == "auto", "Vorgabe tls fuer neue Installationen: auto (gefunden %r)"
+              % (VORGABEN.get("tls"),)))
+    gemessen = {"Transport": "https", "Preferhttps": "1", "Porthttps": "443", "Port": "80"}
+    lb_https = {"quelle": "loxberry", "port": 80, "porthttps": "443", "lb_https": lb_sagt_https(gemessen)}
+    lb_http = {"quelle": "loxberry", "port": 80, "porthttps": None,
+               "lb_https": lb_sagt_https({"Transport": "http", "Preferhttps": "0"})}
+    eigen = {"quelle": "eigen", "port": 8080, "porthttps": None, "lb_https": True}
+    faelle = [
+        ({"tls": "auto"}, lb_https, (True, 443)),
+        ({"tls": "auto"}, lb_http, (False, 80)),
+        ({"tls": 0}, lb_https, (False, 80)),
+        ({"tls": 1}, lb_http, (True, 443)),
+        ({"tls": 1}, dict(lb_https, porthttps="8443"), (True, 8443)),
+        ({"tls": 1}, dict(lb_https, porthttps="x"), (True, 443)),
+        ({"tls": 1}, dict(lb_https, porthttps="70000"), (True, 443)),
+        ({}, lb_https, (True, 443)),
+        ({"tls": "auto"}, eigen, (True, 8080)),
+        ({"tls": 0}, eigen, (False, 8080)),
+    ]
+    for cfg_v, d_v, soll in faelle:
+        try:
+            ist = verbindungsart(cfg_v, d_v)
+        except LoxFehler as f:
+            ist = ("FEHLER", str(f)[:40])
+        e.append((ist == soll, "verbindungsart(tls=%r, %s, LoxBerry https=%s) -> %s (erwartet %s)"
+                  % (cfg_v.get("tls", "fehlt"), d_v["quelle"], d_v["lb_https"], ist, soll)))
+    for falsch in ("ja", "0", "1", 2, 1.0, True, None, [1]):
+        try:
+            verbindungsart({"tls": falsch}, lb_https)
+            abgewiesen = False
+        except LoxFehler:
+            abgewiesen = True
+        e.append((abgewiesen, "verbindungsart(tls=%r) wird abgewiesen, nicht gedeutet" % (falsch,)))
+    # Derselbe Weg wie in _bauen(): das Objekt traegt WebSocket und HTTP.
+    tls, port = verbindungsart({"tls": "auto"}, lb_https)
+    m = Miniserver("192.0.2.10", port, "pruef", "", tls=tls)
+    e.append((m.tls and m.port == 443 and m._http_basis == "https://192.0.2.10:443",
+              "auto bei LoxBerry https: Client mit TLS, Port %d, HTTP-Basis %s" % (m.port, m._http_basis)))
+    tls, port = verbindungsart({"tls": 0}, lb_https)
+    m = Miniserver("192.0.2.10", port, "pruef", "", tls=tls)
+    e.append((not m.tls and m.port == 80 and m._http_basis == "http://192.0.2.10:80",
+              "tls=0: Client ohne TLS, Port %d, HTTP-Basis %s" % (m.port, m._http_basis)))
+    e.append((bool(widerspruch_tls({"tls": 0}, lb_https)) and not widerspruch_tls({"tls": "auto"}, lb_https)
+              and not widerspruch_tls({"tls": 0}, lb_http) and not widerspruch_tls({"tls": 1}, lb_https),
+              "Widerspruch nur bei tls=0 und LoxBerry https gemeldet"))
+
+    class InvalidURI(Exception):
+        pass
+
+    class _Antwort:
+        status_code = 302
+        headers = {"Location": "https://x.dyndns.loxonecloud.com/ws/rfc6455"}
+
+    class InvalidStatus(Exception):
+        response = _Antwort()
+
+    class HTTPError(Exception):
+        code = 308
+        headers = {"Location": "https://x.dyndns.loxonecloud.com/jdev/sys/getkey"}
+
+    class NachHttp(Exception):
+        code = 301
+        headers = {"Location": "http://192.0.2.10/"}
+
+    nachgebaut = InvalidURI("https://192-0-2-10.0000000000AA.dyndns.loxonecloud.com/ws/rfc6455 "
+                            "isn't a valid URI: scheme isn't ws or wss")
+    e.append((umleitung_erkannt(nachgebaut) and umleitung_erkannt(InvalidStatus("302"))
+              and umleitung_erkannt(HTTPError("308"))
+              and not umleitung_erkannt(NachHttp("301"))
+              and not umleitung_erkannt(LoxFehler("Zeitueberschreitung"))
+              and not umleitung_erkannt(OSError("Connection refused")),
+              "Umleitung auf https erkannt (InvalidURI, 302 und 308 mit https), andere Fehler nicht"))
+    return e
+
+
 def selbsttest() -> int:
     zeilen: list[tuple[int, str]] = []
     zeilen.append((1, "Python %s" % sys.version.split()[0]))
@@ -1565,6 +1772,16 @@ def selbsttest() -> int:
                        "Kennwort hinterlegt" if d.get("passwort")
                        else "Kein Kennwort hinterlegt - das geht nur bei einem "
                             "Benutzer ohne Kennwort"))
+        # G1/G3 (0.9.44): wie der Dienst mit DIESER Konfiguration verbinden wuerde.
+        cfg_jetzt = config()
+        try:
+            v_tls, v_port = verbindungsart(cfg_jetzt, d)
+            w = widerspruch_tls(cfg_jetzt, d)
+            zeilen.append((0 if w else 1, w or "Verbindungsart: tls=%s, der LoxBerry sagt %s; verbunden wird mit "
+                           "%s, Port %d" % (cfg_jetzt.get("tls"), "https" if d.get("lb_https") else "http",
+                                            "wss/https" if v_tls else "ws/http", v_port)))
+        except LoxFehler as f:
+            zeilen.append((0, str(f)))
     t = kacheltabelle()
     zeilen.append((1 if t.get("typen") else 0,
                    "Kacheltabelle: %d eigene Typen" % len(t.get("typen") or {})))
@@ -1623,6 +1840,12 @@ def selbsttest() -> int:
     print("Bausteine des Miniserver-Clients, einzeln geprueft (%d Pruefungen):"
           % len(pruefungen))
     for ok, text in pruefungen:
+        print(("[OK]   " if ok else "[FEHL] ") + text)
+        fehlt += 0 if ok else 1
+    print()
+    g_pruef = verbindungsart_pruefungen()
+    print("Verbindungsart und Umleitung, einzeln geprueft (%d Pruefungen, seit 0.9.44):" % len(g_pruef))
+    for ok, text in g_pruef:
         print(("[OK]   " if ok else "[FEHL] ") + text)
         fehlt += 0 if ok else 1
     print()

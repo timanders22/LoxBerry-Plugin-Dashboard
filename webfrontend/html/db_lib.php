@@ -208,7 +208,10 @@ function db_vorgaben()
 {
     return array(
         'miniserver'     => '1',
-        'tls'            => 0,
+        /* Seit 0.9.44 (Punkt G1): 'auto' = wie LoxBerry (Entscheidung des Hausherrn 11.11.2026), daneben 0 und 1.
+         * Eine dashboard.json mit Aktionstoken traegt tls schon (db_token() und das Formular schreiben alle
+         * Vorgaben); ein dort stehendes 0 bleibt 0 (G3) - gemeldet wird der Widerspruch, umgedeutet wird nichts. */
+        'tls'            => 'auto',
         'takt'           => 2,
         'http_rueckfall' => 1,
         'http_takt'      => 10,
@@ -642,28 +645,81 @@ function db_visu_da()
     return !empty($z['visu_pw']) ? 1 : 0;
 }
 
-/** Die Miniserver-Daten so, wie der Dienst sie sieht - ohne das Kennwort. */
+/** Der LoxBerry-Eintrag des gewaehlten Miniservers aus general.json (dieselbe Wahl wie der Dienst: die Nummer,
+ * sonst der erste Eintrag), oder null. */
+function db_ms_eintrag($cfg)
+{
+    $g = db_paths()['home'] !== '' ? db_json_lesen(db_paths()['home'] . '/config/system/general.json') : array();
+    $alle = isset($g['Miniserver']) && is_array($g['Miniserver']) ? $g['Miniserver'] : array();
+    $nr = isset($cfg['miniserver']) ? (string) $cfg['miniserver'] : '1';
+    $ms = isset($alle[$nr]) ? $alle[$nr] : (count($alle) ? reset($alle) : null);
+    return is_array($ms) ? $ms : null;
+}
+
+/** Ist tls ein erlaubter Wert? '' oder der Grund (seit 0.9.44, Punkt G1). Nur genau 'auto', 0 und 1 - kein
+ * true, kein "1", kein 1.0 (dieselbe Regel wie verbindungsart() in bin/dashboard_dienst.py). */
+function db_wert_tls($w)
+{
+    return ($w === 'auto' || $w === 0 || $w === 1) ? '' : db_t('EINST.FEHLER_TLS');
+}
+
+/** Die Verbindung zum Miniserver, wie der Dienst sie waehlt (seit 0.9.44, Punkt G; dieselbe Regel wie
+ * verbindungsart() in bin/dashboard_dienst.py, der Selbsttest des Dienstes eicht sie dort). general.json
+ * Miniserver.<nr>: Preferhttps "1" oder Transport "https" heisst, der LoxBerry fuehrt den Miniserver
+ * verschluesselt (am Geraet 11.11.2026: Transport https, Preferhttps 1, Porthttps 443, Port 80). Port bei TLS
+ * Porthttps (fehlt oder ungueltig: 443), sonst Port (fehlt: 80); beim eigenen Zugang der eingetragene Port.
+ * Rueckgabe: wahl, lb_https, tls (null bei ungueltiger Wahl), port, widerspruch (tls=0, der LoxBerry sagt
+ * aber https). */
+function db_ms_verbindung($cfg, $eigen_port = null)
+{
+    $ms = db_ms_eintrag($cfg);
+    $ms = is_array($ms) ? $ms : array();
+    $pref = isset($ms['Preferhttps']) ? $ms['Preferhttps'] : null;
+    $lb_https = ($pref === true || (is_scalar($pref) && !is_bool($pref) && trim((string) $pref) === '1'))
+        || (isset($ms['Transport']) && is_string($ms['Transport']) && strtolower(trim($ms['Transport'])) === 'https');
+    $wahl = array_key_exists('tls', $cfg) ? $cfg['tls'] : 'auto';
+    $aus = array('wahl' => $wahl, 'lb_https' => $lb_https, 'tls' => null, 'port' => 0, 'widerspruch' => false);
+    if (db_wert_tls($wahl) !== '') { return $aus; }
+    $aus['tls'] = $wahl === 'auto' ? $lb_https : ($wahl === 1);
+    if ($eigen_port !== null) {
+        $aus['port'] = (int) $eigen_port > 0 ? (int) $eigen_port : 80;
+    } elseif ($aus['tls']) {
+        $roh = isset($ms['Porthttps']) && is_scalar($ms['Porthttps']) ? trim((string) $ms['Porthttps']) : '';
+        $n = preg_match('/^\d{1,5}$/', $roh) ? (int) $roh : 0;
+        $aus['port'] = ($n >= 1 && $n <= 65535) ? $n : 443;
+    } else {
+        $roh = isset($ms['Port']) && is_scalar($ms['Port']) ? trim((string) $ms['Port']) : '';
+        $aus['port'] = ($roh !== '' && preg_match('/^\d{1,5}$/', $roh)) ? (int) $roh : 80;
+    }
+    $aus['widerspruch'] = ($wahl === 0 && $lb_https);
+    return $aus;
+}
+
+/** Die Miniserver-Daten so, wie der Dienst sie sieht - ohne das Kennwort. Seit 0.9.44 (Punkt G1) ist 'port' der
+ * Port, mit dem der Dienst verbindet (bei TLS Porthttps), 'verbindung' das Ergebnis von db_ms_verbindung(). */
 function db_miniserver()
 {
     $z = db_zugang();
+    $cfg = db_config();
     if (!empty($z['adresse']) && !empty($z['benutzer'])) {
+        $vb = db_ms_verbindung($cfg, (int) $z['port']);
         return array('quelle' => 'eigen', 'name' => 'eigener Zugang',
                      'adresse' => (string) $z['adresse'], 'port' => (int) $z['port'],
+                     'verbindung' => $vb,
                      'benutzer' => (string) $z['benutzer'],
                      'passwort_da' => !empty($z['passwort']) ? 1 : 0);
     }
-    $cfg = db_config();
-    $g = db_paths()['home'] !== '' ? db_json_lesen(db_paths()['home'] . '/config/system/general.json') : array();
-    $alle = isset($g['Miniserver']) && is_array($g['Miniserver']) ? $g['Miniserver'] : array();
     $nr = (string) $cfg['miniserver'];
-    $ms = isset($alle[$nr]) ? $alle[$nr] : (count($alle) ? reset($alle) : null);
+    $ms = db_ms_eintrag($cfg);
     if (!is_array($ms)) { return array(); }
     $ip = isset($ms['Ipaddress']) ? $ms['Ipaddress'] : (isset($ms['IPAddress']) ? $ms['IPAddress'] : '');
     if ($ip === '') { return array(); }
+    $vb = db_ms_verbindung($cfg);
     return array('quelle' => 'loxberry',
                  'name' => isset($ms['Name']) ? $ms['Name'] : ('Miniserver ' . $nr),
                  'adresse' => (string) $ip,
-                 'port' => (int) (isset($ms['Port']) ? $ms['Port'] : 80),
+                 'port' => $vb['tls'] !== null ? (int) $vb['port'] : (int) (isset($ms['Port']) ? $ms['Port'] : 80),
+                 'verbindung' => $vb,
                  /* D9 + E1: Admin_raw ist der Klartext (LoxBerry miniserver.cgi, migrate_generalcfg); Admin traegt
                   * ihn uri_escape-kodiert. rawurldecode, nicht urldecode: ein "+" im Namen bleibt "+". */
                  'benutzer' => (string) (isset($ms['Admin_raw']) && $ms['Admin_raw'] !== '' ? $ms['Admin_raw']
@@ -3889,7 +3945,8 @@ function db_sicherung_wert_pruefen($k, $w)
         'eco_hell' => array(DB_ECO_HELL_MIN, DB_ECO_HELL_MAX),
         'ansage_frist' => array(DB_ANSAGE_FRIST_MIN, DB_ANSAGE_FRIST_MAX),
     );
-    $haken = array('tls', 'http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'haptik', 'ansage_ein', 'ansage_gong',
+    /* Seit 0.9.44 (Punkt G1) ist tls kein Haken mehr, sondern 'auto', 0 oder 1 (Zweig unten). */
+    $haken = array('http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'haptik', 'ansage_ein', 'ansage_gong',
                    'verlauf', 'sse', 'tafelsteuerung', 'gesichert_schalten', 'ruhe_uhr',
                    'ruhe_wetter', 'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein');
     if (isset($ganz[$k])) {
@@ -3900,6 +3957,10 @@ function db_sicherung_wert_pruefen($k, $w)
         return ($w === 0 || $w === 1) ? '' : db_t('EINST.SICH_GRUND_HAKEN');
     }
     switch ($k) {
+        case 'tls':
+            /* Seit 0.9.44: dieselbe Regel wie im Formular. Eine Sicherung aus 0.9.43 und frueher traegt 0 oder 1
+             * und bleibt gueltig; ein dort gesichertes 0 wird nicht umgedeutet. */
+            return db_wert_tls($w);
         case 'aktionstoken':
             if (!is_string($w)) { return db_t('EINST.SICH_GRUND_TOKEN_LISTE'); }
             return ($w === '' || db_token_gueltig($w)) ? '' : db_t('EINST.SICH_GRUND_TOKEN_MUSTER');
@@ -5036,7 +5097,7 @@ function db_eingabe_felder()
 {
     return array(
         'speichern' => array(
-            'miniserver' => 'text', 'tls' => 'haken', 'z_adresse' => 'text', 'z_port' => 'text',
+            'miniserver' => 'text', 'tls' => 'text', 'z_adresse' => 'text', 'z_port' => 'text',
             'z_benutzer' => 'text', 'z_passwort' => 'geheim', 'visu_pw' => 'geheim',
             'gesichert_schalten' => 'haken', 'takt' => 'text', 'http_rueckfall' => 'haken',
             'http_takt' => 'text', 'wartezeit' => 'text', 'sse' => 'haken', 'farbe' => 'text',
