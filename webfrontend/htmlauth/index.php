@@ -984,12 +984,13 @@ if ($db_post && isset($_POST['db_sichern'])) {
  * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
  * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
 if ($db_post && isset($_POST['db_zurueck'])) {
-    if (!isset($_FILES['db_sicherung']) || !is_array($_FILES['db_sicherung'])
-        || !isset($_FILES['db_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['db_sicherung']['tmp_name'])) {
-        $db_fehler[] = db_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['db_sicherung']['size'] > 262144) {
-        $db_fehler[] = db_t('EINST.SICH_ZU_GROSS');
+    /* 0.9.45: Haken, hochgeladene Datei und Groessengrenze prueft das gemeinsame Sicherungsmodul
+     * (sicherung_eingang(), Modul 1.1.0, Entscheidung des Hausherrn 12.11.2026) - in jeder Linie gleich, und
+     * vor is_uploaded_file() steht der Haken zurueck_ok: ohne ihn wird nichts gelesen und nichts geaendert. */
+    list($db_ein_roh, $db_ein_ab) = sicherung_eingang(db_sicherung_beschreibung(), $_POST, $_FILES, 'db_sicherung');
+    if ($db_ein_ab !== null) {
+        $db_ein_m = sicherung_meldungen(db_sicherung_beschreibung(), $db_ein_ab);
+        foreach ($db_ein_m['fehler'] as $db_ein_x) { $db_fehler[] = $db_ein_x; }
     } else {
         /* C5 (Durchgang 29.09.2026, Bauart E) und S2/S4 (0.9.26): jeder Wert
          * geprueft, Seiten und Kacheln durch dieselbe Pruefung wie im
@@ -999,11 +1000,11 @@ if ($db_post && isset($_POST['db_zurueck'])) {
          * dem Verlauf (db_sicherung_zurueckspielen) - eine zweite gibt es
          * nicht. Eine halb gueltige Datei aendert nichts. */
         list($db_ok, $db_m2, $db_f2) = db_sicherung_zurueckspielen(
-            (string) @file_get_contents($_FILES['db_sicherung']['tmp_name']));
+            $db_ein_roh);
         $db_meldungen = array_merge($db_meldungen, $db_m2);
         $db_fehler = array_merge($db_fehler, $db_f2);
-        // O17: nach dem Zurueckspielen wird der Dienst nachgezogen.
-        if ($db_ok) { $db_nachziehen = true; }
+        // O17: nach dem Zurueckspielen wird der Dienst nachgezogen - seit 0.9.45 in db_sicherung_zurueckspielen()
+        // (Rueckruf 'nachziehen' des Sicherungsmoduls), die Meldung kommt mit $db_m2.
     }
     $db_tab = 'tab-settings';
 }
@@ -1039,8 +1040,8 @@ if ($db_post && isset($_POST['db_verlauf_zurueck'])) {
         } else {
             list($db_ok, $db_m2, $db_f2) = db_sicherung_zurueckspielen($db_vroh);
             if ($db_ok) {
+                // Den Dienst hat db_sicherung_zurueckspielen() schon nachgezogen (seit 0.9.45).
                 array_unshift($db_m2, sprintf(db_t('EINST.SVL_ZURUECK_AUS'), db_e($db_vname)));
-                $db_nachziehen = true;
             }
             $db_meldungen = array_merge($db_meldungen, $db_m2);
             $db_fehler = array_merge($db_fehler, $db_f2);
@@ -1087,13 +1088,10 @@ if ($db_post && isset($_POST['tafel_weg'])) {
  * neu gestartet und das Ergebnis gemeldet; laeuft er nicht, sagt die Seite
  * es. */
 if ($db_nachziehen) {
-    if (db_dienst_pid() > 0 || db_dienst_pids()) {
-        list($db_ok, $db_aus) = db_dienst('restart');
-        if ($db_ok) { $db_meldungen[] = sprintf(db_t('EINST.DIENST_NACHGEZOGEN'), db_e($db_aus)); }
-        else { $db_fehler[] = sprintf(db_t('EINST.DIENST_NACHZIEHEN_FEHL'), db_e($db_aus)); }
-    } else {
-        $db_meldungen[] = db_t('EINST.DIENST_NICHT_NACHGEZOGEN');
-    }
+    // 0.9.45: dieselbe Funktion wie nach dem Zurueckspielen (db_dienst_nachziehen()).
+    list($db_m3, $db_f3) = db_dienst_nachziehen();
+    $db_meldungen = array_merge($db_meldungen, $db_m3);
+    $db_fehler = array_merge($db_fehler, $db_f3);
 }
 
 /* ---------------- O1: nach JEDEM POST umleiten ----------------
@@ -1762,6 +1760,7 @@ if ($db_altwerte) { ?>
     <?php echo db_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="db_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(db_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="db_zurueck" value="1"><?= db_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>

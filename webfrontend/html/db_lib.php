@@ -21,6 +21,12 @@ if (!function_exists('db_e')) {
     }
 }
 
+/* 0.9.45: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
+ * 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den anderen Linien. Es legt beim
+ * Laden nur Funktionen an und antwortet bei direktem Aufruf mit 403. Die Beschreibung dieser Linie steht in
+ * db_sicherung_beschreibung(). */
+require_once __DIR__ . '/sicherung.php';
+
 /* Die Obergrenze der Wartezeit steht GENAU EINMAL: hier. Das Formular in der
  * Oberflaeche liest sie von hier, db_befehl_absetzen() kappt danach. Bis
  * 0.9.5 standen zwei verschiedene Zahlen an zwei Stellen. */
@@ -3904,23 +3910,135 @@ function db_vorlage_lage($art, $cfg = null)
  */
 function db_sicherung_bauen()
 {
-    $cfg = db_config();
-    $aus = array('_' => array(
-        'plugin'   => 'dashboard',
-        'inhalt'   => 'Einstellungen, Seiten samt Kacheln und PIN-Pruefwerten, eigener Zugang',
-        'erstellt' => date('Y-m-d H:i:s'),
-        'hinweis'  => 'Enthaelt Zugangsdaten und das Aktionstoken - wie ein Passwort behandeln.',
-    ));
-    foreach (array_keys(db_vorgaben()) as $k) {
-        $aus[$k] = $cfg[$k];
-    }
-    $aus['_seiten'] = array('seiten' => db_seiten());
+    /* 0.9.45: Kopf und Inhalt baut das gemeinsame Sicherungsmodul (sicherung_bauen(), Beschreibung
+     * db_sicherung_beschreibung()). Seit 0.9.45 traegt der Kopf _hinweis, _plugin = dashboard, _fassung und _stand
+     * (bis 0.9.44 ein Feld "_" mit plugin, inhalt, erstellt, hinweis), und die beiden Teile heissen seiten und zugang
+     * (bis 0.9.44 _seiten und _zugang). Wuerde das eigene Zurueckspielen die Datei abweisen, sagt es _warnung. */
     $z = db_zugang();
     $zt = array();
     foreach (array('adresse', 'port', 'benutzer', 'passwort', 'visu_pw') as $k) {
         if (array_key_exists($k, $z)) { $zt[$k] = $z[$k]; }
     }
-    $aus['_zugang'] = (object) $zt;
+    return sicherung_bauen(db_sicherung_beschreibung(), db_config(),
+                           array('seiten' => array('seiten' => db_seiten()), 'zugang' => $zt));
+}
+
+/**
+ * 0.9.45: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul (sicherung.php).
+ *
+ * Kennzeichen 'dashboard': so steht es seit 0.9.25 im Kopf "_" der Sicherung (Feld plugin; gemessen 12.11.2026 an
+ * 0.9.25 bis 0.9.44). Seit 0.9.45 steht es als _plugin im Kopf. Eine Sicherung von 0.9.25 bis 0.9.44 erkennt
+ * db_sicherung_alt_erkennen() an ihrem Kopf "_" und uebersetzt sie. Eine Sicherung bis 0.9.24 hatte gar keinen Kopf;
+ * sie laesst sich von einer fremden Datei nicht sicher unterscheiden und wird seit 0.9.45 abgewiesen (Entscheidung
+ * des Hausherrn 12.11.2026; bis 0.9.44 wurde sie angenommen und liess Seiten und Zugang stehen).
+ *
+ * Inhalt wie bis 0.9.44: alle Schluessel von db_vorgaben() samt Aktionstoken, der Teil seiten (Seiten samt Kacheln
+ * und PIN-Pruefwerten, geprueft wie im Designer mit db_seiten_pruefen()) und der Teil zugang (eigener Zugang samt
+ * Kennwort und Visualisierungs-Passwort, geprueft wie im Formular). Das Formularmerkwort gehoert nicht hinein,
+ * Miniserver-Token und Kennung auch nicht. Beide Teile muessen in der Datei stehen. Was eine Sicherung aus 0.9.27
+ * oder frueher nicht kennen kann (db_sicherung_nachgezogen()), behaelt seinen geltenden Wert und wird genannt
+ * (bis Modul 1.2.0: seine Vorgabe; Entscheidung des Hausherrn 12.11.2026 "Ja, behalten", einheitlich mit den
+ * uebrigen Linien); jeder andere fehlende Schluessel ist eine Beanstandung.
+ */
+function db_sicherung_beschreibung()
+{
+    $p = db_paths();
+    $schluessel = array(
+        'seiten' => sicherung_block(array('seiten')),
+        'zugang' => sicherung_block(array('adresse', 'port', 'benutzer', 'passwort', 'visu_pw')),
+    );
+    foreach (db_sicherung_nachgezogen() as $k) {
+        $schluessel[$k] = array('fehlt' => 'behalten');
+    }
+    return array(
+        'kennzeichen' => 'dashboard',
+        'hinweis' => html_entity_decode(strip_tags(db_t('EINST.SICH_KOPF')), ENT_QUOTES, 'UTF-8'),
+        'vorgaben' => db_vorgaben(),
+        'schluessel' => $schluessel,
+        'teile' => array('seiten' => 'db_sicherung_seiten_lesen', 'zugang' => 'db_sicherung_zugang_lesen'),
+        'teile_jetzt' => array('seiten' => function () { return array('seiten' => db_seiten()); }, 'zugang' => 'db_zugang'),
+        'pruefen' => function ($k, $w) {
+            $g = db_sicherung_wert_pruefen($k, $w);
+            return $g === '' ? '' : sprintf(db_t('EINST.SICH_WERT'), db_e($k), $g);
+        },
+        'quer' => 'db_sicherung_quer',
+        'uebersetzer' => 'db_sicherung_alt_erkennen',
+        'umbenennen' => array('_seiten' => 'seiten', '_zugang' => 'zugang'),     // 0.9.25 bis 0.9.44
+        'jetzt' => 'db_config',
+        'log' => 'db_log',
+        't' => 'db_t',
+        'e' => 'db_e',
+        'home' => $p['home'],
+        'ordner' => $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+    );
+}
+
+/**
+ * 0.9.45: Eine Sicherung dieser Linie von 0.9.25 bis 0.9.44 traegt den Kopf "_" (ein Feld mit plugin = dashboard),
+ * den nur der Sichern-Knopf dieser Linie schreibt; daran wird sie erkannt. Der alte Kopf faellt weg; die Teile
+ * _seiten und _zugang benennt seit Modul 1.2.0 das Modul um ('umbenennen'). Alles andere: null (die Datei wird abgewiesen).
+ */
+function db_sicherung_alt_erkennen($d)
+{
+    if (!is_array($d) || !isset($d['_']) || !is_array($d['_']) || !isset($d['_']['plugin']) || $d['_']['plugin'] !== 'dashboard') {
+        return null;
+    }
+    $aus = array();
+    foreach ($d as $k => $w) {
+        $k = (string) $k;
+        if ($k === '_') { continue; }
+        $aus[$k] = $w;
+    }
+    return $aus;
+}
+
+/** Der Teil seiten: dieselbe Pruefung wie im Designer (db_seiten_pruefen()). Rueckgabe fuer das Modul. */
+function db_sicherung_seiten_lesen($w)
+{
+    if (!is_array($w) || !array_key_exists('seiten', $w) || !is_array($w['seiten'])) {
+        return array(null, array(db_t('EINST.SICH_SEITEN_FORM')));
+    }
+    list($seiten, $f, $h) = db_seiten_pruefen($w['seiten'], 'sicherung');
+    // Die Hinweise der Seitenpruefung (keine Beanstandungen) nennt das Modul seit 1.2.0 in seiner Meldung.
+    return ($seiten === null || $f) ? array(null, $f ? $f : array(db_t('EINST.SICH_SEITEN_FORM'))) : array($seiten, array(), $h);
+}
+
+/** Der Teil zugang: dieselben Regeln wie im Formular (db_sicherung_zugang_pruefen()). Rueckgabe fuer das Modul. */
+function db_sicherung_zugang_lesen($w)
+{
+    list($z, $f) = db_sicherung_zugang_pruefen($w);
+    return $f ? array(null, $f) : array($z, array());
+}
+
+/** Was nur im Zusammenspiel falsch sein kann, wie bis 0.9.44. Rueckgabe fuer das Modul: Liste von array(Name, Text). */
+function db_sicherung_quer($neu, $r)
+{
+    $aus = array();
+    $bean = array();
+    foreach ($r['beanstandet'] as $x) { $bean[] = $x['name']; }
+    // Beide Teile muessen in der Datei stehen (seit 0.9.25).
+    foreach (array('seiten', 'zugang') as $t) {
+        if (!array_key_exists($t, $r['teile']) && !in_array($t, $bean, true)) {
+            $aus[] = array($t, db_t('EINST.SICH_TEIL_FEHLT'));
+            break;
+        }
+    }
+    // Nachtabsenkung: beide Zeiten oder keine, und nicht gleich - wie im Formular.
+    if (is_string($neu['nacht_von']) && is_string($neu['nacht_bis'])
+            && ((($neu['nacht_von'] === '') !== ($neu['nacht_bis'] === ''))
+                || ($neu['nacht_von'] !== '' && $neu['nacht_von'] === $neu['nacht_bis']))) {
+        $aus[] = array('nacht_von', db_t('EINST.FEHLER_NACHTZEIT'));
+    }
+    // Die Seite des Ruhebilds muss es nach dem Zurueckspielen geben (aus der Datei oder, ohne Teil, die geltenden).
+    $seiten = isset($r['teile']['seiten']) && is_array($r['teile']['seiten']) ? $r['teile']['seiten'] : db_seiten();
+    if (is_string($neu['ruhe_seite']) && $neu['ruhe_seite'] !== '') {
+        $da = false;
+        foreach ($seiten as $s2) {
+            if (is_array($s2) && isset($s2['schluessel']) && $s2['schluessel'] === $neu['ruhe_seite']) { $da = true; }
+        }
+        if (!$da) { $aus[] = array('ruhe_seite', db_t('EINST.FEHLER_RUHE_SEITE')); }
+    }
     return $aus;
 }
 
@@ -4055,173 +4173,36 @@ function db_sicherung_zugang_pruefen($z)
 }
 
 /**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
- *
- * Eine halb gueltige Datei ueberschreibt GAR NICHTS; alle Beanstandungen
- * werden gesammelt. Unbekannte und fehlende Schluessel sind Beanstandungen.
- * Jeder Wert laeuft durch db_sicherung_wert_pruefen() (C5), Seiten und
- * Kacheln durch db_seiten_pruefen() - dieselbe Pruefung wie im Designer.
- * Ein leeres Token heisst "keins gesichert": dann gilt das geltende.
- * Eine Datei ohne Kopf '_' stammt aus 0.9.24 oder frueher und traegt nur die
- * Einstellungen; sie wird angenommen, und die Seite sagt, dass Seiten und
- * Zugang unberuehrt bleiben.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte,
- *                  Teile array('seiten' => ..., 'zugang' => ...)|null, Hinweise[]).
+ * 0.9.45: Lesen und Pruefen macht das gemeinsame Sicherungsmodul (sicherung_lesen(), Beschreibung
+ * db_sicherung_beschreibung()); bis 0.9.44 stand hier db_sicherung_lesen() mit eigener Schleife. Was sich
+ * aendert (Entscheidungen des Hausherrn 12.11.2026): ein unbekannter Schluessel wird verworfen und mit Namen
+ * gemeldet, statt die ganze Datei abzuweisen; ein leerer Wert ueberschreibt keinen bestehenden (bis 0.9.44 nur
+ * beim Token); eine Datei ohne Kopf (bis 0.9.24) wird abgewiesen. Wie bisher: jeder Wert geht durch
+ * db_sicherung_wert_pruefen(), Seiten und Kacheln durch db_seiten_pruefen(), der Zugang durch
+ * db_sicherung_zugang_pruefen(); eine halb gueltige Datei aendert nichts, alle Beanstandungen werden gesammelt.
  */
-function db_sicherung_lesen($roh)
-{
-    $mangel = array();
-    $hinweise = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten) || ($daten && array_keys($daten) === range(0, count($daten) - 1))) {
-        return array(null, array(db_t('EINST.SICH_KEIN_JSON')), 0, null, array());
-    }
-    $neues_format = array_key_exists('_', $daten);
-    if ($neues_format) {
-        $kopf = $daten['_'];
-        if (!is_array($kopf) || !isset($kopf['plugin']) || $kopf['plugin'] !== 'dashboard') {
-            return array(null, array(db_t('EINST.SICH_FREMDES_PLUGIN')), 0, null, array());
-        }
-    }
-    $vorgaben = db_vorgaben();
-    $neu = $vorgaben;
-    $anzahl = 0;
-    foreach ($daten as $k => $w) {
-        if ($neues_format && in_array($k, array('_', '_seiten', '_zugang'), true)) { continue; }
-        if (!is_string($k) || !array_key_exists($k, $vorgaben)) {
-            $mangel[] = sprintf(db_t('EINST.SICH_FREMD'),
-                                htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            continue;
-        }
-        $grund = db_sicherung_wert_pruefen($k, $w);
-        if ($grund !== '') {
-            $mangel[] = sprintf(db_t('EINST.SICH_WERT'), db_e($k), $grund);
-            continue;
-        }
-        $neu[$k] = $w;
-        $anzahl++;
-    }
-    if ($anzahl === 0) {
-        $mangel[] = db_t('EINST.SICH_LEER');
-    }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall
-     * (gemessen an VolkswagenID 0.9.11 am 03.09.2026; am 07.09.2026 ueber den
-     * Bestand ausgerollt). */
-    $fehlend = array();
-    $nachgezogen = array();
-    foreach (array_keys($vorgaben) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
-            /* Verbesserungsbau 30.09.2026: Schluessel, die eine Sicherung aus
-             * 0.9.27 oder frueher noch nicht kennen kann, bekommen ihre
-             * Vorgabe, und die Seite nennt sie - sonst liesse sich keine
-             * aeltere Sicherung mehr zurueckspielen. Jeder andere fehlende
-             * Schluessel bleibt eine Beanstandung. */
-            if (in_array($fk, db_sicherung_nachgezogen(), true)) {
-                $nachgezogen[] = $fk;
-                continue;
-            }
-            $fehlend[] = $fk;
-        }
-    }
-    if ($nachgezogen) {
-        $hinweise[] = sprintf(db_t('EINST.SICH_NACHGEZOGEN'), count($nachgezogen),
-            htmlspecialchars(implode(', ', $nachgezogen), ENT_QUOTES, 'UTF-8'));
-    }
-    if ($fehlend) {
-        $mangel[] = sprintf(db_t('EINST.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
-    }
-    // Nachtabsenkung: beide Zeiten oder keine, und nicht gleich - wie im Formular.
-    if (is_string($neu['nacht_von']) && is_string($neu['nacht_bis'])
-            && ((($neu['nacht_von'] === '') !== ($neu['nacht_bis'] === ''))
-                || ($neu['nacht_von'] !== '' && $neu['nacht_von'] === $neu['nacht_bis']))) {
-        $mangel[] = db_t('EINST.FEHLER_NACHTZEIT');
-    }
-    $teile = array();
-    $seiten_danach = db_seiten();
-    if ($neues_format) {
-        if (!array_key_exists('_seiten', $daten) || !array_key_exists('_zugang', $daten)) {
-            $mangel[] = db_t('EINST.SICH_TEIL_FEHLT');
-        } else {
-            $s = $daten['_seiten'];
-            if (!is_array($s) || !array_key_exists('seiten', $s) || !is_array($s['seiten'])) {
-                $mangel[] = db_t('EINST.SICH_SEITEN_FORM');
-            } else {
-                list($seiten, $f, $h) = db_seiten_pruefen($s['seiten'], 'sicherung');
-                $mangel = array_merge($mangel, $f);
-                $hinweise = array_merge($hinweise, $h);
-                if ($seiten !== null) {
-                    $teile['seiten'] = $seiten;
-                    $seiten_danach = $seiten;
-                }
-            }
-            list($z, $zf) = db_sicherung_zugang_pruefen($daten['_zugang']);
-            $mangel = array_merge($mangel, $zf);
-            if ($z !== null) { $teile['zugang'] = $z; }
-        }
-    } else {
-        $hinweise[] = db_t('EINST.SICH_ALTES_FORMAT');
-    }
-    // Die Seite des Ruhebilds muss es nach dem Zurueckspielen geben.
-    if (is_string($neu['ruhe_seite']) && $neu['ruhe_seite'] !== '') {
-        $da = false;
-        foreach ($seiten_danach as $s2) {
-            if (is_array($s2) && isset($s2['schluessel']) && $s2['schluessel'] === $neu['ruhe_seite']) { $da = true; }
-        }
-        if (!$da) { $mangel[] = db_t('EINST.FEHLER_RUHE_SEITE'); }
-    }
-    // Ein leeres Token heisst "keins gesichert" - das geltende bleibt.
-    if (!$mangel && $neu['aktionstoken'] === '') {
-        $neu['aktionstoken'] = db_token_soll(db_config());
-        $hinweise[] = db_t('EINST.SICH_TOKEN_BEHALTEN');
-    }
-    return array($mangel ? null : $neu, $mangel, $anzahl, $mangel ? null : $teile, $hinweise);
-}
 
 /* ---------------- X-3: bestuende die eigene Sicherung? (Verbesserungsbau 30.09.2026)
  *
  * Ein Wert kann in dashboard.json, seiten.json oder zugang.json stehen, den das
  * Zurueckspielen abweist: von Hand eingetragen, aus einer aelteren Fassung
  * uebernommen, oder ein Baustein der Wetterzeile, den es in Loxone nicht mehr
- * gibt. Bis 0.9.27 lieferte "Einstellungen sichern" eine solche Datei ohne
- * Hinweis - gemerkt hat man es erst beim Zurueckspielen, also zu spaet. */
-
-/** Die Beanstandungen, die das Zurueckspielen gegen diese Sicherungsdatei
- * erheben wuerde - als Text ohne HTML, ohne Werte (die Meldungen nennen
- * Schluessel und Grund, nie den Inhalt). array() = sie bestuende. */
-function db_sicherung_mangel_texte($js)
-{
-    $e = db_sicherung_lesen($js);
-    $aus = array();
-    foreach ((array) $e[1] as $m) {
-        $t = trim(html_entity_decode(strip_tags((string) $m), ENT_QUOTES, 'UTF-8'));
-        if ($t !== '') { $aus[] = $t; }
-    }
-    return $aus;
-}
+ * gibt. Seit 0.9.45 prueft das gemeinsame Modul die eigene Sicherung mit
+ * derselben Pruefung wie beim Zurueckspielen und schreibt _warnung in ihren Kopf. */
 
 /** Die Sicherungsdatei, wie "Einstellungen sichern" sie liefert - mit der
  * Warnung im Kopf, falls das Zurueckspielen sie abwiese. false nur, wenn
  * sich nichts kodieren laesst. */
 function db_sicherung_mit_warnung()
 {
-    $f = JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
-    $s = db_sicherung_bauen();
-    $js = json_encode($s, $f);
-    if ($js === false) { return false; }
-    $mangel = db_sicherung_mangel_texte($js);
-    if ($mangel) {
-        $s['_']['warnung'] = $mangel;
-        $js2 = json_encode($s, $f);
-        if ($js2 !== false) { $js = $js2; }
-    }
-    return $js;
+    $js = sicherung_json(db_sicherung_bauen());
+    return $js === '' ? false : $js;
 }
 
 /** Fuer den Knopf: die Beanstandungen gegen die Sicherung des JETZIGEN
- * Stands. null = nicht zu pruefen (eine Datei ist beschaedigt - dann liefert
- * der Knopf ohnehin nichts und die Seite sagt es oben). */
+ * Stands, als Text ohne HTML und ohne Werte. null = nicht zu pruefen (eine
+ * Datei ist beschaedigt - dann liefert der Knopf ohnehin nichts und die Seite
+ * sagt es oben). */
 function db_sicherung_altwerte()
 {
     $p = db_paths();
@@ -4229,10 +4210,17 @@ function db_sicherung_altwerte()
         db_json_lesen_streng($p[$d], $lage);
         if ($lage === 'kaputt' || $lage === 'unlesbar') { return null; }
     }
-    $js = json_encode(db_sicherung_bauen(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($js === false) { return array(db_t('EINST.SICH_SCHREIBFEHLER')); }
-    return db_sicherung_mangel_texte($js);
+    $daten = db_sicherung_bauen();
+    unset($daten['_warnung']);
+    $js = json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (!is_string($js)) { return array(db_t('EINST.SICH_SCHREIBFEHLER')); }
+    $r = sicherung_lesen(db_sicherung_beschreibung(), $js, db_config());
+    $aus = array();
+    foreach ($r['ok'] ? array() : $r['beanstandet'] as $x) {
+        $t = trim(html_entity_decode(strip_tags($x['text'] !== '' ? $x['text'] : $x['name']), ENT_QUOTES, 'UTF-8'));
+        if ($t !== '') { $aus[] = $t; }
+    }
+    return $aus;
 }
 
 /** Die gepruefte Sicherung einspielen: Konfiguration, Seiten, Zugang. Geht
@@ -4627,65 +4615,96 @@ function db_sicherungen_name_zeigen($name)
  */
 function db_sicherung_zurueckspielen($roh)
 {
+    /* 0.9.45: Schritt 1 macht das gemeinsame Sicherungsmodul (sicherung_zurueckspielen()); die Schritte 2 und 3
+     * stehen wortgleich in seinem Rueckruf 'speichern', danach zieht 'nachziehen' den Dienst nach und sagt, was mit
+     * ihm geschah (bis 0.9.44 im Handler, O17). Eine Zweitschrift fuehrt diese Linie bewusst nicht (ein
+     * Sicherungsverfahren: preupgrade.sh und postinstall.sh, siehe oben), deshalb kein Rueckruf 'zweitschrift'. */
     $meld = array();
     $fehl = array();
-    list($neu, $mangel, $n, $teile, $hinweise) = db_sicherung_lesen((string) $roh);
-    if ($neu === null) {
-        // ALLE Beanstandungen, nicht nur die erste - und geaendert wird nichts.
-        $fehl[] = db_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $mangel);
-        return array(false, $meld, $fehl);
-    }
-    $p = db_paths();
+    $b = db_sicherung_beschreibung();
+    $b['vorbereiten'] = function ($neu) {
+        // Ein leeres Token heisst "keins gesichert"; ist auch das geltende leer, gilt wie bis 0.9.44 db_token_soll().
+        if ($neu['aktionstoken'] === '') { $neu['aktionstoken'] = db_token_soll(db_config()); }
+        return $neu;
+    };
+    /* Seit Modul 1.2.0 stehen die Schritte vor dem Schreiben (beschaedigte Einrichtungsdateien, der Eintrag im
+     * Verlauf) im Rueckruf 'vorbedingung': scheitert einer, sagt die Meldung nur den Grund - bis dahin stand
+     * daneben "Die Einstellungen liessen sich nicht schreiben", obwohl nichts geschrieben werden sollte. */
     $kaputt = array();
-    foreach (array('config', 'seiten', 'geheim') as $d) {
-        db_json_lesen_streng($p[$d], $lage);
-        if ($lage === 'unlesbar') {
-            $fehl[] = sprintf(db_t('EINST.SVL_VORHER_FEHL'),
-                              sprintf(db_t('EINST.SVL_GRUND_UNLESBAR'), db_e($p[$d])));
-            return array(false, $meld, $fehl);
-        }
-        if ($lage === 'kaputt') {
-            $ab = $p[$d] . '.kaputt';
-            clearstatcache(true, $ab);
-            if (!is_file($ab)) {
-                $fehl[] = sprintf(db_t('EINST.SVL_VORHER_FEHL'),
-                                  sprintf(db_t('EINST.SVL_GRUND_KEINE_ABSCHRIFT'), db_e($p[$d]), db_e($ab)));
-                return array(false, $meld, $fehl);
-            }
-            $kaputt[] = $ab;
-        }
-    }
     $vorher = null;
     $weg = array();
-    if (!$kaputt) {
-        list($vorher, $grund, $weg) = db_sicherungen_ablegen('vor_zurueckspielen');
-        if ($vorher === null) {
-            $fehl[] = sprintf(db_t('EINST.SVL_VORHER_FEHL'), $grund);
-            return array(false, $meld, $fehl);
+    $b['vorbedingung'] = function () use (&$kaputt, &$vorher, &$weg) {
+        $p = db_paths();
+        foreach (array('config', 'seiten', 'geheim') as $d) {
+            db_json_lesen_streng($p[$d], $lage);
+            if ($lage === 'unlesbar') {
+                return array(sprintf(db_t('EINST.SVL_VORHER_FEHL'),
+                                     sprintf(db_t('EINST.SVL_GRUND_UNLESBAR'), db_e($p[$d]))));
+            }
+            if ($lage === 'kaputt') {
+                $ab = $p[$d] . '.kaputt';
+                clearstatcache(true, $ab);
+                if (!is_file($ab)) {
+                    return array(sprintf(db_t('EINST.SVL_VORHER_FEHL'),
+                                         sprintf(db_t('EINST.SVL_GRUND_KEINE_ABSCHRIFT'), db_e($p[$d]), db_e($ab))));
+                }
+                $kaputt[] = $ab;
+            }
         }
+        if (!$kaputt) {
+            list($vorher, $grund, $weg) = db_sicherungen_ablegen('vor_zurueckspielen');
+            if ($vorher === null) {
+                return array(sprintf(db_t('EINST.SVL_VORHER_FEHL'), $grund));
+            }
+        }
+        return array();
+    };
+    $b['speichern'] = function ($neu, $jetzt, $r) use (&$meld, &$fehl, &$kaputt, &$vorher, &$weg) {
+        $teile = $r['teile'];
+        if (!db_sicherung_einspielen($neu, $teile)) {
+            if ($vorher !== null) { $fehl[] = sprintf(db_t('EINST.SVL_VORHER'), db_e($vorher)); }
+            return false;
+        }
+        if (isset($teile['seiten'])) {
+            $meld[] = sprintf(db_t('EINST.SICH_SEITEN_UEBERNOMMEN'), count($teile['seiten']));
+        }
+        if (isset($teile['zugang'])) {
+            $meld[] = db_t('EINST.SICH_ZUGANG_UEBERNOMMEN');
+        }
+        if ($kaputt) {
+            $meld[] = sprintf(db_t('EINST.SVL_VORHER_KAPUTT'), db_e(implode(', ', $kaputt)));
+        } else {
+            $meld[] = sprintf(db_t('EINST.SVL_VORHER'), db_e($vorher));
+        }
+        if ($weg) {
+            $meld[] = sprintf(db_t('EINST.SVL_GEKUERZT'), db_e(implode(', ', $weg)), DB_SICHERUNGEN_MAX);
+        }
+        return true;
+    };
+    $b['nachziehen'] = function () use (&$fehl) {
+        list($m, $f) = db_dienst_nachziehen();
+        foreach ($f as $x) { $fehl[] = $x; }
+        return $m;
+    };
+    $r = sicherung_zurueckspielen($b, (string) $roh);
+    $m = sicherung_meldungen($b, $r);
+    if (!$r['ok'] || !$r['gespeichert']) {
+        return array(false, array(), array_merge($m['fehler'], $fehl));
     }
-    if (!db_sicherung_einspielen($neu, $teile)) {
-        $fehl[] = db_t('EINST.SICH_SCHREIBFEHLER');
-        if ($vorher !== null) { $fehl[] = sprintf(db_t('EINST.SVL_VORHER'), db_e($vorher)); }
-        return array(false, $meld, $fehl);
+    // Zuerst "zurueckgespielt", dann die Teile und der Verlauf, zuletzt der Dienst (aus 'nachziehen').
+    $kopf = $m['hinweise'] ? array(array_shift($m['hinweise'])) : array();
+    return array(true, array_merge($kopf, $meld, $m['hinweise']), array_merge($m['fehler'], $fehl));
+}
+
+/** Den Dienst nachziehen und sagen, was mit ihm geschah (O17). Rueckgabe array(Meldungen[], Fehler[]) - fertiges HTML. */
+function db_dienst_nachziehen()
+{
+    if (db_dienst_pid() > 0 || db_dienst_pids()) {
+        list($ok, $aus) = db_dienst('restart');
+        return $ok ? array(array(sprintf(db_t('EINST.DIENST_NACHGEZOGEN'), db_e($aus))), array())
+                   : array(array(), array(sprintf(db_t('EINST.DIENST_NACHZIEHEN_FEHL'), db_e($aus))));
     }
-    $meld[] = sprintf(db_t('EINST.SICH_UEBERNOMMEN'), $n);
-    if (is_array($teile) && isset($teile['seiten'])) {
-        $meld[] = sprintf(db_t('EINST.SICH_SEITEN_UEBERNOMMEN'), count($teile['seiten']));
-    }
-    if (is_array($teile) && isset($teile['zugang'])) {
-        $meld[] = db_t('EINST.SICH_ZUGANG_UEBERNOMMEN');
-    }
-    foreach ($hinweise as $h) { $meld[] = $h; }
-    if ($kaputt) {
-        $meld[] = sprintf(db_t('EINST.SVL_VORHER_KAPUTT'), db_e(implode(', ', $kaputt)));
-    } else {
-        $meld[] = sprintf(db_t('EINST.SVL_VORHER'), db_e($vorher));
-    }
-    if ($weg) {
-        $meld[] = sprintf(db_t('EINST.SVL_GEKUERZT'), db_e(implode(', ', $weg)), DB_SICHERUNGEN_MAX);
-    }
-    return array(true, $meld, $fehl);
+    return array(array(db_t('EINST.DIENST_NICHT_NACHGEZOGEN')), array());
 }
 
 

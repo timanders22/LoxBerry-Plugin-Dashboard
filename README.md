@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.44 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.45 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,20 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.45
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe „Einstellungen sichern“ und „Einstellungen zurückspielen“ arbeiten jetzt mit demselben Sicherungsmodul wie die übrigen Plugins dieser Reihe. Für den Anwender ändert sich:
+  - Die Sicherungsdatei trägt im Kopf das Kennzeichen des Plugins (`_plugin`, `dashboard`) und die Fassung (`_fassung`); die beiden Teile heißen `seiten` und `zugang`. Sicherungen von 0.9.25 bis 0.9.44 trugen den Kopf `_` und die Teile `_seiten` und `_zugang`; sie werden erkannt, weiter angenommen, und die Meldung sagt das. Das gilt auch für die Einträge im Sicherungsverlauf. Eine Datei eines anderen Plugins wird als Ganzes abgewiesen. Sicherungen bis 0.9.24 hatten gar keinen Kopf; sie lassen sich von einer fremden Datei nicht sicher unterscheiden und werden seit dieser Fassung abgewiesen (bis 0.9.44 wurden sie angenommen und ließen Seiten und Zugang stehen).
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei und in den Blöcken (Seiten, Zugang). Die übrigen Einstellungen werden zurückgespielt. Bis 0.9.44 wies ein unbekannter Name die ganze Datei ab.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen. Bisher galt das nur für das Aktionstoken.
+- Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, und alle Beanstandungen werden genannt; Seiten und Kacheln prüft dieselbe Prüfung wie der Designer. Aktionstoken und Zugang samt Kennwort gehören in die Datei. Vor dem Zurückspielen liegt der bisherige Stand im Sicherungsverlauf. Danach wird der Dienst nachgezogen, und die Meldung sagt es. Eine Zweitschrift neben dem Konfigordner führt das Plugin weiterhin nicht (ein Sicherungsverfahren: `preupgrade.sh` und `postinstall.sh`).
+- **Verhalten geändert – Zurückspielen nur mit Haken:** Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB) kommen aus dem gemeinsamen Sicherungsmodul 1.1.0 und sind in allen Plugins dieser Reihe gleich.
+- **Gemeinsames Sicherungsmodul 1.2.0:** Das Modul kann jetzt, was einzelne Plugins dieser Reihe bisher selbst darum herum gebaut haben (Entscheidung „Einheitlichkeit“). Scheitert vor dem Zurückspielen ein Vorschritt (eine beschädigte Einrichtungsdatei ohne Abschrift oder der Eintrag im Sicherungsverlauf), nennt die Meldung nur diesen Grund, nicht zusätzlich „Die Einstellungen ließen sich nicht schreiben“. Die Hinweise der Seitenprüfung und die Einstellungen, die eine ältere Sicherung noch nicht kannte, nennt die Meldung in der gemeinsamen Form des Moduls.
+- **Gemeinsames Sicherungsmodul 1.2.1:** Ein Vermerk, der nie aus einer Sicherungsdatei kommt (etwa, dass ein Sprechtoken aus einem Nachbar-Plugin übernommen wurde), behält beim Zurückspielen seinen geltenden Wert. Dieses Plugin führt keinen solchen Vermerk; an ihm ändert sich nichts.
+- **Gemeinsames Sicherungsmodul 1.2.2:** Fehlt eine Einstellung in der Sicherung und setzt das Plugin ihren Wert nach einer eigenen Übergangsregel (etwa aus einer verwandten Einstellung derselben Sicherung), bleibt dieser Wert beim Zurückspielen, und die Meldung nennt ihn als nach einer Übergangsregel abgeleitet – nicht als Werkseinstellung und nicht als bisherigen Wert. An diesem Plugin ändert sich dadurch nichts.
+- **Verhalten geändert – fehlende Einstellung behält ihren Wert:** Fehlt in einer Sicherung einer älteren Fassung eine der Einstellungen `pin_frei`, `tafel_mqtt`, `tafel_mqtt_praefix`, `mqtt_ein`, `befehle_mqtt_ein`, `endpunkt_ein`, `ansage_ein`, `ansage_frist` oder `ansage_gong`, behält sie beim Zurückspielen den geltenden Wert statt der Werkseinstellung und wird in der Meldung genannt – wie die übrigen später hinzugekommenen Einstellungen und wie in den anderen Plugins dieser Reihe (Entscheidung „Ja, behalten“).
+- Gemessen mit einem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt, mit den Sicherungen der Fassungen 0.9.44, 0.9.35 und 0.9.25; am Gerät nicht gemessen.
 
 ## Neu in 0.9.44
 
