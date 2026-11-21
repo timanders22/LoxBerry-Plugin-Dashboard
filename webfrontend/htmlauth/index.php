@@ -65,7 +65,8 @@ list($db_mk_liegt, $db_mk_gilt) = db_upgrade_marke();
 if ($db_mk_gilt) {
     $db_rahmen = class_exists('LBWeb', false) && method_exists('LBWeb', 'lbheader');
     if ($db_rahmen) {
-        LBWeb::lbheader(db_t('ALLG.TITEL'), 'https://www.loxone.com/enen/kb/api/', 'help.html');
+        require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+        LBWeb::lbheader(plugin_kopftitel(db_t('ALLG.TITEL'), __DIR__), 'https://www.loxone.com/enen/kb/api/', 'help.html');
     }
     echo '<div id="db-upgrade-hinweis" style="max-width:980px;margin:12px auto;'
        . 'border-radius:8px;padding:10px 14px;background:#fdf3e3;border:1px solid #e0620d;'
@@ -1147,7 +1148,8 @@ foreach ($db_seiten as $db_s) { $db_kachelzahl += count(isset($db_s['kacheln']) 
 $db_rahmen = class_exists('LBWeb', false) && method_exists('LBWeb', 'lbheader');
 
 if ($db_rahmen) {
-    LBWeb::lbheader(db_t('ALLG.TITEL'), 'https://www.loxone.com/enen/kb/api/', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel(db_t('ALLG.TITEL'), __DIR__), 'https://www.loxone.com/enen/kb/api/', 'help.html');
 }
 /* O9 (Durchgang 29.09.2026): die Seite wird gepuffert, damit der Reiter Test
  * das Formularmerkmal am GERENDERTEN HTML zaehlt (Klasse 12) - die Zeile
