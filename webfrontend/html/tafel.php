@@ -131,7 +131,11 @@ foreach (array('ABBRECHEN', 'WEITER', 'PIN_TITEL', 'ANTWORT_UNLESBAR', 'OHNE_BES
                'NICHT_DARSTELLBAR', 'MARKE_GESICHERT', 'MARKE_NURLESEN', 'SCHUB_FEHL', 'ERSATZWEG',
                'LB_ANTWORTET_NICHT', 'BAND_LB', 'KEINE_MS', 'BAND_MS', 'WERTE_ALT', 'WERTE_ZU_ALT',
                'BAND_ALT', 'KEINE_WERTE_DA', 'BAND_KEINE', 'VERBUNDEN', 'UEBER_HTTP', 'WACH_HINWEIS',
-               'NAME_FALSCH', 'TON_KNOPF', 'TON_HINWEIS', 'TON_GESPERRT', 'TON_AN') as $db_k) {
+               'NAME_FALSCH', 'TON_KNOPF', 'TON_HINWEIS', 'TON_GESPERRT', 'TON_AN',
+               /* 0.9.49: Kachel Abfahrt */
+               'ABFAHRT_AUS', 'ABFAHRT_NIE', 'ABFAHRT_LESER', 'ABFAHRT_SCHWEIGT', 'ABFAHRT_KEINE',
+               'ABFAHRT_JETZT', 'ABFAHRT_MIN', 'ABFAHRT_STRECKE', 'ABFAHRT_BEDARF', 'ABFAHRT_OHNE',
+               'ABFAHRT_REICHT', 'ABFAHRT_REICHT_NICHT', 'ABFAHRT_WARNUNG', 'ABFAHRT_UNLESBAR') as $db_k) {
     $db_tafeltexte[strtolower($db_k)] = db_t('TAFEL.' . $db_k);
 }
 
@@ -275,6 +279,8 @@ main{display:grid;gap:12px;padding:0 18px 24px;
   transition:background .12s,border-color .12s}
 .k.an{border-color:var(--an);background:var(--anweich)}
 .k.alarm{border-color:var(--fehl)}
+/* 0.9.49: Kachel Abfahrt, wenn keines der eingetragenen Fahrzeuge reicht (haus/abfahrt/ladewarnung = 1). */
+.k.ladewarn{border-color:var(--warn);border-width:2px}
 .k .t{font-size:.83rem;color:var(--leise);line-height:1.25;margin-bottom:auto;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 /* S8 (0.9.26): das Symbol aus LoxoneIcons vor dem Titel, als <img> geladen.
@@ -417,6 +423,8 @@ var KONF  = <?= json_encode($konf, $db_jf) ?>;
 var LISTE = <?= json_encode($seitenliste, $db_jf) ?>;
 var TAKT  = KONF.takt * 1000;
 var WETTER = (DATEN && DATEN.wetter) || null;
+/* 0.9.49: die Werte der Kachel Abfahrt - vom LoxBerry bei jeder Anfrage gerechnet (db_abfahrt_nutzlast). */
+var ABFAHRT = (DATEN && DATEN.abfahrt) || null;
 /* Der Text des Ruhebilds - aus der Sprachdatei. */
 var RUHE_HINWEIS = <?= json_encode(db_t('ALLG.RUHE_BERUEHREN'), $db_jf) ?>;
 /* O13: alle Texte der Tafel aus der Sprachdatei (Abschnitt TAFEL). */
@@ -969,6 +977,40 @@ BAUER.tageszeit = function(k, w){
     (w.override ? '<div class="u">'+e(tx(T.handbetrieb, zahl(w.override,0)))+'</div>' : '')};
 };
 
+/* 0.9.49: Abfahrt. Die Kachel haengt an keinem Baustein; ihre Werte kommen aus den Haus-Themen des
+   Abfahrts-Assistenten (ABFAHRT, einmal je Seite). Ob sie frisch sind, entscheidet der LoxBerry mit seiner
+   Uhr, nicht dieses Tablet: "schweigt" kommt ohne Werte, damit nie ein alter Wert als frischer dasteht. */
+BAUER.abfahrt = function(k, w){
+  var a = ABFAHRT || {lage: "nie"};
+  function leise(t){ return {klasse:"", inhalt:'<div class="u" style="margin-top:auto">'+e(t)+'</div>'}; }
+  if (a.lage === "aus") { return leise(T.abfahrt_aus); }
+  if (a.lage === "schweigt") {
+    return {klasse:"fehlt", inhalt:'<div class="u" style="margin-top:auto">'+
+      e(tx(T.abfahrt_schweigt, a.seit || "?"))+'</div>'};
+  }
+  if (a.lage !== "frisch") { return leise(a.leser === "aus" ? T.abfahrt_leser : T.abfahrt_nie); }
+  var m = parseInt(a.in_min, 10);
+  var gross = (isNaN(m) || m < 0)
+    ? '<div class="w" style="font-size:1.05rem">'+e(T.abfahrt_keine)+'</div>'
+    : (m === 0 ? '<div class="w" style="font-size:1.2rem">'+e(T.abfahrt_jetzt)+'</div>'
+               : '<div class="w">'+e(String(m))+'<small>'+e(T.abfahrt_min)+'</small></div>');
+  function km(v){ var z = parseInt(v, 10); return (isNaN(z) || z < 0) ? T.abfahrt_ohne : z + " km"; }
+  var zeilen = '<div class="u">'+e(tx(T.abfahrt_strecke, km(a.strecke_km)))+' &middot; '+
+               e(tx(T.abfahrt_bedarf, km(a.bedarf_km)))+'</div>';
+  (a.fahrzeuge || []).slice(0, 4).forEach(function(f){
+    var teile = [String(f.name)];
+    if (f.km !== null && f.km !== undefined) { teile.push(f.km + " km"); }
+    teile.push(f.reicht === 1 ? T.abfahrt_reicht : (f.reicht === 0 ? T.abfahrt_reicht_nicht : T.abfahrt_ohne));
+    zeilen += '<div class="u">'+e(teile.join(" \u2013 "))+'</div>';
+  });
+  var warn = a.ladewarnung === 1;
+  if (warn) { zeilen += '<div class="u"><b>'+e(T.abfahrt_warnung)+'</b></div>'; }
+  if (a.unlesbar && a.unlesbar.length) {
+    zeilen += '<div class="u">'+e(tx(T.abfahrt_unlesbar, a.unlesbar.join(", ")))+'</div>';
+  }
+  return {klasse: warn ? "ladewarn" : "", inhalt: gross + zeilen};
+};
+
 BAUER.generisch = function(k, w){
   var zeilen = [];
   for (var n in w) { if(Object.prototype.hasOwnProperty.call(w,n)) {
@@ -1181,6 +1223,8 @@ function uebernehmen(d){
      nicht dabei, bleibt der letzte Stand stehen - er waere sonst bei jedem
      Takt weg und das Ruhebild fluechtig leer. */
   if (d.wetter !== undefined && d.wetter !== null) { WETTER = d.wetter; }
+  /* 0.9.49: die Kachel Abfahrt - steht nur in der Nutzlast, wenn die Seite eine traegt. */
+  if (d.abfahrt !== undefined && d.abfahrt !== null) { ABFAHRT = d.abfahrt; }
   zeichnen();
   stand_zeigen(d);
   if (d.tafel) { tafel_befolgen(d.tafel); }
@@ -2020,7 +2064,8 @@ var RUHE_OHNE = {
   tageszeit: "ein Tagesbalken laesst sich nicht auf einen Wert bringen",
   generisch: "unbekannter Typ - hier wird nicht geraten",
   fehlt:     "der Baustein ist weg",
-  szene:     "eine Szene hat keinen Zustand"
+  szene:     "eine Szene hat keinen Zustand",
+  abfahrt:   "haengt an keinem Baustein; die Werte stehen auf der Kachel selbst"
 };
 
 var RUHE_KURZ = {

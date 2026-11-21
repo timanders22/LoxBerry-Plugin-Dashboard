@@ -451,7 +451,7 @@ if ($db_post && isset($_POST['speichern'])) {
     foreach (array('http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'ansage_ein', 'ansage_gong',
                    'haptik', 'verlauf', 'sse', 'tafelsteuerung',
                    'gesichert_schalten', 'ruhe_uhr', 'ruhe_wetter',
-                   'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein') as $db_h) {
+                   'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein', 'haus_abfahrt_ein') as $db_h) {
         $db_cfg[$db_h] = isset($_POST[$db_h]) ? 1 : 0;
     }
 
@@ -675,7 +675,8 @@ if ($db_post && isset($_POST['speichern'])) {
             }
             // O17: was der Dienst beim Start liest
             foreach (array('miniserver', 'tls', 'takt', 'http_rueckfall', 'http_takt',
-                           'verlauf', 'verlauf_punkte', 'tafel_mqtt', 'tafel_mqtt_praefix') as $db_k) {
+                           'verlauf', 'verlauf_punkte', 'tafel_mqtt', 'tafel_mqtt_praefix',
+                           'haus_abfahrt_ein') as $db_k) {
                 if (json_encode($db_cfg_vorher[$db_k]) !== json_encode($db_cfg[$db_k])) {
                     $db_nachziehen = true;
                 }
@@ -1540,6 +1541,12 @@ $db_vb_form = isset($db_ms['verbindung']) ? $db_ms['verbindung'] : db_ms_verbind
   <?= db_e(sprintf(db_t('EINST.L_TAFEL_MQTT'), db_mqtt_praefix($db_cfg))) ?></label>
 <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_TAFEL_MQTT'),
     '<span class="sm-mono">' . db_e(implode(', ', db_tafel_mqtt_themen(db_mqtt_praefix($db_cfg)))) . '</span>') ?></p>
+<?php /* 0.9.49: Haus-Themen fuer die Kachel Abfahrt (bin/haus_mqtt.py), ab Werk aus. Der Dienst liest den Haken beim
+        Start; ein geaenderter Haken startet ihn beim Speichern neu (O17). */ ?>
+<label><input data-role="none" type="checkbox" name="haus_abfahrt_ein" value="1"<?= !empty($db_cfg['haus_abfahrt_ein']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_HAUS_ABFAHRT')) ?></label>
+<p class="sm-hilfe"><?= sprintf(db_t('EINST.H_HAUS_ABFAHRT'),
+    '<span class="sm-mono">haus/abfahrt/in_min, zaehler, strecke_km, bedarf_km, ladewarnung, fahrzeuge; haus/fahrzeug/+/reichweite_km, haus/fahrzeug/+/zaehler</span>') ?></p>
 
 <h3><?= db_e(db_t('EINST.T_PIN_FREI')) ?></h3>
 <div class="sm-feld">
@@ -1988,6 +1995,7 @@ if ($db_sy_lage !== 'ok' || !db_symbol_liste()) { ?>
        das Loeschen einer Seite grau. -->
   <button data-role="none" type="button" class="sm-btn sm-b-technik" id="dz-neu">+ <?= db_e(db_t('DESIGN.NEUE_SEITE')) ?></button>
   <button data-role="none" type="button" class="sm-btn sm-b-technik" id="dz-szene">+ <?= db_e(db_t('DESIGN.SZENE_NEU')) ?></button>
+  <button data-role="none" type="button" class="sm-btn sm-b-technik" id="dz-abfahrt">+ <?= db_e(db_t('DESIGN.ABFAHRT_NEU')) ?></button>
 </div>
 
 <div id="dz-bau"></div>
@@ -2584,6 +2592,8 @@ if (!$db_zeilen) { ?>
 		'szene_leer'   => strip_tags(db_t('DESIGN.SZENE_LEER')),
 		'szene_dazu'   => strip_tags(db_t('DESIGN.SZENE_DAZU')),
 		'szene_ohne_befehl' => strip_tags(db_t('DESIGN.SZENE_OHNE_BEFEHL')),
+		'abfahrt_titel' => strip_tags(db_t('TAFEL.ABFAHRT_TITEL')),
+		'abfahrt_info'  => strip_tags(db_t('DESIGN.ABFAHRT_INFO')),
 		'symbol'       => strip_tags(db_t('DESIGN.SYMBOL')),
 		'kein_symbol'  => strip_tags(db_t('DESIGN.KEIN_SYMBOL')),
 		'symbol_suche' => strip_tags(db_t('DESIGN.SYMBOL_SUCHE')),
@@ -2759,10 +2769,12 @@ if (!$db_zeilen) { ?>
 			}
 			(s.kacheln || []).forEach(function (k, ki) {
 				var szene = k.kachel === 'szene';
-				var b = szene ? null : baustein(k.uuid);
+				/* 0.9.49: die Kachel Abfahrt haengt ebenso an keinem Baustein. */
+				var abfahrt = k.kachel === 'abfahrt';
+				var b = (szene || abfahrt) ? null : baustein(k.uuid);
 				/* Eine Szene haengt an keinem Baustein - sie darf deshalb
 				   nicht als "unbekannt" rot markiert werden. */
-				var gut = szene || !!b;
+				var gut = szene || abfahrt || !!b;
 				var kk = document.createElement('div');
 				kk.draggable = true;
 				kk.dataset.seite = si; kk.dataset.kachel = ki;
@@ -2770,7 +2782,9 @@ if (!$db_zeilen) { ?>
 				var opt = GROESSEN.map(function (g) {
 					return '<option value="' + e(g) + '"' + (k.groesse === g ? ' selected' : '') + '>' + e(g) + '</option>';
 				}).join('');
-				var topt = Object.keys(TYPEN).map(function (t) {
+				/* 0.9.49: eine Kachel Abfahrt bleibt Abfahrt, und keine Baustein-Kachel wird zur Abfahrt - sie traegt eine UUID,
+				   die eine Abfahrt nicht haben darf (db_seiten_pruefen weist sie ab). */
+				var topt = Object.keys(TYPEN).filter(function (t) { return abfahrt ? t === 'abfahrt' : t !== 'abfahrt'; }).map(function (t) {
 					return '<option value="' + e(t) + '"' + (k.kachel === t ? ' selected' : '') + '>' + e(TYPEN[t]) + '</option>';
 				}).join('');
 				kk.innerHTML =
@@ -2785,7 +2799,7 @@ if (!$db_zeilen) { ?>
 					'<label style="white-space:nowrap"><input data-role="none" type="checkbox" data-feld="sichtbar"' + (k.sichtbar ? ' checked' : '') + '></label>' +
 					'</div>' +
 					'<div class="sm-hilfe" style="margin-top:2px">' +
-					  (szene ? e(TEXT.szene_schritt) : e(b ? (b.loxtyp + (b.raum ? ' · ' + b.raum : '')) : '?')) + '</div>' +
+					  (szene ? e(TEXT.szene_schritt) : (abfahrt ? e(TEXT.abfahrt_info) : e(b ? (b.loxtyp + (b.raum ? ' · ' + b.raum : '')) : '?'))) + '</div>' +
 					(szene ? szene_editor(k) : '') + symbol_zeile(k);
 				var km = marken(k);
 				if (km.length) {
@@ -2848,6 +2862,14 @@ if (!$db_zeilen) { ?>
 			   ein zweiter Weg fuer dieselbe Sache. */
 			AUFBAU.seiten[0].kacheln.push({ uuid: '', titel: name, kachel: 'szene',
 				groesse: '2x1', sichtbar: 1, schritte: [] });
+			markieren(); zeichnen();
+		};
+		/* 0.9.49: die Kachel Abfahrt - kein Baustein (uuid ''), keine Schritte; sie kommt wie die Szene auf die
+		   erste Seite und laesst sich von dort ziehen. Der Titel ist danach frei. */
+		document.getElementById('dz-abfahrt').onclick = function () {
+			if (!AUFBAU.seiten.length) { alert(TEXT.leer); return; }
+			AUFBAU.seiten[0].kacheln.push({ uuid: '', titel: TEXT.abfahrt_titel, kachel: 'abfahrt',
+				groesse: '2x1', sichtbar: 1 });
 			markieren(); zeichnen();
 		};
 		var such = document.getElementById('dz-suche');

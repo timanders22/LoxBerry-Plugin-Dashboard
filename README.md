@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.48 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.49 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,15 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.49
+
+- **Neu – Kachel „Abfahrt“ (Haus-Themen):** Eine Kachel ohne Loxone-Baustein, im Designer über den Knopf „+ Abfahrt“ angelegt (wie die Szene, Vorgabegröße 2x1). Sie zeigt groß die Minuten bis zur empfohlenen Abfahrt aus `haus/abfahrt/in_min` (−1 „keine Abfahrt geplant“, 0 „jetzt losfahren“), darunter Strecke und Bedarf (`strecke_km`, `bedarf_km`) und je Fahrzeug aus `haus/abfahrt/fahrzeuge` (höchstens vier) eine Zeile mit Name, Reichweite aus `haus/fahrzeug/<name>/reichweite_km` (nur, solange der Zähler dieses Fahrzeugs frisch ist) und „reicht“, „reicht nicht“ oder „ohne Aussage“. Meldet `haus/abfahrt/ladewarnung` 1, ist die Kachel orange umrandet. Einen Termintitel zeigt sie nicht; die Haus-Themen tragen keinen. Die Kachel passt zu jedem Fahrzeug-Plugin, das unter `haus/fahrzeug/` sendet.
+- **Neu – Einstellung „Haus-Themen für die Kachel Abfahrt lesen“ (ab Werk aus):** Eingeschaltet hält der Dienst eine eigene Leseverbindung zum Broker (`bin/haus_mqtt.py`, Bauart der Tafel-Verbindung: MQTT 3.1.1, Zugang aus der `general.json`, Kennwort nur im Anmeldepaket, Neuversuch nach 5 s bis 120 s) und abonniert `haus/abfahrt/in_min`, `zaehler`, `strecke_km`, `bedarf_km`, `ladewarnung`, `fahrzeuge` sowie `haus/fahrzeug/+/reichweite_km` und `haus/fahrzeug/+/zaehler`. Er sendet nichts und räumt nichts ab. Zurückbehaltene Werte nimmt er an. Der Stand liegt in `data/plugins/dashboard/haus.json` (0600). Ausgeschaltet läuft kein Leser, und die Kachel sagt „Haus-Themen sind ausgeschaltet“. Der Haken wird gesichert und zurückgespielt wie die übrigen; eine Sicherung bis 0.9.48 kennt ihn nicht, dann behält er seinen geltenden Wert und wird genannt. Ein geänderter Haken startet den Dienst beim Speichern neu.
+- **Frische:** Werte gelten nur, solange sich der Zähler der Quelle (`haus/abfahrt/zaehler`, für die Reichweite `haus/fahrzeug/<name>/zaehler`) binnen 120 s live ändert. Gerechnet wird bei jeder Anfrage auf dem LoxBerry mit dessen Uhr, nicht auf dem Tablet. Schweigt der Zähler länger, zeigt die Kachel „Quelle schweigt seit …“ und keinen alten Wert. Ein zurückbehaltener Zähler zählt nicht als Lebenszeichen.
+- **Seitenprüfung:** Designer, Reiter Dashboards und Zurückspielen nehmen die Kachel Abfahrt ohne UUID an und weisen eine Kachel Abfahrt mit UUID oder mit anderen Schlüsseln als Titel, Kachelart, Größe, Sichtbarkeit und Symbol ab; die Meldung nennt die Schlüssel, gespeichert wird nichts. Im Designer bietet die Auswahl der Kachelart einer Baustein-Kachel keine Abfahrt an und einer Abfahrt nur die Abfahrt.
+- **Reiter Test:** Neue Prüfzeile „Haus-Themen für die Abfahrts-Kachel?“: aus (grau), frisch (Haken, mit Zählerstand und Alter), schweigt oder nie live gekommen (Kreuz), dazu Dienst, Verbindung zum Broker und je empfangenem Fahrzeug die Lage.
+- Gemessen auf dem Arbeitsrechner: der Leser gegen einen nachgebildeten Broker (MQTT 3.1.1) unter Windows (Python 3.14) und WSL (Python 3.12, dort auch die Rechte 0600), Nutzlast und Seitenprüfung unter PHP 7.4 und 8.4; jede Korrektur einzeln zurückgebaut, jede ihre Prüfzeile rot (10 Rückbauten). Nicht gemessen: gegen den Abfahrts-Assistenten, gegen einen echten Broker, am Gerät, die Darstellung auf einem Tablet und der Designer im Browser.
 
 ## Neu in 0.9.48
 
@@ -635,6 +644,7 @@ und bedient damit beliebig viele Tablets.
                              Befehlswarteschlange, Selbsttest, Proben
     bin/entwurf.py           Erstentwurf aus der Struktur
     bin/tafel_mqtt.py        Tafelbefehle über MQTT (ab Werk aus)
+    bin/haus_mqtt.py         Haus-Themen für die Kachel Abfahrt lesen (ab Werk aus)
     bin/dienst.sh            Start, Stopp, Wächter, Proben
     cron/cron.01min          minütlicher Wächter
     dpkg/apt                 die beiden Debian-Pakete, von LoxBerry als

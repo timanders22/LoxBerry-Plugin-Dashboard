@@ -73,6 +73,11 @@ if (!defined('DB_ABWEISUNG_BREMSE')) { define('DB_ABWEISUNG_BREMSE', 60); }
 if (!defined('DB_SICHERUNGEN_MAX')) { define('DB_SICHERUNGEN_MAX', 20); }
 /* Dieselbe Groessengrenze wie beim Hochladen einer Sicherung. */
 if (!defined('DB_SICHERUNG_MAX_BYTE')) { define('DB_SICHERUNG_MAX_BYTE', 262144); }
+/* 0.9.49: Kachel Abfahrt. Werte einer Haus-Quelle gelten nur, solange ihr Zaehler sich binnen DB_HAUS_FRIST
+ * Sekunden live geaendert hat (Regeln/07, Haus-Themen); je Kachel hoechstens DB_ABFAHRT_FAHRZEUGE_MAX Fahrzeuge
+ * (so viele nennt haus/abfahrt/fahrzeuge hoechstens). */
+if (!defined('DB_HAUS_FRIST')) { define('DB_HAUS_FRIST', 120); }
+if (!defined('DB_ABFAHRT_FAHRZEUGE_MAX')) { define('DB_ABFAHRT_FAHRZEUGE_MAX', 4); }
 /* S8 (0.9.26): Obergrenze einer ausgelieferten Symboldatei. Ein Symbol von
  * LoxoneIcons hat wenige Kilobyte; groesser ist keins. */
 if (!defined('DB_SYMBOL_MAX_BYTE')) { define('DB_SYMBOL_MAX_BYTE', 262144); }
@@ -322,6 +327,9 @@ function db_vorgaben()
         'mqtt_ein'           => 1,
         'befehle_mqtt_ein'   => 0,
         'endpunkt_ein'       => 0,
+        /* 0.9.49: Haus-Themen fuer die Kachel Abfahrt lesen (bin/haus_mqtt.py) - ab Werk AUS. Ohne Haken laeuft
+         * kein Leser, und die Kachel sagt "Haus-Themen sind ausgeschaltet". */
+        'haus_abfahrt_ein'   => 0,
     );
 }
 
@@ -3124,7 +3132,8 @@ function db_kacheltypen()
         $k = isset($z['kachel']) ? $z['kachel'] : 'generisch';
         $aus[$k] = db_kacheltext($k, isset($texte[$k]) ? $texte[$k] : (isset($z['text']) ? $z['text'] : $k));
     }
-    foreach (array('generisch', 'szene') as $k) {
+    // 0.9.49: 'abfahrt' haengt wie 'szene' an keinem Bausteintyp.
+    foreach (array('generisch', 'szene', 'abfahrt') as $k) {
         if (!isset($aus[$k])) {
             $aus[$k] = db_kacheltext($k, isset($texte[$k]) ? $texte[$k] : $k);
         }
@@ -3152,6 +3161,114 @@ function db_szene_schritte($k)
         $aus[] = array('uuid' => $u, 'befehl' => $b);
     }
     return $aus;
+}
+
+/* ---------------- 0.9.49: Kachel "Abfahrt" (Haus-Themen) ----------------
+ *
+ * Die Kachel haengt an keinem Loxone-Baustein (uuid '', wie die Szene). Ihre Werte liest der Dienst
+ * (bin/haus_mqtt.py) aus haus/abfahrt/... und haus/fahrzeug/<name>/... (Regeln/07) - nur mit dem Haken
+ * haus_abfahrt_ein, ab Werk aus - und legt sie in data/plugins/<ordner>/haus.json (0600) ab. Ob sie frisch sind,
+ * rechnet erst diese Seite, bei jeder Anfrage, mit der Uhr des LoxBerry: frisch heisst, der Zaehler der Quelle kam
+ * vor hoechstens DB_HAUS_FRIST Sekunden live mit einem neuen Wert. Die Uhr des Tablets zaehlt nicht. Schweigt die
+ * Quelle, traegt die Nutzlast keine Werte, nur "schweigt" und seit wann - ein alter Wert erscheint nie als frischer.
+ * Einen Termintitel gibt es in den Haus-Themen nicht. */
+
+/** Der Stand des Lesers (bin/haus_mqtt.py) oder array(). */
+function db_haus_stand()
+{
+    return db_json_lesen(db_paths()['datadir'] . '/haus.json');
+}
+
+/** Lage einer Quelle aus haus.json: array(lage, Alter in s). lage: 'nie' (Zaehler kam nie live), 'frisch'
+ * (0 <= Alter <= DB_HAUS_FRIST) oder 'schweigt' (aelter, oder "seit" liegt in der Zukunft). Dieselbe Regel wie
+ * frisch() in bin/haus_mqtt.py. */
+function db_haus_lage($q, $jetzt)
+{
+    if (!is_array($q) || !isset($q['seit']) || !(is_int($q['seit']) || is_float($q['seit'])) || $q['seit'] <= 0) {
+        return array('nie', -1);
+    }
+    $alter = (int) ($jetzt - $q['seit']);
+    if ($alter >= 0 && $alter <= DB_HAUS_FRIST) { return array('frisch', $alter); }
+    return array('schweigt', $alter);
+}
+
+/** Eine Uhrzeit fuer "seit ...": heute HH:MM, sonst TT.MM. HH:MM (Uhr des LoxBerry). */
+function db_haus_zeit($ts, $jetzt)
+{
+    return date('Y-m-d', $ts) === date('Y-m-d', $jetzt) ? date('H:i', $ts) : date('d.m. H:i', $ts);
+}
+
+/** Eine ganze Zahl aus einem Haus-Thema (Text), sonst null - auch fuer "-", leer, Komma oder Text. */
+function db_haus_ganz($w, $min, $max)
+{
+    if (!is_string($w) || !preg_match('/^-?[0-9]{1,6}\z/', $w)) { return null; }
+    $z = (int) $w;
+    return ($z >= $min && $z <= $max) ? $z : null;
+}
+
+/** haus/abfahrt/fahrzeuge lesen: "name=1,name=0,name=-1", "-" = Pruefung aus oder ohne Aussage.
+ * Rueckgabe array(Liste von array(name, reicht), unlesbar?). Ein Eintrag ausserhalb der Namensregel oder des
+ * Wertebereichs und jeder Eintrag ueber DB_ABFAHRT_FAHRZEUGE_MAX hinaus faellt weg und wird als unlesbar gemeldet. */
+function db_abfahrt_fahrzeuge_lesen($w)
+{
+    if (!is_string($w)) { return array(array(), true); }
+    $w = trim($w);
+    if ($w === '' || $w === '-') { return array(array(), false); }
+    $aus = array();
+    $fehl = false;
+    foreach (explode(',', $w) as $teil) {
+        if (!preg_match('/^([a-z0-9_-]{1,40})=(1|0|-1)\z/', trim($teil), $m)
+                || count($aus) >= DB_ABFAHRT_FAHRZEUGE_MAX) {
+            $fehl = true;
+            continue;
+        }
+        $aus[] = array('name' => $m[1], 'reicht' => (int) $m[2]);
+    }
+    return array($aus, $fehl);
+}
+
+/** Die Nutzlast der Kachel Abfahrt, bei jeder Anfrage neu gerechnet. lage: 'aus' (Haken aus), 'nie', 'schweigt'
+ * (mit seit) oder 'frisch' (mit den Werten). 'leser' ist die Lage des Lesers aus haus.json ('aus' heisst: der
+ * Dienst laeuft noch ohne Leser). */
+function db_abfahrt_nutzlast($cfg)
+{
+    if (empty($cfg['haus_abfahrt_ein'])) { return array('lage' => 'aus'); }
+    $st = db_haus_stand();
+    $jetzt = time();
+    $leser = isset($st['lage']) && is_string($st['lage']) ? $st['lage'] : '';
+    $quellen = isset($st['quellen']) && is_array($st['quellen']) ? $st['quellen'] : array();
+    $q = isset($quellen['abfahrt']) ? $quellen['abfahrt'] : null;
+    list($lage) = db_haus_lage($q, $jetzt);
+    if ($lage === 'nie') { return array('lage' => 'nie', 'leser' => $leser); }
+    if ($lage === 'schweigt') {
+        return array('lage' => 'schweigt', 'seit' => db_haus_zeit((int) $q['seit'], $jetzt), 'leser' => $leser);
+    }
+    $w = isset($q['werte']) && is_array($q['werte']) ? $q['werte'] : array();
+    $unlesbar = array();
+    $zahl = function ($k, $min, $max) use ($w, &$unlesbar) {
+        if (!array_key_exists($k, $w)) { return -1; }   // noch nicht gemeldet = ohne Aussage
+        $z = db_haus_ganz($w[$k], $min, $max);
+        if ($z === null) { $unlesbar[] = $k; return -1; }
+        return $z;
+    };
+    $in_min = $zahl('in_min', -1, 999999);
+    $strecke = $zahl('strecke_km', -1, 999999);
+    $bedarf = $zahl('bedarf_km', -1, 999999);
+    $warnung = $zahl('ladewarnung', -1, 1);
+    list($liste, $fehl) = db_abfahrt_fahrzeuge_lesen(array_key_exists('fahrzeuge', $w) ? $w['fahrzeuge'] : '-');
+    if ($fehl) { $unlesbar[] = 'fahrzeuge'; }
+    $fz = isset($quellen['fahrzeug']) && is_array($quellen['fahrzeug']) ? $quellen['fahrzeug'] : array();
+    $zeilen = array();
+    foreach ($liste as $f) {
+        $fq = isset($fz[$f['name']]) ? $fz[$f['name']] : null;
+        list($fl) = db_haus_lage($fq, $jetzt);
+        $km = null;
+        $r = ($fl === 'frisch' && isset($fq['werte']['reichweite_km'])) ? $fq['werte']['reichweite_km'] : null;
+        if (is_string($r) && preg_match('/^[0-9]{1,5}(\.[0-9]{1,3})?\z/', $r)) { $km = (int) round((float) $r); }
+        $zeilen[] = array('name' => $f['name'], 'reicht' => $f['reicht'], 'km' => $km, 'lage' => $fl);
+    }
+    return array('lage' => 'frisch', 'in_min' => $in_min, 'strecke_km' => $strecke, 'bedarf_km' => $bedarf,
+                 'ladewarnung' => $warnung, 'fahrzeuge' => $zeilen, 'unlesbar' => $unlesbar);
 }
 
 /** Die Kacheln einer Seite in genau der Reihenfolge, in der die Anzeige sie
@@ -3360,6 +3477,7 @@ function db_seite_daten($schluessel)
     $werte = isset($abbild['werte']) && is_array($abbild['werte']) ? $abbild['werte'] : array();
     $verlauf = !empty($cfg['verlauf']) ? db_verlauf() : array();
     $kacheln = array();
+    $mit_abfahrt = false;
     foreach (db_kacheln_sichtbar($seite) as $k) {
         $uuid = (string) (isset($k['uuid']) ? $k['uuid'] : '');
         // Alle Schluessel mit isset() lesen. Der Zweig 'fehlt' tat das bis
@@ -3370,6 +3488,19 @@ function db_seite_daten($schluessel)
         $groesse = (string) (isset($k['groesse']) ? $k['groesse'] : '1x1');
         // S8: das Symbol aus LoxoneIcons, nur wenn die Datei da ist.
         $db_sym = db_symbol_kachel($k);
+
+        // 0.9.49: Abfahrt - haengt an keinem Baustein, die Werte stehen einmal je Seite unter 'abfahrt'.
+        if ((string) (isset($k['kachel']) ? $k['kachel'] : '') === 'abfahrt') {
+            $mit_abfahrt = true;
+            $kacheln[] = array(
+                'uuid' => '', 'titel' => $titel !== '' ? $titel : db_t('TAFEL.ABFAHRT_TITEL'),
+                'kachel' => 'abfahrt', 'groesse' => $groesse,
+                'werte' => array(), 'befehle' => array(),
+                'nurlesen' => 0, 'gesichert' => 0, 'warnung' => 0,
+                'symbol' => $db_sym,
+            );
+            continue;
+        }
 
         // Szene: mehrere Befehle auf einen Druck. Sie haengt an keinem
         // einzelnen Baustein, deshalb VOR der Bausteinsuche.
@@ -3501,6 +3632,8 @@ function db_seite_daten($schluessel)
         'frist'      => db_frist($abbild, $cfg),
         'tafel'      => db_tafel_lesen(),
         'wetter'     => db_wetter_fuer_nutzlast($cfg),
+        // 0.9.49: nur, wenn die Seite eine sichtbare Kachel Abfahrt traegt.
+        'abfahrt'    => $mit_abfahrt ? db_abfahrt_nutzlast($cfg) : null,
     );
 }
 
@@ -3519,7 +3652,9 @@ function db_seite_werte($schluessel)
     // steht. Folgenlos fuer die Nummerierung - diese Nutzlast ist nach UUID
     // geschluesselt -, aber die Werte unsichtbarer Kacheln wanderten sonst
     // bei jedem Takt mit.
+    $mit_abfahrt = false;
     foreach (db_kacheln_sichtbar($seite) as $k) {
+        if ((string) (isset($k['kachel']) ? $k['kachel'] : '') === 'abfahrt') { $mit_abfahrt = true; }
         $u = (string) (isset($k['uuid']) ? $k['uuid'] : '');
         if ($u === '') { continue; }
         if (isset($alle[$u])) { $aus[$u] = $alle[$u]; }
@@ -3529,7 +3664,8 @@ function db_seite_werte($schluessel)
                  'weg' => (string) (isset($abbild['weg']) ? $abbild['weg'] : ''),
                  'alter' => db_alter($abbild), 'frist' => db_frist($abbild, $cfg), 'werte' => $aus,
                  'verlauf' => $kurven, 'tafel' => db_tafel_lesen(),
-                 'wetter' => db_wetter_fuer_nutzlast($cfg, false));
+                 'wetter' => db_wetter_fuer_nutzlast($cfg, false),
+                 'abfahrt' => $mit_abfahrt ? db_abfahrt_nutzlast($cfg) : null);
 }
 
 /** PIN einer Seite pruefen.
@@ -3666,7 +3802,9 @@ function db_pin_frei($cfg = null)
  * nennt sie; jeder andere fehlende Schluessel bleibt eine Beanstandung. */
 function db_sicherung_nachgezogen()
 {
-    return array('pin_frei', 'tafel_mqtt', 'tafel_mqtt_praefix', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein', 'ansage_ein', 'ansage_frist', 'ansage_gong');
+    // 0.9.49: haus_abfahrt_ein kennt keine Sicherung bis 0.9.48 - fehlt es, behaelt es seinen geltenden Wert.
+    return array('pin_frei', 'tafel_mqtt', 'tafel_mqtt_praefix', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein', 'ansage_ein', 'ansage_frist', 'ansage_gong',
+                 'haus_abfahrt_ein');
 }
 
 /** Felder, die der Endpunkt als Zustandszeile liefert.
@@ -4066,7 +4204,8 @@ function db_sicherung_wert_pruefen($k, $w)
     /* Seit 0.9.44 (Punkt G1) ist tls kein Haken mehr, sondern 'auto', 0 oder 1 (Zweig unten). */
     $haken = array('http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'haptik', 'ansage_ein', 'ansage_gong',
                    'verlauf', 'sse', 'tafelsteuerung', 'gesichert_schalten', 'ruhe_uhr',
-                   'ruhe_wetter', 'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein');
+                   'ruhe_wetter', 'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein',
+                   'haus_abfahrt_ein');
     if (isset($ganz[$k])) {
         return (is_int($w) && $w >= $ganz[$k][0] && $w <= $ganz[$k][1]) ? ''
             : sprintf(db_t('EINST.SICH_GRUND_BEREICH'), $ganz[$k][0], $ganz[$k][1]);
@@ -4987,6 +5126,22 @@ function db_seiten_pruefen($roh, $quelle, &$orte = null)
                 $orte[] = array($nr, $kn, 'sichtbar');
                 continue;
             }
+            /* 0.9.49: die Kachel Abfahrt haengt an keinem Baustein. Sie traegt nur diese Schluessel und keine
+             * UUID; alles andere wird abgewiesen und genannt, nicht still entfernt. */
+            if ($art === 'abfahrt') {
+                $falsch = array();
+                foreach (array_keys($kk) as $schl) {
+                    if (!in_array((string) $schl, array('uuid', 'titel', 'kachel', 'groesse', 'sichtbar', 'symbol'), true)) {
+                        $falsch[] = (string) $schl;
+                    }
+                }
+                if ($u !== '') { $falsch[] = 'uuid'; }
+                if ($falsch) {
+                    $fehler[] = sprintf(db_t('DESIGN.FEHLER_ABFAHRT'), $wo, db_e(implode(', ', $falsch)));
+                    $orte[] = array($nr, $kn, 'kachel');
+                    continue;
+                }
+            }
             if ($art !== 'szene' && $u !== '' && $bausteine && !isset($bekannt[$u])) {
                 // Der Baustein steht nicht mehr in der Struktur. Die Kachel
                 // bleibt erhalten und wird auf dem Tablet als fehlend gezeigt.
@@ -5125,7 +5280,7 @@ function db_eingabe_felder()
             'nacht_bis' => 'text', 'nacht_helligkeit' => 'text', 'verlauf' => 'haken',
             'verlauf_punkte' => 'text', 'tafelsteuerung' => 'haken', 'tafel_mqtt' => 'haken',
             'tafel_mqtt_praefix' => 'text', 'pin_frei' => 'text', 'ambient' => 'haken',
-            'mqtt_ein' => 'haken', 'befehle_mqtt_ein' => 'haken',
+            'mqtt_ein' => 'haken', 'befehle_mqtt_ein' => 'haken', 'haus_abfahrt_ein' => 'haken',
             'ruhe_nach' => 'text', 'ruhe_uhr' => 'haken', 'ruhe_wetter' => 'haken',
             'ruhe_kacheln' => 'text', 'ruhe_seite' => 'text', 'ruhe_hell' => 'text',
             'ruhe_bild' => 'datei', 'eco_nach' => 'text', 'eco_hell' => 'text',

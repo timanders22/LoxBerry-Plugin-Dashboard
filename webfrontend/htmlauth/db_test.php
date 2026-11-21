@@ -196,6 +196,8 @@ function db_pruefungen()
             // davon defekt war. Der Designer wusste es besser als die
             // Pruefung, die ihn pruefen soll.
             if ((string) (isset($k['kachel']) ? $k['kachel'] : '') === 'szene') { continue; }
+            // 0.9.49: die Kachel Abfahrt haengt ebenso an keinem Baustein (uuid '').
+            if ((string) (isset($k['kachel']) ? $k['kachel'] : '') === 'abfahrt') { continue; }
             $uuid = (string) (isset($k['uuid']) ? $k['uuid'] : '');
             if ($uuid === '' || !isset($bekannt[$uuid])) { $verwaist++; }
         }
@@ -388,6 +390,9 @@ function db_pruefungen()
      * getrennt, still, oder aus. Faellt der Weg aus, sagt die Zeile, dass
      * der virtuelle Ausgang weiter wirkt (Rahmen, D-Punkte). */
     $zeilen[] = db_tafel_mqtt_pruefzeile();
+    /* 0.9.49: Haus-Themen fuer die Kachel Abfahrt - aus, frisch, schweigt oder nie, mit Lage der Sitzung und
+     * Alter des Zaehlers. */
+    $zeilen[] = db_haus_pruefzeile();
     /* Gruppe 12 (0.9.37, Entwurf 3.5): Zustand ueber MQTT, Regel PHP = Python, Namen, Abo-Datei, Praefix,
      * Befehlsbruecke (laeuft? eingerichtet?), Namensfilter, Vorlage MQTT-Befehle, Loxone-Abruf ueber HTTP. */
     foreach (array(array('MQTT.F_WERTE', db_pruef_status_mqtt($cfg)),
@@ -547,6 +552,59 @@ function db_tafel_mqtt_pruefzeile()
     }
     return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_TAFEL_MQTT_GETRENNT'), db_e($lage),
         db_e(isset($st['grund']) && is_string($st['grund']) ? $st['grund'] : '')) . $rueck);
+}
+
+/** 0.9.49: Pruefzeile "Haus-Themen fuer die Abfahrts-Kachel". Grau: aus (es laeuft kein Leser). Haken: der Leser
+ * ist verbunden, und der Zaehler des Abfahrts-Assistenten kam vor hoechstens DB_HAUS_FRIST s live mit neuem Wert.
+ * Kreuz: Dienst laeuft nicht, Stand fehlt oder ist aelter als 180 s, der Dienst laeuft noch ohne Leser (Neustart),
+ * keine Verbindung zum Broker, oder die Quelle schweigt bzw. kam nie live. Die Frische rechnet db_haus_lage() mit
+ * der Uhr des LoxBerry, dieselbe Regel wie die Kachel. */
+function db_haus_pruefzeile()
+{
+    $frage = db_t('TEST.F_HAUS');
+    $cfg = db_config();
+    if (empty($cfg['haus_abfahrt_ein'])) {
+        return db_pruefzeile(-1, $frage, db_t('TEST.A_HAUS_AUS'));
+    }
+    if (db_dienst_pid() <= 0) {
+        return db_pruefzeile(0, $frage, db_t('TEST.A_HAUS_KEIN_DIENST'));
+    }
+    $st = db_haus_stand();
+    $jetzt = time();
+    $ts = (isset($st['ts']) && is_int($st['ts'])) ? $st['ts'] : 0;
+    $alter = $jetzt - $ts;
+    if ($ts <= 0 || $alter < 0 || $alter > 180) {
+        return db_pruefzeile(0, $frage, db_t('TEST.A_HAUS_STILL'));
+    }
+    $lage = isset($st['lage']) && is_string($st['lage']) ? $st['lage'] : '';
+    if ($lage === 'aus') {
+        return db_pruefzeile(0, $frage, db_t('TEST.A_HAUS_NEUSTART'));
+    }
+    $broker = db_e(isset($st['broker']) && is_string($st['broker']) ? $st['broker'] : '?');
+    if ($lage !== 'verbunden') {
+        return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_HAUS_GETRENNT'), db_e($lage),
+            db_e(isset($st['grund']) && is_string($st['grund']) ? $st['grund'] : '')));
+    }
+    $quellen = isset($st['quellen']) && is_array($st['quellen']) ? $st['quellen'] : array();
+    $fz = isset($quellen['fahrzeug']) && is_array($quellen['fahrzeug']) ? $quellen['fahrzeug'] : array();
+    $fzt = array();
+    foreach ($fz as $name => $fq) {
+        list($fl, $fa) = db_haus_lage($fq, $jetzt);
+        $fzt[] = db_e((string) $name) . ' ' . db_e(db_t('TEST.A_HAUS_FZ_' . strtoupper($fl)))
+               . ($fl === 'nie' ? '' : ' (' . (int) $fa . ' s)');
+    }
+    $fztext = $fzt ? sprintf(db_t('TEST.A_HAUS_FAHRZEUGE'), implode(', ', $fzt)) : db_t('TEST.A_HAUS_KEINE_FAHRZEUGE');
+    $q = isset($quellen['abfahrt']) ? $quellen['abfahrt'] : null;
+    list($ql, $qa) = db_haus_lage($q, $jetzt);
+    if ($ql === 'frisch') {
+        return db_pruefzeile(1, $frage, sprintf(db_t('TEST.A_HAUS_FRISCH'), $broker,
+            db_e(isset($q['zaehler']) && is_string($q['zaehler']) ? $q['zaehler'] : '?'), $qa, DB_HAUS_FRIST) . ' ' . $fztext);
+    }
+    if ($ql === 'schweigt') {
+        return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_HAUS_SCHWEIGT'), $broker,
+            db_e(db_haus_zeit((int) $q['seit'], $jetzt)), $qa, DB_HAUS_FRIST) . ' ' . $fztext);
+    }
+    return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_HAUS_NIE'), $broker) . ' ' . $fztext);
 }
 
 function db_pruefungen_html()

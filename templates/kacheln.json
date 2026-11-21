@@ -479,6 +479,7 @@
   "brandmelder": "2x1",
   "lichtszene": "2x2",
   "szene": "2x1",
+  "abfahrt": "2x1",
   "wetter": "4x2",
   "tageszeit": "2x2"
  },
@@ -502,6 +503,7 @@
   "auswahl": "Auswahl",
   "zaehler": "Zähler",
   "szene": "Szene (mehrere Befehle)",
+  "abfahrt": "Abfahrt (Haus-Themen)",
   "generisch": "Ohne eigenes Bedienelement",
   "wetter": "Wetter",
   "tageszeit": "Zeitschaltuhr"
@@ -515,6 +517,17 @@
    "Positivliste geprueft wie ein einzelner Befehl - zweimal, am",
    "Endpunkt und im Dienst. Eine Szene ist keine Abkuerzung an der",
    "Pruefung vorbei."
+  ]
+ },
+ "abfahrt": {
+  "kachel": "abfahrt",
+  "text": "Abfahrt (Haus-Themen)",
+  "_hinweis": [
+   "Seit 0.9.49. Eine Kachel Abfahrt haengt an keinem Baustein (uuid",
+   "leer) und schaltet nichts. Ihre Werte liest der Dienst aus den",
+   "Haus-Themen haus/abfahrt/... und haus/fahrzeug/<name>/... - nur mit",
+   "dem Haken haus_abfahrt_ein (ab Werk aus). Frisch sind sie nur,",
+   "solange der Zaehler der Quelle sich binnen 120 s live aendert."
   ]
  }
 }

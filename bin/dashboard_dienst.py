@@ -51,6 +51,7 @@ from entwurf import entwurf_bauen, bausteine_sammeln          # noqa: E402
 from lox_client import Miniserver, LoxFehler, LoxZeit, selbstpruefung   # noqa: E402
 import tafel_mqtt                                              # noqa: E402
 import status_mqtt                                             # noqa: E402
+import haus_mqtt                                               # noqa: E402
 
 
 def lb_wurzel_ermitteln():
@@ -135,6 +136,8 @@ DATEI_TAFEL_SPERRE = os.path.join(DATADIR, "tafel.sperre")
 DATEI_TAFEL_MQTT = os.path.join(DATADIR, "tafel_mqtt.json")
 # Gruppe 12 (0.9.37): der Stand des Senders der Zustandswerte (bin/status_mqtt.py) fuer den Reiter Test.
 DATEI_STATUS_MQTT = os.path.join(DATADIR, "status_mqtt.json")
+# 0.9.49: der Stand des Lesers der Haus-Themen fuer die Kachel Abfahrt (bin/haus_mqtt.py), 0600.
+DATEI_HAUS = os.path.join(DATADIR, "haus.json")
 # 0.9.39: die Tafelliste; sie schreibt der Endpunkt (aktion=melden), der Dienst liest nur.
 DATEI_TAFELN = os.path.join(DATADIR, "tafeln.json")
 
@@ -255,6 +258,8 @@ VORGABEN = {
     "mqtt_ein": 1,
     "befehle_mqtt_ein": 0,
     "endpunkt_ein": 0,
+    # 0.9.49: Haus-Themen fuer die Kachel Abfahrt lesen (bin/haus_mqtt.py) - ab Werk AUS.
+    "haus_abfahrt_ein": 0,
 }
 
 _LOG = logging.getLogger("dashboard")
@@ -1099,6 +1104,26 @@ def tafel_mqtt_starten(cfg: dict, laeuft):
     return asyncio.ensure_future(abo.laufen_sicher())
 
 
+def haus_mqtt_starten(cfg: dict, laeuft):
+    """0.9.49: der Leser der Haus-Themen fuer die Kachel Abfahrt als eigene Aufgabe neben der
+    Miniserver-Verbindung (Bauart tafel_mqtt_starten). Ist der Haken aus, steht das in der
+    Standdatei, und es gibt keinen Leser. Gelesen wird der Haken nur hier, beim Start; ein
+    Speichern mit geaendertem Haken startet den Dienst neu (O17 in htmlauth/index.php).
+    Rueckgabe die Aufgabe oder None."""
+    try:
+        an = int(cfg.get("haus_abfahrt_ein") or 0) == 1
+    except (TypeError, ValueError):
+        an = False
+    if not an:
+        json_schreiben(DATEI_HAUS, {"ts": int(time.time()), "lage": "aus"}, 0o600)
+        return None
+    leser = haus_mqtt.HausMqtt(
+        general_pfad=os.path.join(HOME, "config", "system", "general.json"),
+        stand_pfad=DATEI_HAUS, json_lesen=json_lesen, json_schreiben=json_schreiben,
+        log=_LOG, laeuft=laeuft)
+    return asyncio.ensure_future(leser.laufen_sicher())
+
+
 def abo_datei_anlegen(cfg: dict) -> bool:
     """Gruppe 12 (0.9.37, Entwurf 2.4): die Abo-Datei fuer das MQTT-Gateway V1 beim Dienststart anlegen, wenn sie
     fehlt - config/plugins/<ordner>/mqtt_subscriptions.cfg = "<praefix>/#", 0644, atomar (dieselbe Regel wie
@@ -1205,6 +1230,8 @@ class Dienst:
         os.makedirs(ORDNER_ANTWORTEN, exist_ok=True)
         # Tafel-1: das MQTT-Abo laeuft neben der Verbindung zum Miniserver.
         tafel_aufgabe = tafel_mqtt_starten(cfg, lambda: self.laeuft)
+        # 0.9.49: der Leser der Haus-Themen (Kachel Abfahrt), nur mit Haken.
+        haus_aufgabe = haus_mqtt_starten(cfg, lambda: self.laeuft)
         # Gruppe 12 (0.9.37): Abo-Datei fuer das Gateway V1, dann die Zustandswerte jede Minute ueber das Gateway.
         abo_datei_anlegen(cfg)
         status_aufgabe, status_sender = status_mqtt_starten(lambda: self.laeuft)
@@ -1327,6 +1354,12 @@ class Dienst:
             # Sekunde; haengt sie, wird sie abgebrochen.
             try:
                 await asyncio.wait_for(tafel_aufgabe, 5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+        if haus_aufgabe is not None:
+            # Wie die Tafel-Aufgabe: sie sieht self.laeuft und endet binnen einer Sekunde.
+            try:
+                await asyncio.wait_for(haus_aufgabe, 5)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
         # Gruppe 12 (0.9.37): die Werte-Aufgabe endet binnen 0,5 s; danach EINMAL ok 0 (Entwurf 2.1) - das
