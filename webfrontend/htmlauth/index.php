@@ -451,7 +451,8 @@ if ($db_post && isset($_POST['speichern'])) {
     foreach (array('http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'ansage_ein', 'ansage_gong',
                    'haptik', 'verlauf', 'sse', 'tafelsteuerung',
                    'gesichert_schalten', 'ruhe_uhr', 'ruhe_wetter',
-                   'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein', 'haus_abfahrt_ein') as $db_h) {
+                   'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein', 'haus_abfahrt_ein',
+                   'alexa_textbefehl_ein') as $db_h) {
         $db_cfg[$db_h] = isset($_POST[$db_h]) ? 1 : 0;
     }
 
@@ -1547,6 +1548,11 @@ $db_vb_form = isset($db_ms['verbindung']) ? $db_ms['verbindung'] : db_ms_verbind
   <?= db_e(db_t('EINST.L_HAUS_ABFAHRT')) ?></label>
 <p class="sm-hilfe"><?= sprintf(db_t('EINST.H_HAUS_ABFAHRT'),
     '<span class="sm-mono">haus/abfahrt/in_min, zaehler, strecke_km, bedarf_km, ladewarnung, fahrzeuge; haus/fahrzeug/+/reichweite_km, haus/fahrzeug/+/zaehler</span>') ?></p>
+<?php /* 0.9.50: Kacheln duerfen Textbefehle von Alexa NG ausloesen, ab Werk aus. Gelesen bei jedem Druck; der Dienst
+        braucht den Haken nicht und wird dafuer nicht neu gestartet. */ ?>
+<label><input data-role="none" type="checkbox" name="alexa_textbefehl_ein" value="1"<?= !empty($db_cfg['alexa_textbefehl_ein']) ? ' checked' : '' ?>>
+  <?= db_e(db_t('EINST.L_ALEXA_TEXTBEFEHL')) ?></label>
+<p class="sm-hilfe"><?= db_t('EINST.H_ALEXA_TEXTBEFEHL') ?></p>
 
 <h3><?= db_e(db_t('EINST.T_PIN_FREI')) ?></h3>
 <div class="sm-feld">
@@ -1996,6 +2002,7 @@ if ($db_sy_lage !== 'ok' || !db_symbol_liste()) { ?>
   <button data-role="none" type="button" class="sm-btn sm-b-technik" id="dz-neu">+ <?= db_e(db_t('DESIGN.NEUE_SEITE')) ?></button>
   <button data-role="none" type="button" class="sm-btn sm-b-technik" id="dz-szene">+ <?= db_e(db_t('DESIGN.SZENE_NEU')) ?></button>
   <button data-role="none" type="button" class="sm-btn sm-b-technik" id="dz-abfahrt">+ <?= db_e(db_t('DESIGN.ABFAHRT_NEU')) ?></button>
+  <button data-role="none" type="button" class="sm-btn sm-b-technik" id="dz-textbefehl">+ <?= db_e(db_t('DESIGN.TB_NEU')) ?></button>
 </div>
 
 <div id="dz-bau"></div>
@@ -2594,11 +2601,19 @@ if (!$db_zeilen) { ?>
 		'szene_ohne_befehl' => strip_tags(db_t('DESIGN.SZENE_OHNE_BEFEHL')),
 		'abfahrt_titel' => strip_tags(db_t('TAFEL.ABFAHRT_TITEL')),
 		'abfahrt_info'  => strip_tags(db_t('DESIGN.ABFAHRT_INFO')),
+		'tb_titel'      => strip_tags(db_t('TAFEL.TB_TITEL')),
+		'tb_info'       => strip_tags(db_t('DESIGN.TB_INFO')),
+		'tb_nicht_frei' => strip_tags(db_t('DESIGN.TB_NICHT_FREI')),
+		'tb_standard'   => strip_tags(db_t('DESIGN.TB_STANDARD')),
+		'tb_unbekannt'  => strip_tags(db_t('DESIGN.TB_UNBEKANNT')),
 		'symbol'       => strip_tags(db_t('DESIGN.SYMBOL')),
 		'kein_symbol'  => strip_tags(db_t('DESIGN.KEIN_SYMBOL')),
 		'symbol_suche' => strip_tags(db_t('DESIGN.SYMBOL_SUCHE')),
 		'entwurf'      => strip_tags(db_t('DESIGN.ENTWURF_STAND')),
 	), $db_jf) ?>;
+	/* 0.9.50: was Alexa NG fuer die Kachel Textbefehl anbietet - freigegebene Namen (mit Satz zur Beschriftung), Echos,
+	   Standardgeraet und Saetze zur Lage. Ohne Token und ohne Pfad (db_textbefehl_auswahl in db_lib.php). */
+	var TB = <?= json_encode(db_textbefehl_auswahl(), $db_jf) ?>;
 
 	var bau = document.getElementById('dz-bau');
 	var feldAufbau = document.getElementById('dz-aufbau');
@@ -2723,6 +2738,41 @@ if (!$db_zeilen) { ?>
 			'</div>';
 	}
 
+	/* 0.9.50: Name und Echo einer Kachel Textbefehl. Mit Freigabeliste und Geraeteliste von Alexa NG Auswahllisten (ein
+	   gespeicherter Name, der dort fehlt, bleibt sichtbar und ist gekennzeichnet); ohne sie Textfelder. Die Pruefung
+	   beim Speichern entscheidet (db_seiten_pruefen). Die Saetze darunter sagen, was fehlt. Kein Token. */
+	function textbefehl_editor(k) {
+		var name = k.textbefehl || '', ger = k.geraet || '';
+		var feld, gfeld, o, drin;
+		if (TB.frei.length) {
+			drin = false;
+			o = TB.frei.map(function (f) {
+				if (f.name === name) { drin = true; }
+				return '<option value="' + e(f.name) + '"' + (f.name === name ? ' selected' : '') + '>' + e(f.name + ' – ' + f.text) + '</option>';
+			}).join('');
+			if (!drin) { o = '<option value="' + e(name) + '" selected>' + e(name ? name + ' ' + TEXT.tb_nicht_frei : '–') + '</option>' + o; }
+			feld = '<select data-role="none" data-feld="textbefehl" style="flex:1;min-width:120px;font-size:.95em">' + o + '</select>';
+		} else {
+			feld = '<input data-role="none" type="text" data-feld="textbefehl" value="' + e(name) + '" placeholder="licht_an" style="flex:1;min-width:80px;padding:3px 5px;border:1px solid #ddd;border-radius:4px;font-size:1em">';
+		}
+		var std = TEXT.tb_standard + (TB.standard ? ' (' + TB.standard + ')' : '');
+		if (TB.geraete.length) {
+			drin = (ger === '');
+			o = '<option value=""' + (ger === '' ? ' selected' : '') + '>' + e(std) + '</option>' + TB.geraete.map(function (g) {
+				if (g === ger) { drin = true; }
+				return '<option value="' + e(g) + '"' + (g === ger ? ' selected' : '') + '>' + e(g) + '</option>';
+			}).join('');
+			if (!drin) { o += '<option value="' + e(ger) + '" selected>' + e(ger + ' ' + TEXT.tb_unbekannt) + '</option>'; }
+			gfeld = '<select data-role="none" data-feld="geraet" style="flex:1;min-width:120px;font-size:.95em">' + o + '</select>';
+		} else {
+			gfeld = '<input data-role="none" type="text" data-feld="geraet" value="' + e(ger) + '" placeholder="' + e(std) + '" style="flex:1;min-width:80px;padding:3px 5px;border:1px solid #ddd;border-radius:4px;font-size:1em">';
+		}
+		var saetze = (TB.saetze || []).map(function (s) { return '<div class="sm-hilfe" style="margin-top:3px">' + e(s) + '</div>'; }).join('');
+		return '<div style="border-top:1px dashed #ccc;margin-top:5px;padding-top:4px">' +
+			'<div style="display:flex;gap:4px">' + feld + '</div>' +
+			'<div style="display:flex;gap:4px;margin-top:3px">' + gfeld + '</div>' + saetze + '</div>';
+	}
+
 	function zeichnen() {
 		bau.innerHTML = '';
 		var kopf = document.createElement('div');
@@ -2771,10 +2821,12 @@ if (!$db_zeilen) { ?>
 				var szene = k.kachel === 'szene';
 				/* 0.9.49: die Kachel Abfahrt haengt ebenso an keinem Baustein. */
 				var abfahrt = k.kachel === 'abfahrt';
-				var b = (szene || abfahrt) ? null : baustein(k.uuid);
+				/* 0.9.50: die Kachel Textbefehl ebenso. */
+				var tb = k.kachel === 'textbefehl';
+				var b = (szene || abfahrt || tb) ? null : baustein(k.uuid);
 				/* Eine Szene haengt an keinem Baustein - sie darf deshalb
 				   nicht als "unbekannt" rot markiert werden. */
-				var gut = szene || abfahrt || !!b;
+				var gut = szene || abfahrt || tb || !!b;
 				var kk = document.createElement('div');
 				kk.draggable = true;
 				kk.dataset.seite = si; kk.dataset.kachel = ki;
@@ -2783,8 +2835,9 @@ if (!$db_zeilen) { ?>
 					return '<option value="' + e(g) + '"' + (k.groesse === g ? ' selected' : '') + '>' + e(g) + '</option>';
 				}).join('');
 				/* 0.9.49: eine Kachel Abfahrt bleibt Abfahrt, und keine Baustein-Kachel wird zur Abfahrt - sie traegt eine UUID,
-				   die eine Abfahrt nicht haben darf (db_seiten_pruefen weist sie ab). */
-				var topt = Object.keys(TYPEN).filter(function (t) { return abfahrt ? t === 'abfahrt' : t !== 'abfahrt'; }).map(function (t) {
+				   die eine Abfahrt nicht haben darf (db_seiten_pruefen weist sie ab). 0.9.50: ebenso die Kachel Textbefehl. */
+				var fest = abfahrt || tb;
+				var topt = Object.keys(TYPEN).filter(function (t) { return fest ? t === k.kachel : (t !== 'abfahrt' && t !== 'textbefehl'); }).map(function (t) {
 					return '<option value="' + e(t) + '"' + (k.kachel === t ? ' selected' : '') + '>' + e(TYPEN[t]) + '</option>';
 				}).join('');
 				kk.innerHTML =
@@ -2799,8 +2852,8 @@ if (!$db_zeilen) { ?>
 					'<label style="white-space:nowrap"><input data-role="none" type="checkbox" data-feld="sichtbar"' + (k.sichtbar ? ' checked' : '') + '></label>' +
 					'</div>' +
 					'<div class="sm-hilfe" style="margin-top:2px">' +
-					  (szene ? e(TEXT.szene_schritt) : (abfahrt ? e(TEXT.abfahrt_info) : e(b ? (b.loxtyp + (b.raum ? ' · ' + b.raum : '')) : '?'))) + '</div>' +
-					(szene ? szene_editor(k) : '') + symbol_zeile(k);
+					  (szene ? e(TEXT.szene_schritt) : (abfahrt ? e(TEXT.abfahrt_info) : (tb ? e(TEXT.tb_info) : e(b ? (b.loxtyp + (b.raum ? ' · ' + b.raum : '')) : '?')))) + '</div>' +
+					(szene ? szene_editor(k) : '') + (tb ? textbefehl_editor(k) : '') + symbol_zeile(k);
 				var km = marken(k);
 				if (km.length) {
 					kk.style.border = '2px solid #c62828';
@@ -2870,6 +2923,14 @@ if (!$db_zeilen) { ?>
 			if (!AUFBAU.seiten.length) { alert(TEXT.leer); return; }
 			AUFBAU.seiten[0].kacheln.push({ uuid: '', titel: TEXT.abfahrt_titel, kachel: 'abfahrt',
 				groesse: '2x1', sichtbar: 1 });
+			markieren(); zeichnen();
+		};
+		/* 0.9.50: die Kachel Textbefehl - kein Baustein (uuid ''); vorgewaehlt der erste freigegebene Textbefehl, der Echo
+		   leer (Standardgeraet von Alexa NG). Sie kommt wie die Szene auf die erste Seite. */
+		document.getElementById('dz-textbefehl').onclick = function () {
+			if (!AUFBAU.seiten.length) { alert(TEXT.leer); return; }
+			AUFBAU.seiten[0].kacheln.push({ uuid: '', titel: TEXT.tb_titel, kachel: 'textbefehl',
+				groesse: '2x1', sichtbar: 1, textbefehl: (TB.frei.length ? TB.frei[0].name : ''), geraet: '' });
 			markieren(); zeichnen();
 		};
 		var such = document.getElementById('dz-suche');

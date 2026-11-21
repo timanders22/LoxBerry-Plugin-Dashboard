@@ -260,6 +260,9 @@ VORGABEN = {
     "endpunkt_ein": 0,
     # 0.9.49: Haus-Themen fuer die Kachel Abfahrt lesen (bin/haus_mqtt.py) - ab Werk AUS.
     "haus_abfahrt_ein": 0,
+    # 0.9.50: Kacheln duerfen Textbefehle von Alexa NG ausloesen - ab Werk AUS. Der Dienst benutzt ihn nicht; er
+    # steht hier, weil der Reiter Test die beiden Vorgabetabellen gegeneinander haelt.
+    "alexa_textbefehl_ein": 0,
 }
 
 _LOG = logging.getLogger("dashboard")

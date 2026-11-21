@@ -135,7 +135,9 @@ foreach (array('ABBRECHEN', 'WEITER', 'PIN_TITEL', 'ANTWORT_UNLESBAR', 'OHNE_BES
                /* 0.9.49: Kachel Abfahrt */
                'ABFAHRT_AUS', 'ABFAHRT_NIE', 'ABFAHRT_LESER', 'ABFAHRT_SCHWEIGT', 'ABFAHRT_KEINE',
                'ABFAHRT_JETZT', 'ABFAHRT_MIN', 'ABFAHRT_STRECKE', 'ABFAHRT_BEDARF', 'ABFAHRT_OHNE',
-               'ABFAHRT_REICHT', 'ABFAHRT_REICHT_NICHT', 'ABFAHRT_WARNUNG', 'ABFAHRT_UNLESBAR') as $db_k) {
+               'ABFAHRT_REICHT', 'ABFAHRT_REICHT_NICHT', 'ABFAHRT_WARNUNG', 'ABFAHRT_UNLESBAR',
+               /* 0.9.50: Kachel Textbefehl */
+               'TB_AUS', 'TB_G_OK') as $db_k) {
     $db_tafeltexte[strtolower($db_k)] = db_t('TAFEL.' . $db_k);
 }
 
@@ -517,6 +519,21 @@ function senden(uuid, befehl){
 }
 function szene_ausloesen(nr){
   return absenden("&aktion=szene&kachel=" + encodeURIComponent(nr));
+}
+/* 0.9.50: Textbefehl ueber Alexa NG. Der LoxBerry sendet; die Tafel sieht nur die Antwort ({ok, grund, meldung}), nie
+   das Token von Alexa NG. Solange die Antwort aussteht, nimmt die Kachel keinen zweiten Druck an (Doppeltippen); der
+   LoxBerry sperrt ausserdem selbst (LAEUFT, DOPPELT). "Ausgefuehrt" sagt die Blase ausdruecklich - ein Textbefehl hat
+   keinen Zustand, an dem man es sonst saehe. */
+var TB_LAEUFT = {};
+function textbefehl_ausloesen(nr, knopf){
+  if (TB_LAEUFT[nr]) { return; }
+  TB_LAEUFT[nr] = 1;
+  if (knopf) { knopf.disabled = true; }
+  function fertig(){ delete TB_LAEUFT[nr]; if (knopf) { knopf.disabled = false; } }
+  return Promise.resolve(absenden("&aktion=textbefehl&kachel=" + encodeURIComponent(nr))).then(function(d){
+    if (d && d.ok === 1) { blase(d.meldung || T.tb_g_ok); }
+    fertig();
+  }, fertig);
 }
 
 /* ---------- Verlaufskurve ----------
@@ -1011,6 +1028,16 @@ BAUER.abfahrt = function(k, w){
   return {klasse: warn ? "ladewarn" : "", inhalt: gross + zeilen};
 };
 
+/* 0.9.50: Textbefehl. Die Kachel haengt an keinem Baustein und hat keinen Zustand; sie zeigt den Namen des
+   freigegebenen Textbefehls und den Echo (leer = Standardgeraet von Alexa NG). Ohne den Haken im Reiter Einstellungen
+   steht statt des Knopfes ein Satz. */
+BAUER.textbefehl = function(k, w){
+  if (!k.bereit) { return {klasse:"", inhalt:'<div class="u" style="margin-top:auto">'+e(T.tb_aus)+'</div>'}; }
+  return {klasse:"", inhalt:
+    '<div class="u">'+e((k.textbefehl||"")+(k.geraet ? " · "+k.geraet : ""))+'</div>'+
+    '<div class="knoepfe"><button data-textbefehl="1" class="stark">'+e(T.ausloesen)+'</button></div>'};
+};
+
 BAUER.generisch = function(k, w){
   var zeilen = [];
   for (var n in w) { if(Object.prototype.hasOwnProperty.call(w,n)) {
@@ -1097,7 +1124,7 @@ function zeichnen(){
        sehen, dass der Baustein gesichert ist. Gesperrt wird nur, was wirklich
        nicht geht. */
     if (k.gesperrt) {
-      d.querySelectorAll("button[data-b],button[data-szene],button[data-dunkel],input[type=range]")
+      d.querySelectorAll("button[data-b],button[data-szene],button[data-textbefehl],button[data-dunkel],input[type=range]")
        .forEach(function(el){ el.disabled = true; });
     }
     raster.appendChild(d);
@@ -1137,6 +1164,7 @@ document.addEventListener("click", function(ev){
   var kk = kachel_von(b);
   if(!kk || !kk.k) return;
   if (b.dataset.szene) { ruetteln(); szene_ausloesen(kk.i); return; }
+  if (b.dataset.textbefehl) { ruetteln(); textbefehl_ausloesen(kk.i, b); return; }
   if (b.dataset.dunkel) {
     /* Der ColorPickerV2 kennt laut Dokument kein 'off' - ausgeschaltet wird
        ueber die Helligkeit 0, Farbton und Saettigung bleiben stehen. */
@@ -2065,7 +2093,8 @@ var RUHE_OHNE = {
   generisch: "unbekannter Typ - hier wird nicht geraten",
   fehlt:     "der Baustein ist weg",
   szene:     "eine Szene hat keinen Zustand",
-  abfahrt:   "haengt an keinem Baustein; die Werte stehen auf der Kachel selbst"
+  abfahrt:   "haengt an keinem Baustein; die Werte stehen auf der Kachel selbst",
+  textbefehl: "loest nur aus und hat keinen Zustand"
 };
 
 var RUHE_KURZ = {

@@ -480,6 +480,7 @@
   "lichtszene": "2x2",
   "szene": "2x1",
   "abfahrt": "2x1",
+  "textbefehl": "2x1",
   "wetter": "4x2",
   "tageszeit": "2x2"
  },
@@ -504,6 +505,7 @@
   "zaehler": "Zähler",
   "szene": "Szene (mehrere Befehle)",
   "abfahrt": "Abfahrt (Haus-Themen)",
+  "textbefehl": "Textbefehl (Alexa NG)",
   "generisch": "Ohne eigenes Bedienelement",
   "wetter": "Wetter",
   "tageszeit": "Zeitschaltuhr"
@@ -528,6 +530,17 @@
    "Haus-Themen haus/abfahrt/... und haus/fahrzeug/<name>/... - nur mit",
    "dem Haken haus_abfahrt_ein (ab Werk aus). Frisch sind sie nur,",
    "solange der Zaehler der Quelle sich binnen 120 s live aendert."
+  ]
+ },
+ "textbefehl": {
+  "kachel": "textbefehl",
+  "text": "Textbefehl (Alexa NG)",
+  "_hinweis": [
+   "Seit 0.9.50. Eine Kachel Textbefehl haengt an keinem Baustein (uuid",
+   "leer). Sie traegt den Namen eines in Alexa NG freigegebenen",
+   "Textbefehls (textbefehl) und wahlfrei einen Echo (geraet). Gesendet",
+   "wird nur mit dem Haken alexa_textbefehl_ein (ab Werk aus), vom",
+   "LoxBerry an Alexa NG auf demselben LoxBerry, nie vom Tablet."
   ]
  }
 }

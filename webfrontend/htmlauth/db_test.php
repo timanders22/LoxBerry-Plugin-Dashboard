@@ -198,6 +198,8 @@ function db_pruefungen()
             if ((string) (isset($k['kachel']) ? $k['kachel'] : '') === 'szene') { continue; }
             // 0.9.49: die Kachel Abfahrt haengt ebenso an keinem Baustein (uuid '').
             if ((string) (isset($k['kachel']) ? $k['kachel'] : '') === 'abfahrt') { continue; }
+            // 0.9.50: die Kachel Textbefehl ebenso.
+            if ((string) (isset($k['kachel']) ? $k['kachel'] : '') === 'textbefehl') { continue; }
             $uuid = (string) (isset($k['uuid']) ? $k['uuid'] : '');
             if ($uuid === '' || !isset($bekannt[$uuid])) { $verwaist++; }
         }
@@ -393,6 +395,9 @@ function db_pruefungen()
     /* 0.9.49: Haus-Themen fuer die Kachel Abfahrt - aus, frisch, schweigt oder nie, mit Lage der Sitzung und
      * Alter des Zaehlers. */
     $zeilen[] = db_haus_pruefzeile();
+    /* 0.9.50: Textbefehle ueber Alexa NG - aus, Alexa NG fehlt, Token fehlt, ausgeschaltet oder n freigegeben; loest
+     * nichts aus. */
+    $zeilen[] = db_textbefehl_pruefzeile();
     /* Gruppe 12 (0.9.37, Entwurf 3.5): Zustand ueber MQTT, Regel PHP = Python, Namen, Abo-Datei, Praefix,
      * Befehlsbruecke (laeuft? eingerichtet?), Namensfilter, Vorlage MQTT-Befehle, Loxone-Abruf ueber HTTP. */
     foreach (array(array('MQTT.F_WERTE', db_pruef_status_mqtt($cfg)),
@@ -605,6 +610,42 @@ function db_haus_pruefzeile()
             db_e(db_haus_zeit((int) $q['seit'], $jetzt)), $qa, DB_HAUS_FRIST) . ' ' . $fztext);
     }
     return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_HAUS_NIE'), $broker) . ' ' . $fztext);
+}
+
+/** 0.9.50: Pruefzeile "Textbefehle ueber Alexa NG". Grau: der Haken hier ist aus. Kreuz: Alexa NG fehlt, ist unlesbar,
+ * hat kein Aktionstoken, ist ausgeschaltet, nimmt keine Textbefehle an, gibt keinen frei, oder eine gespeicherte Kachel
+ * nennt einen Namen, den Alexa NG nicht freigibt. Haken: n freigegeben. Loest nichts aus und sendet nichts - sie liest
+ * nur die Dateien von Alexa NG (db_alexa_lage()); das Token erscheint nie. */
+function db_textbefehl_pruefzeile()
+{
+    $frage = db_t('TEST.F_TEXTBEFEHL');
+    if (empty(db_config()['alexa_textbefehl_ein'])) { return db_pruefzeile(-1, $frage, db_t('TEST.A_TB_AUS')); }
+    $al = db_alexa_lage();
+    if ($al['lage'] === 'fehlt') { return db_pruefzeile(0, $frage, db_t('TEST.A_TB_FEHLT')); }
+    if ($al['lage'] !== 'ok') { return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_TB_KAPUTT'), db_e($al['ordner']))); }
+    if ($al['token'] === '') { return db_pruefzeile(0, $frage, db_t('TEST.A_TB_KEIN_TOKEN')); }
+    if (!$al['aktiv']) { return db_pruefzeile(0, $frage, db_t('TEST.A_TB_PLUGIN_AUS')); }
+    if (!$al['ein']) { return db_pruefzeile(0, $frage, db_t('TEST.A_TB_ALEXA_AUS')); }
+    if (!$al['frei']) {
+        return db_pruefzeile(0, $frage, db_t($al['frei_gut'] ? 'TEST.A_TB_KEINE_FREIGABE' : 'TEST.A_TB_FREIGABE_KAPUTT'));
+    }
+    $n = 0;
+    $fremd = array();
+    foreach (db_seiten() as $s) {
+        if (!is_array($s) || !isset($s['kacheln']) || !is_array($s['kacheln'])) { continue; }
+        foreach ($s['kacheln'] as $k) {
+            if (!is_array($k) || (string) (isset($k['kachel']) ? $k['kachel'] : '') !== 'textbefehl') { continue; }
+            $n++;
+            $nm = (isset($k['textbefehl']) && is_string($k['textbefehl'])) ? $k['textbefehl'] : '';
+            if (!isset($al['frei'][$nm]) && !in_array($nm, $fremd, true)) { $fremd[] = $nm; }
+        }
+    }
+    if ($fremd) {
+        return db_pruefzeile(0, $frage, sprintf(db_t('TEST.A_TB_KACHEL_NICHT_FREI'), db_e(implode(', ', $fremd))));
+    }
+    return db_pruefzeile(1, $frage, sprintf(db_t('TEST.A_TB_OK'), count($al['frei']), db_e($al['ordner']), $n,
+        $al['geraete'] === null ? db_t('TEST.A_TB_OHNE_GERAETE') : sprintf(db_t('TEST.A_TB_GERAETE'), count($al['geraete'])),
+        db_e($al['standard'] !== '' ? $al['standard'] : '–')));
 }
 
 function db_pruefungen_html()

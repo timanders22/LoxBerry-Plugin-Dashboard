@@ -30,6 +30,9 @@
  * Schaltend:
  *   befehl   &seite=...&uuid=...&befehl=...[&pin=...]
  *   szene    &seite=...&kachel=<Nr>[&pin=...]
+ *   textbefehl &seite=...&kachel=<Nr>[&pin=...]   (0.9.50) loest in Alexa NG auf diesem LoxBerry einen
+ *            dort freigegebenen Textbefehl aus - nur mit dem Haken alexa_textbefehl_ein. Antwort JSON
+ *            {ok, grund, meldung}, nie mit dem Token von Alexa NG (db_textbefehl_ausloesen in db_lib.php).
  *            seite ist PFLICHT: die PIN haengt an der Seite, von der aus
  *            geschaltet wird - nicht am Baustein.
  *   tafel    &seite=... | &wach=0|1 | &hell=<0..100> | &ruhe=0|1
@@ -133,7 +136,7 @@ if (!hash_equals($db_soll, $db_ist)) {
 
 /* ---------------- Aktion (Weissliste) ---------------- */
 $db_lesend = array('status', 'seiten', 'seite', 'werte', 'strom', 'roh', 'ruhebild', 'symbol');
-$db_schaltend = array('befehl', 'szene', 'tafel', 'melden', 'ansage');
+$db_schaltend = array('befehl', 'szene', 'tafel', 'melden', 'ansage', 'textbefehl');
 $db_aktion = $db_ansage_post ? 'ansage' : db_get('aktion');
 if ($db_aktion === null) { $db_aktion = 'status'; }
 if (!is_string($db_aktion) || !in_array($db_aktion, array_merge($db_lesend, $db_schaltend), true)) {
@@ -558,6 +561,27 @@ if ($db_aktion === 'szene') {
         array('befehle' => $db_schritte, 'seite' => $db_seite));
     db_json_raus(array('ok' => $db_erg, 'meldung' => $db_meldung),
                  $db_erg === 0 ? 500 : 200);
+}
+
+/* ---------------- 0.9.50: Textbefehl ueber Alexa NG ----------------
+ * Wie die Szene: die GEFILTERTE Liste (die Anzeigeseite nummeriert ueber sie); Seite, Schalten und PIN sind oben
+ * geprueft. Was danach geschieht, steht einmal in db_textbefehl_ausloesen() (db_lib.php); die Antwort traegt nie ein
+ * Token. */
+if ($db_aktion === 'textbefehl') {
+    $db_nr = db_get('kachel');
+    if (!is_string($db_nr) || !preg_match('/^[0-9]{1,4}\z/', $db_nr)) {
+        db_json_raus(array('ok' => 0, 'grund' => 'KACHEL_UNGUELTIG',
+                           'meldung' => db_t('EP.KACHEL')), 400);
+    }
+    $db_nr = (int) $db_nr;
+    $db_kacheln = db_kacheln_sichtbar($db_s);
+    if (!isset($db_kacheln[$db_nr]) || !is_array($db_kacheln[$db_nr])
+            || (string) (isset($db_kacheln[$db_nr]['kachel']) ? $db_kacheln[$db_nr]['kachel'] : '') !== 'textbefehl') {
+        db_json_raus(array('ok' => 0, 'grund' => 'KEIN_TEXTBEFEHL',
+                           'meldung' => db_t('EP.KEIN_TEXTBEFEHL')), 404);
+    }
+    list($db_code, $db_daten) = db_textbefehl_ausloesen($db_kacheln[$db_nr], $db_cfg);
+    db_json_raus($db_daten, $db_code);
 }
 
 /* ---------------- Einzelner Befehl ---------------- */

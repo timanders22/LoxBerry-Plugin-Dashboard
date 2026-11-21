@@ -78,6 +78,12 @@ if (!defined('DB_SICHERUNG_MAX_BYTE')) { define('DB_SICHERUNG_MAX_BYTE', 262144)
  * (so viele nennt haus/abfahrt/fahrzeuge hoechstens). */
 if (!defined('DB_HAUS_FRIST')) { define('DB_HAUS_FRIST', 120); }
 if (!defined('DB_ABFAHRT_FAHRZEUGE_MAX')) { define('DB_ABFAHRT_FAHRZEUGE_MAX', 4); }
+/* 0.9.50: Kachel Textbefehl (Alexa NG). Derselbe Textbefehl an denselben Echo binnen DB_TB_DOPPELT_S Sekunden gilt als
+ * Doppeltippen und geht nicht hinaus; so lange wartet die Seite hoechstens auf die Antwort von Alexa NG (DB_TB_ZEIT_S);
+ * so viele Eintraege traegt die Freigabeliste von Alexa NG hoechstens (AX_TEXTBEFEHLE_MAX in Alexa NG 1.0.21). */
+if (!defined('DB_TB_DOPPELT_S')) { define('DB_TB_DOPPELT_S', 5); }
+if (!defined('DB_TB_ZEIT_S')) { define('DB_TB_ZEIT_S', 25); }
+if (!defined('DB_TB_FREI_MAX')) { define('DB_TB_FREI_MAX', 20); }
 /* S8 (0.9.26): Obergrenze einer ausgelieferten Symboldatei. Ein Symbol von
  * LoxoneIcons hat wenige Kilobyte; groesser ist keins. */
 if (!defined('DB_SYMBOL_MAX_BYTE')) { define('DB_SYMBOL_MAX_BYTE', 262144); }
@@ -330,6 +336,9 @@ function db_vorgaben()
         /* 0.9.49: Haus-Themen fuer die Kachel Abfahrt lesen (bin/haus_mqtt.py) - ab Werk AUS. Ohne Haken laeuft
          * kein Leser, und die Kachel sagt "Haus-Themen sind ausgeschaltet". */
         'haus_abfahrt_ein'   => 0,
+        /* 0.9.50: Kacheln duerfen Textbefehle von Alexa NG ausloesen (Kachelart textbefehl) - ab Werk AUS. Ohne Haken
+         * geht kein Aufruf an Alexa NG, und die Kachel sagt "Textbefehle sind ausgeschaltet". */
+        'alexa_textbefehl_ein' => 0,
     );
 }
 
@@ -3132,8 +3141,8 @@ function db_kacheltypen()
         $k = isset($z['kachel']) ? $z['kachel'] : 'generisch';
         $aus[$k] = db_kacheltext($k, isset($texte[$k]) ? $texte[$k] : (isset($z['text']) ? $z['text'] : $k));
     }
-    // 0.9.49: 'abfahrt' haengt wie 'szene' an keinem Bausteintyp.
-    foreach (array('generisch', 'szene', 'abfahrt') as $k) {
+    // 0.9.49: 'abfahrt' haengt wie 'szene' an keinem Bausteintyp; 0.9.50 ebenso 'textbefehl'.
+    foreach (array('generisch', 'szene', 'abfahrt', 'textbefehl') as $k) {
         if (!isset($aus[$k])) {
             $aus[$k] = db_kacheltext($k, isset($texte[$k]) ? $texte[$k] : $k);
         }
@@ -3502,6 +3511,21 @@ function db_seite_daten($schluessel)
             continue;
         }
 
+        // 0.9.50: Textbefehl - haengt an keinem Baustein. Die Tafel sieht Name und Echo, nie das Token von Alexa NG.
+        if ((string) (isset($k['kachel']) ? $k['kachel'] : '') === 'textbefehl') {
+            $kacheln[] = array(
+                'uuid' => '', 'titel' => $titel !== '' ? $titel : db_t('TAFEL.TB_TITEL'),
+                'kachel' => 'textbefehl', 'groesse' => $groesse,
+                'textbefehl' => (isset($k['textbefehl']) && is_string($k['textbefehl'])) ? $k['textbefehl'] : '',
+                'geraet' => (isset($k['geraet']) && is_string($k['geraet'])) ? $k['geraet'] : '',
+                'bereit' => !empty($cfg['alexa_textbefehl_ein']) ? 1 : 0,
+                'werte' => array(), 'befehle' => array(),
+                'nurlesen' => 0, 'gesichert' => 0, 'warnung' => 0,
+                'symbol' => $db_sym,
+            );
+            continue;
+        }
+
         // Szene: mehrere Befehle auf einen Druck. Sie haengt an keinem
         // einzelnen Baustein, deshalb VOR der Bausteinsuche.
         if ((string) (isset($k['kachel']) ? $k['kachel'] : '') === 'szene') {
@@ -3803,8 +3827,9 @@ function db_pin_frei($cfg = null)
 function db_sicherung_nachgezogen()
 {
     // 0.9.49: haus_abfahrt_ein kennt keine Sicherung bis 0.9.48 - fehlt es, behaelt es seinen geltenden Wert.
+    // 0.9.50: ebenso alexa_textbefehl_ein (keine Sicherung bis 0.9.49 kennt es).
     return array('pin_frei', 'tafel_mqtt', 'tafel_mqtt_praefix', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein', 'ansage_ein', 'ansage_frist', 'ansage_gong',
-                 'haus_abfahrt_ein');
+                 'haus_abfahrt_ein', 'alexa_textbefehl_ein');
 }
 
 /** Felder, die der Endpunkt als Zustandszeile liefert.
@@ -4205,7 +4230,7 @@ function db_sicherung_wert_pruefen($k, $w)
     $haken = array('http_rueckfall', 'steuerung_ein', 'vollbild', 'wach', 'haptik', 'ansage_ein', 'ansage_gong',
                    'verlauf', 'sse', 'tafelsteuerung', 'gesichert_schalten', 'ruhe_uhr',
                    'ruhe_wetter', 'ambient', 'tafel_mqtt', 'mqtt_ein', 'befehle_mqtt_ein', 'endpunkt_ein',
-                   'haus_abfahrt_ein');
+                   'haus_abfahrt_ein', 'alexa_textbefehl_ein');
     if (isset($ganz[$k])) {
         return (is_int($w) && $w >= $ganz[$k][0] && $w <= $ganz[$k][1]) ? ''
             : sprintf(db_t('EINST.SICH_GRUND_BEREICH'), $ganz[$k][0], $ganz[$k][1]);
@@ -5012,6 +5037,9 @@ function db_seiten_pruefen($roh, $quelle, &$orte = null)
     $schluessel = array();
     $nr = 0;
     $ungeprueft = false;
+    $verworfen = array();     // 0.9.50: fremde Kachelschluessel, je Kachel 'Ort: Namen'
+    $tb_alexa = null;         // 0.9.50: Lage von Alexa NG, erst bei der ersten Kachel Textbefehl gelesen
+    $tb_hinweis = array();    // 0.9.50: je Lage die Orte der Kacheln Textbefehl - je Lage EIN Satz
     foreach ($roh as $s) {
         $nr++;
         if (!is_array($s)) {
@@ -5050,6 +5078,15 @@ function db_seiten_pruefen($roh, $quelle, &$orte = null)
             $orte[] = array($nr, 0, 'spalten');
             continue;
         }
+        /* 0.9.50 (Auftrag B, Entscheidung des Hausherrn 21.11.2026: "fuer alle einheitlich melden"): ein Schluessel der
+         * Seite selbst, den diese Fassung nicht kennt (db_seite_schluessel()), wird verworfen und in DERSELBEN Meldung
+         * genannt wie ein fremder Kachelschluessel. Bis hier fiel er still weg - die Seite wird unten aus den bekannten
+         * Feldern neu gebaut (gemessen: Pruefung-Dashboard-0.9.50/probe_rest.txt). */
+        $sfremd = array();
+        foreach (array_keys($s) as $schl) {
+            if (!in_array((string) $schl, db_seite_schluessel(), true)) { $sfremd[] = db_kachel_schluessel_name($schl); }
+        }
+        if ($sfremd) { $verworfen[] = sprintf(db_t('DESIGN.SEITE_ORT'), db_e($name)) . ': ' . db_e(implode(', ', $sfremd)); }
         if ($quelle === 'designer') {
             $alt = db_seite($k);
             $pin = ($alt !== null && isset($alt['pin'])) ? $alt['pin'] : '';
@@ -5126,15 +5163,24 @@ function db_seiten_pruefen($roh, $quelle, &$orte = null)
                 $orte[] = array($nr, $kn, 'sichtbar');
                 continue;
             }
-            /* 0.9.49: die Kachel Abfahrt haengt an keinem Baustein. Sie traegt nur diese Schluessel und keine
-             * UUID; alles andere wird abgewiesen und genannt, nicht still entfernt. */
+            /* 0.9.50 (Entscheidung des Hausherrn 21.11.2026): ein Schluessel, den diese Fassung fuer die Kachelart
+             * nicht kennt (db_kachel_schluessel()), wird verworfen und mit Seite, Kachel und Namen genannt - fuer
+             * jede Kachelart gleich. Die Kachel und der Rest werden gespeichert, damit eine aeltere seiten.json und
+             * die Sicherung einer Vorfassung speicherbar bleiben. Bis 0.9.49 fiel er still weg (die Kachel wird
+             * unten aus den bekannten Feldern neu gebaut); nur die Kachel Abfahrt wies ihn ab und speicherte
+             * nichts. Ein ungueltiger Wert eines bekannten Schluessels wird weiter abgewiesen. Genannt wird in EINER
+             * Zeile je Pruefung (am Ende), nie ein Wert. */
+            $kbekannt = db_kachel_schluessel($art);
+            $fremd = array();
+            foreach (array_keys($kk) as $schl) {
+                if (!in_array((string) $schl, $kbekannt, true)) { $fremd[] = db_kachel_schluessel_name($schl); }
+            }
+            if ($fremd) { $verworfen[] = $wo . ': ' . db_e(implode(', ', $fremd)); }
+            /* 0.9.49: die Kachel Abfahrt haengt an keinem Baustein und traegt keine UUID; eine UUID wird
+             * abgewiesen und genannt, nichts gespeichert. Seit 0.9.50 nur noch sie - fremde Schluessel verwerfen
+             * die Zeilen oben wie bei jeder Kachelart. */
             if ($art === 'abfahrt') {
                 $falsch = array();
-                foreach (array_keys($kk) as $schl) {
-                    if (!in_array((string) $schl, array('uuid', 'titel', 'kachel', 'groesse', 'sichtbar', 'symbol'), true)) {
-                        $falsch[] = (string) $schl;
-                    }
-                }
                 if ($u !== '') { $falsch[] = 'uuid'; }
                 if ($falsch) {
                     $fehler[] = sprintf(db_t('DESIGN.FEHLER_ABFAHRT'), $wo, db_e(implode(', ', $falsch)));
@@ -5162,8 +5208,65 @@ function db_seiten_pruefen($roh, $quelle, &$orte = null)
             if ($sy !== '' && db_symbol_ordner()[1] === 'ok' && db_symbol_pfad($sy) === null) {
                 $hinweise[] = sprintf(db_t('DESIGN.SYMBOL_FEHLT'), $wo, db_e($sy));
             }
+            /* 0.9.50: die Kachel Textbefehl haengt an keinem Baustein (uuid ''). Sie traegt den Namen eines Eintrags der
+             * Freigabeliste von Alexa NG (textbefehl) und wahlfrei einen Echo (geraet; leer = Standardgeraet von Alexa
+             * NG). Ist Alexa NG da und nimmt Textbefehle an, muss der Name freigegeben sein und ein Echo in der
+             * Geraeteliste stehen - sonst abgewiesen, Feld markiert, nichts gespeichert. Fehlt Alexa NG, ist sie
+             * unlesbar, nimmt sie keine Textbefehle an, fehlt ihr Aktionstoken oder ist der Haken hier aus: gespeichert,
+             * und je Lage EIN Satz nennt alle betroffenen Orte. Steht nach allen anderen Pruefungen der Kachel, und die
+             * Hinweise kommen erst, wenn die Kachel ganz angenommen ist. */
+            $tb_name = '';
+            $tb_geraet = '';
+            if ($art === 'textbefehl') {
+                if ($u !== '') {
+                    $fehler[] = sprintf(db_t('DESIGN.FEHLER_TB_UUID'), $wo);
+                    $orte[] = array($nr, $kn, 'kachel');
+                    continue;
+                }
+                $tb_name = array_key_exists('textbefehl', $kk) ? $kk['textbefehl'] : '';
+                if (!db_tb_name_gueltig($tb_name)) {
+                    $fehler[] = sprintf(db_t('DESIGN.FEHLER_TB_NAME'), $wo);
+                    $orte[] = array($nr, $kn, 'textbefehl');
+                    continue;
+                }
+                $tb_geraet = array_key_exists('geraet', $kk) ? $kk['geraet'] : '';
+                if ($tb_geraet === null) { $tb_geraet = ''; }
+                if (!is_string($tb_geraet) || ($tb_geraet !== '' && (!db_tb_name_gueltig($tb_geraet) || $tb_geraet === 'alle'))) {
+                    $fehler[] = sprintf(db_t('DESIGN.FEHLER_TB_GERAET'), $wo,
+                                        db_e(is_string($tb_geraet) ? db_kachel_schluessel_name($tb_geraet) : '?'));
+                    $orte[] = array($nr, $kn, 'geraet');
+                    continue;
+                }
+                if ($tb_alexa === null) { $tb_alexa = db_alexa_lage(); }
+                $tb_h = array();
+                if ($tb_alexa['lage'] !== 'ok') {
+                    $tb_h[] = $tb_alexa['lage'];
+                } elseif (!$tb_alexa['ein']) {
+                    $tb_h[] = 'alexa_aus';
+                } elseif (!isset($tb_alexa['frei'][$tb_name])) {
+                    $fehler[] = sprintf(db_t('DESIGN.FEHLER_TB_NICHT_FREI'), $wo, db_e($tb_name));
+                    $orte[] = array($nr, $kn, 'textbefehl');
+                    continue;
+                }
+                if ($tb_geraet !== '' && $tb_alexa['lage'] === 'ok') {
+                    if ($tb_alexa['geraete'] === null) {
+                        $tb_h[] = 'geraete';
+                    } elseif (!in_array($tb_geraet, $tb_alexa['geraete'], true)) {
+                        $fehler[] = sprintf(db_t('DESIGN.FEHLER_TB_GERAET_UNBEKANNT'), $wo, db_e($tb_geraet));
+                        $orte[] = array($nr, $kn, 'geraet');
+                        continue;
+                    }
+                }
+                if ($tb_alexa['lage'] === 'ok' && $tb_alexa['token'] === '') { $tb_h[] = 'token'; }
+                if (empty(db_config()['alexa_textbefehl_ein'])) { $tb_h[] = 'dashboard'; }
+                foreach ($tb_h as $tbx) { $tb_hinweis[$tbx][] = $wo; }
+            }
             $neu = array('uuid' => $u, 'titel' => $t, 'kachel' => $art, 'groesse' => $g, 'sichtbar' => $sb);
             if ($sy !== '') { $neu['symbol'] = $sy; }
+            if ($art === 'textbefehl') {
+                $neu['textbefehl'] = $tb_name;
+                if ($tb_geraet !== '') { $neu['geraet'] = $tb_geraet; }
+            }
             if ($art === 'szene') {
                 $sroh = array_key_exists('schritte', $kk) ? $kk['schritte'] : array();
                 if (!is_array($sroh)) {
@@ -5172,7 +5275,20 @@ function db_seiten_pruefen($roh, $quelle, &$orte = null)
                     continue;
                 }
                 $schritte = array();
+                $snr = 0;
                 foreach ($sroh as $sch) {
+                    $snr++;
+                    /* 0.9.50 (Auftrag B): ein fremder Schluessel eines Schritts (db_schritt_schluessel()) wird verworfen
+                     * und in derselben Meldung genannt; bis hier fiel er still weg (Beleg probe_rest.txt). */
+                    if (is_array($sch)) {
+                        $schfremd = array();
+                        foreach (array_keys($sch) as $schl) {
+                            if (!in_array((string) $schl, db_schritt_schluessel(), true)) { $schfremd[] = db_kachel_schluessel_name($schl); }
+                        }
+                        if ($schfremd) {
+                            $verworfen[] = sprintf(db_t('DESIGN.SCHRITT_ORT'), $wo, $snr) . ': ' . db_e(implode(', ', $schfremd));
+                        }
+                    }
                     $su = is_array($sch) && isset($sch['uuid']) ? $sch['uuid'] : null;
                     $sbf = is_array($sch) && isset($sch['befehl']) ? $sch['befehl'] : null;
                     if (!is_string($su) || !is_string($sbf)) {
@@ -5203,10 +5319,341 @@ function db_seiten_pruefen($roh, $quelle, &$orte = null)
         $aus[] = array('schluessel' => $k, 'name' => $name, 'spalten' => $sp,
                        'pin' => $pin, 'kacheln' => $kacheln);
     }
+    if ($verworfen) {
+        // 0.9.50: eine Zeile fuer alle Seiten, Kacheln und Schritte dieser Pruefung - keine Flut bei einer alten Datei.
+        $hinweise[] = sprintf(db_t('DESIGN.KACHEL_VERWORFEN'), implode('; ', $verworfen));
+    }
+    /* 0.9.50: je Lage von Alexa NG EIN Satz fuer alle Kacheln Textbefehl dieser Pruefung. */
+    foreach (array('fehlt' => 'TB_H_FEHLT', 'kaputt' => 'TB_H_KAPUTT', 'alexa_aus' => 'TB_H_ALEXA_AUS',
+                   'token' => 'TB_H_KEIN_TOKEN', 'geraete' => 'TB_H_GERAETE', 'dashboard' => 'TB_H_DASHBOARD_AUS') as $tbl => $tbt) {
+        if (!empty($tb_hinweis[$tbl])) { $hinweise[] = sprintf(db_t('DESIGN.' . $tbt), implode('; ', $tb_hinweis[$tbl])); }
+    }
     if ($ungeprueft) {
         $hinweise[] = db_t('DESIGN.SCHRITTE_UNGEPRUEFT');
     }
     return array($fehler ? null : $aus, $fehler, $hinweise);
+}
+
+/** 0.9.50: die Schluessel, die eine Kachel dieser Art tragen darf - genau die, aus denen db_seiten_pruefen() sie
+ * neu baut. Jeder andere wird verworfen und genannt. */
+function db_kachel_schluessel($art)
+{
+    $b = array('uuid', 'titel', 'kachel', 'groesse', 'sichtbar', 'symbol');
+    if ($art === 'szene') { $b[] = 'schritte'; }
+    if ($art === 'textbefehl') { $b[] = 'textbefehl'; $b[] = 'geraet'; }     // 0.9.50
+    return $b;
+}
+
+/** 0.9.50 (Auftrag B): die Schluessel einer Seite - genau die, aus denen db_seiten_pruefen() sie neu baut. */
+function db_seite_schluessel()
+{
+    return array('schluessel', 'name', 'spalten', 'pin', 'kacheln');
+}
+
+/** 0.9.50 (Auftrag B): die Schluessel eines Schritts einer Szene - ebenso. */
+function db_schritt_schluessel()
+{
+    return array('uuid', 'befehl');
+}
+
+/** 0.9.50: der Name eines fremden Kachelschluessels fuer die Meldung - Steuerzeichen als ?, hoechstens 60 Zeichen,
+ * nie ein Wert. Maskiert wird beim Einsetzen (db_e). */
+function db_kachel_schluessel_name($s)
+{
+    $s = (string) preg_replace('/[\x00-\x1F\x7F]/', '?', (string) $s);
+    if (preg_match('/^.{61}/su', $s) === 1 && preg_match('/^.{0,60}/su', $s, $m) === 1) { return $m[0] . '...'; }
+    return $s;
+}
+
+/* ---------------- 0.9.50: Kachel "Textbefehl" (Alexa NG) ----------------
+ *
+ * Entscheidung des Hausherrn 21.11.2026 ("moeglichst viele Funktionen"): eine Kachel ohne Loxone-Baustein (uuid ''),
+ * deren Tippen in Alexa NG einen dort freigegebenen Textbefehl ausloest (aktion=textbefehl, Alexa NG ab 1.0.20: nur mit
+ * dem Aktionstoken, nur mit dem Haken "Textbefehle aus Loxone annehmen", nur ein Name aus der Liste "Freigegebene
+ * Textbefehle", nie ein Satz). Ab Werk AUS ueber den Haken alexa_textbefehl_ein im Reiter Einstellungen.
+ *
+ * Gefunden wird Alexa NG nach derselben Bauart, mit der sich die Plugins mit Sprachmodul finden (ansage_nachbar() und
+ * ansage_plugin_ordner_aus() in sprachausgabe.php): der Ordner aus data/system/plugindatabase.json (name oder orig_name
+ * "alexang"), sonst "alexang"; die Datei config/plugins/<ordner>/alexang.json; gelesen werden nur aktionstoken,
+ * textbefehl_ein, textbefehle_frei, aktiv und standardgeraet, die Echos aus data/plugins/<ordner>/geraete.json. Bei
+ * jedem Aufruf neu, nie zwischengespeichert. Das Aktionstoken bleibt im Speicher des einen Aufrufs: nie in der Antwort
+ * an die Tafel, in einer Nutzlast, in den Daten des Designers, im Protokoll, in seiten.json oder in der Sicherung.
+ *
+ * Gesendet wird serverseitig wie auf dem Ansageweg des Sprachmoduls: POST an
+ * http://127.0.0.1:<Webport>/plugins/<ordner>/index.php, das Token im Rumpf, nie in einer Adresse. Ausgeloest ueber den
+ * Befehlsweg der Tafel (index.php aktion=textbefehl&seite=..&kachel=<Nr>: Tafel-Token, Schalten erlaubt, PIN der Seite -
+ * wie die Szene). Leitet der LoxBerry-Webserver auf https um, folgt diese Fassung nicht und sagt es (ALEXA_UMLEITUNG).
+ */
+
+/** Name eines Textbefehls und Normalname eines Echos: dieselbe Regel wie in Alexa NG ([a-z0-9_], 1 bis 40). */
+function db_tb_name_gueltig($n)
+{
+    return is_string($n) && preg_match('/^[a-z0-9_]{1,40}\z/', $n) === 1;
+}
+
+/** Der Ordner von Alexa NG aus dem Inhalt der plugindatabase.json - Bauart ansage_plugin_ordner_aus() (Sprachmodul):
+ * name oder orig_name "alexang" (gross/klein egal), Ordner nach Muster; mehrere Treffer: der feste Ordner gewinnt,
+ * sonst der erste; kein Treffer oder eine kaputte Datei: "alexang". */
+function db_alexa_ordner_aus($json)
+{
+    $fest = 'alexang';
+    $d = is_string($json) ? json_decode($json, true) : null;
+    if (!is_array($d)) { return $fest; }
+    $liste = (isset($d['plugins']) && is_array($d['plugins'])) ? $d['plugins'] : $d;
+    $treffer = array();
+    foreach ($liste as $e) {
+        if (!is_array($e) || !isset($e['folder']) || !is_string($e['folder'])
+                || !preg_match('/^[A-Za-z0-9_\-]{1,64}\z/', $e['folder'])) {
+            continue;
+        }
+        foreach (array('name', 'orig_name') as $f) {
+            if (isset($e[$f]) && is_string($e[$f]) && strtolower($e[$f]) === 'alexang') { $treffer[] = $e['folder']; break; }
+        }
+    }
+    if (!$treffer) { return $fest; }
+    return in_array($fest, $treffer, true) ? $fest : $treffer[0];
+}
+
+/** textbefehle_frei nach der Regel von Alexa NG 1.0.21 (ax_wert_pruefen()): eine Liste mit hoechstens DB_TB_FREI_MAX
+ * Eintraegen, je Eintrag genau name und text, der Name nach Muster und eindeutig, der Satz 1 bis 200 Zeichen ohne
+ * Steuerzeichen und ohne Leerraum am Rand. Verletzt ein Eintrag die Regel, verwirft Alexa NG die GANZE Liste und nimmt
+ * keinen Textbefehl an - dann gilt sie auch hier als leer. Rueckgabe array(name => satz, gueltig?). */
+function db_alexa_frei_lesen($w)
+{
+    if (!is_array($w) || count($w) > DB_TB_FREI_MAX) { return array(array(), false); }
+    $aus = array();
+    foreach ($w as $z) {
+        if (!is_array($z) || count($z) !== 2 || !isset($z['name'], $z['text']) || !is_string($z['text'])
+                || !db_tb_name_gueltig($z['name']) || isset($aus[$z['name']])) {
+            return array(array(), false);
+        }
+        $n = preg_match_all('/./su', $z['text']);
+        if (!$n || $n > 200 || trim($z['text']) !== $z['text'] || preg_match('/[\x00-\x1F\x7F]/', $z['text'])) {
+            return array(array(), false);
+        }
+        $aus[$z['name']] = $z['text'];
+    }
+    return array($aus, true);
+}
+
+/** Was Alexa NG auf diesem LoxBerry ueber sich sagt - bei jedem Aufruf neu gelesen, nichts geschrieben.
+ * lage: 'fehlt' (keine LoxBerry-Wurzel oder keine alexang.json), 'kaputt' (unlesbar, groesser als 1 MB oder kein
+ * JSON-Objekt) oder 'ok'. Ein Schalter, den Alexa NG verwerfen wuerde, liest ihre Vorgabe (textbefehl_ein 0, aktiv 1).
+ * geraete: die Normalnamen aus geraete.json oder null (Liste noch nicht geholt oder unlesbar). Das Token gibt nur diese
+ * Funktion heraus; wer es nicht zum Senden braucht, nimmt db_textbefehl_auswahl(). */
+function db_alexa_lage()
+{
+    $aus = array('lage' => 'fehlt', 'ordner' => '', 'token' => '', 'ein' => false, 'aktiv' => true,
+                 'frei' => array(), 'frei_gut' => true, 'standard' => '', 'geraete' => null);
+    $home = db_paths()['home'];
+    if ($home === '') { return $aus; }
+    $pdb = $home . '/data/system/plugindatabase.json';
+    $roh = is_file($pdb) ? @file_get_contents($pdb) : '';
+    $o = db_alexa_ordner_aus(is_string($roh) ? $roh : '');
+    $aus['ordner'] = $o;
+    $f = $home . '/config/plugins/' . $o . '/alexang.json';
+    clearstatcache(true, $f);
+    if (!is_file($f)) { return $aus; }
+    $aus['lage'] = 'kaputt';
+    if (!is_readable($f) || (int) @filesize($f) > 1048576) { return $aus; }
+    $r = @file_get_contents($f);
+    $d = is_string($r) ? json_decode($r, true) : null;
+    if (!is_array($d) || ($d !== array() && array_keys($d) === range(0, count($d) - 1))) { return $aus; }
+    $aus['lage'] = 'ok';
+    if (isset($d['aktionstoken']) && is_string($d['aktionstoken'])
+            && preg_match('/^[A-Za-z0-9_.\-]{8,64}\z/', $d['aktionstoken'])) {
+        $aus['token'] = $d['aktionstoken'];
+    }
+    $schalter = function ($k, $vorgabe) use ($d) {
+        if (!array_key_exists($k, $d)) { return $vorgabe; }
+        $w = $d[$k];
+        if ($w === true || $w === 1 || $w === '1') { return true; }
+        if ($w === false || $w === 0 || $w === '0' || $w === '') { return false; }
+        return $vorgabe;
+    };
+    $aus['ein'] = $schalter('textbefehl_ein', false);
+    $aus['aktiv'] = $schalter('aktiv', true);
+    if (array_key_exists('textbefehle_frei', $d)) {
+        list($aus['frei'], $aus['frei_gut']) = db_alexa_frei_lesen($d['textbefehle_frei']);
+    }
+    if (isset($d['standardgeraet']) && db_tb_name_gueltig($d['standardgeraet'])) { $aus['standard'] = $d['standardgeraet']; }
+    $gf = $home . '/data/plugins/' . $o . '/geraete.json';
+    $g = is_file($gf) ? json_decode((string) @file_get_contents($gf), true) : null;
+    if (is_array($g) && isset($g['liste']) && is_array($g['liste'])) {
+        $aus['geraete'] = array();
+        foreach ($g['liste'] as $e) {
+            if (is_array($e) && isset($e['normal']) && db_tb_name_gueltig($e['normal'])
+                    && !in_array($e['normal'], $aus['geraete'], true)) {
+                $aus['geraete'][] = $e['normal'];
+            }
+        }
+    }
+    return $aus;
+}
+
+/** Fuer den Designer: was Alexa NG anbietet - OHNE Token und ohne Pfad. saetze: Klartext zur Lage (ohne Auszeichnung). */
+function db_textbefehl_auswahl()
+{
+    $al = db_alexa_lage();
+    $cfg = db_config();
+    $frei = array();
+    foreach ($al['frei'] as $n => $t) { $frei[] = array('name' => (string) $n, 'text' => $t); }
+    $saetze = array();
+    if ($al['lage'] === 'fehlt') {
+        $saetze[] = db_t('DESIGN.TB_OHNE_ALEXA');
+    } elseif ($al['lage'] !== 'ok') {
+        $saetze[] = db_t('DESIGN.TB_ALEXA_KAPUTT');
+    } else {
+        if (!$al['ein']) { $saetze[] = db_t('DESIGN.TB_ALEXA_AUS'); }
+        if ($al['token'] === '') { $saetze[] = db_t('DESIGN.TB_KEIN_TOKEN'); }
+        if (!$al['frei']) { $saetze[] = db_t($al['frei_gut'] ? 'DESIGN.TB_KEINE_FREIGABE' : 'DESIGN.TB_FREIGABE_KAPUTT'); }
+        if ($al['geraete'] === null) { $saetze[] = db_t('DESIGN.TB_KEINE_GERAETE'); }
+    }
+    if (empty($cfg['alexa_textbefehl_ein'])) { $saetze[] = db_t('DESIGN.TB_DASHBOARD_AUS'); }
+    $aus = array();
+    foreach ($saetze as $s) { $aus[] = strip_tags(html_entity_decode($s, ENT_QUOTES, 'UTF-8')); }
+    return array('lage' => $al['lage'], 'ein' => $al['ein'] ? 1 : 0, 'frei' => $frei,
+                 'geraete' => $al['geraete'] === null ? array() : $al['geraete'], 'standard' => $al['standard'],
+                 'saetze' => $aus);
+}
+
+/** Die Meldung an die Tafel: Klartext aus TAFEL.TB_G_<GRUND>; ein Grund ohne eigenen Text ueber TB_G_ANDERE. */
+function db_tb_meldung($grund)
+{
+    $grund = (string) $grund;
+    $t = db_t('TAFEL.TB_G_' . $grund);
+    if ($grund === '' || $t === 'TAFEL.TB_G_' . $grund) {
+        $t = sprintf(db_t('TAFEL.TB_G_ANDERE'), $grund !== '' ? $grund : '?');
+    }
+    return $t;
+}
+
+/** Der Webport des LoxBerry aus config/system/general.json (Webserver.Port oder WEBSERVER.Port, 1 bis 65535), sonst 80 -
+ * die Regel von ansage_webport_aus() im Sprachmodul (enge Form). Gelesen wird nur der Port. */
+function db_tb_webport()
+{
+    $home = db_paths()['home'];
+    $g = $home !== '' ? db_json_lesen($home . '/config/system/general.json') : array();
+    foreach (array('Webserver', 'WEBSERVER') as $ab) {
+        if (!isset($g[$ab]) || !is_array($g[$ab]) || !isset($g[$ab]['Port']) || !is_scalar($g[$ab]['Port'])) { continue; }
+        $w = trim((string) $g[$ab]['Port']);
+        if (preg_match('/^\d{1,5}\z/', $w) && (int) $w >= 1 && (int) $w <= 65535) { return (int) $w; }
+    }
+    return 80;
+}
+
+/** Ein POST an 127.0.0.1 ohne curl (Bauart db_endpunkt_probe()). Rueckgabe array(HTTP-Code, Rumpf): 0 = keine
+ * Verbindung, -1 = keine lesbare HTTP-Antwort, -2 = Zeitueberschreitung beim Warten auf die Antwort. */
+function db_tb_post($port, $pfad, array $felder)
+{
+    $rumpf = http_build_query($felder, '', '&', PHP_QUERY_RFC3986);
+    $en = 0;
+    $es = '';
+    $s = @stream_socket_client('tcp://127.0.0.1:' . (int) $port, $en, $es, 3);
+    if (!$s) { return array(0, ''); }
+    stream_set_timeout($s, DB_TB_ZEIT_S);
+    $anfrage = 'POST ' . $pfad . " HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/x-www-form-urlencoded\r\n"
+             . 'Content-Length: ' . strlen($rumpf) . "\r\nConnection: close\r\n\r\n" . $rumpf;
+    $rumpf = '';
+    $soll = strlen($anfrage);
+    $gesendet = @fwrite($s, $anfrage);
+    $anfrage = '';
+    if ($gesendet !== $soll) { @fclose($s); return array(0, ''); }
+    $antwort = '';
+    $zeit = false;
+    while (!feof($s) && strlen($antwort) < 65536) {
+        $teil = @fread($s, 8192);
+        $i = stream_get_meta_data($s);
+        if (!empty($i['timed_out'])) { $zeit = true; break; }
+        if ($teil === false) { break; }
+        $antwort .= $teil;
+    }
+    @fclose($s);
+    if ($zeit) { return array(-2, ''); }
+    if (!preg_match('#^HTTP/\d\.\d (\d{3})#', $antwort, $m)) { return array(-1, ''); }
+    $pos = strpos($antwort, "\r\n\r\n");
+    return array((int) $m[1], $pos !== false ? substr($antwort, $pos + 4) : '');
+}
+
+/** Die Antwortzeile von Alexa NG lesen: array(ok, grund). ok 1 = ausgefuehrt, 2 = UNVERAENDERT (Alexa NG hat denselben
+ * Befehl binnen ihres Fensters nicht wiederholt), 0 = nicht ausgefuehrt. Ein Grund kommt nur nach Muster durch. */
+function db_tb_antwort($http, $koerper)
+{
+    if ($http === 0) { return array(0, 'ALEXA_NICHT_ERREICHBAR'); }
+    if ($http === -2) { return array(0, 'ALEXA_ZEIT'); }
+    if ($http >= 300 && $http < 400) { return array(0, 'ALEXA_UMLEITUNG'); }
+    $z = trim((string) preg_replace('/\r?\n.*\z/s', '', ltrim((string) $koerper)));
+    if (!preg_match('/^(TEXTBEFEHL|ALEXANG);/', $z)) { return array(0, 'ALEXA_ANTWORT'); }
+    $f = array();
+    foreach (array_slice(explode(';', $z), 1) as $teil) {
+        $kv = explode('=', $teil, 2);
+        if (count($kv) === 2) { $f[$kv[0]] = $kv[1]; }
+    }
+    $grund = (isset($f['GRUND']) && preg_match('/^[A-Z0-9_]{1,40}\z/', $f['GRUND'])) ? $f['GRUND'] : '';
+    if ($http === 200 && isset($f['OK']) && $f['OK'] === '1') {
+        return $grund === 'UNVERAENDERT' ? array(2, 'UNVERAENDERT') : array(1, 'OK');
+    }
+    if (isset($f['OK']) && $f['OK'] === '0' && $grund !== '') { return array(0, $grund); }
+    return array(0, 'ALEXA_ANTWORT');
+}
+
+/** Einen Textbefehl ausloesen ($k: die Kachel aus seiten.json). Rueckgabe array(HTTP-Code, array(ok, grund, meldung))
+ * fuer die Tafel - nie mit dem Token. Vor dem Aufruf, jeweils ohne Aufruf: Haken hier aus (DASHBOARD_AUS), Kachel
+ * verbogen (KACHEL_UNGUELTIG), Aktualisierung, Alexa NG fehlt, unlesbar, ohne Aktionstoken, Textbefehle dort aus, Name
+ * nicht freigegeben, ein anderer Textbefehl laeuft gerade (LAEUFT), derselbe Name an denselben Echo binnen
+ * DB_TB_DOPPELT_S Sekunden (DOPPELT). Eine Antwort von Alexa NG kommt mit 200 zur Tafel, ihr Grund in Klartext; ins
+ * Protokoll eine Zeile mit Name, Echo und Grund. */
+function db_textbefehl_ausloesen($k, $cfg = null)
+{
+    if ($cfg === null) { $cfg = db_config(); }
+    $raus = function ($code, $ok, $grund) {
+        return array($code, array('ok' => $ok, 'grund' => $grund, 'meldung' => db_tb_meldung($grund)));
+    };
+    if (empty($cfg['alexa_textbefehl_ein'])) { return $raus(403, 0, 'DASHBOARD_AUS'); }
+    $name = (is_array($k) && isset($k['textbefehl'])) ? $k['textbefehl'] : '';
+    $geraet = (is_array($k) && isset($k['geraet'])) ? $k['geraet'] : '';
+    if (!db_tb_name_gueltig($name) || ($geraet !== '' && (!db_tb_name_gueltig($geraet) || $geraet === 'alle'))) {
+        return $raus(400, 0, 'KACHEL_UNGUELTIG');
+    }
+    $mk = db_upgrade_marke();
+    if (!empty($mk[1])) { return $raus(503, 0, 'AKTUALISIERUNG'); }
+    $al = db_alexa_lage();
+    if ($al['lage'] === 'fehlt') { return $raus(503, 0, 'ALEXA_FEHLT'); }
+    if ($al['lage'] !== 'ok') { return $raus(503, 0, 'ALEXA_KAPUTT'); }
+    if ($al['token'] === '') { return $raus(503, 0, 'ALEXA_KEIN_TOKEN'); }
+    if (!$al['ein']) { return $raus(409, 0, 'ALEXA_TEXTBEFEHL_AUS'); }
+    if (!isset($al['frei'][$name])) { return $raus(409, 0, 'TEXTBEFEHL_NICHT_FREIGEGEBEN'); }
+    $p = db_paths();
+    $sp = is_dir($p['datadir']) ? @fopen($p['datadir'] . '/textbefehl.sperre', 'c') : false;
+    if ($sp === false) { return $raus(503, 0, 'SPERRE_FEHLT'); }
+    if (!flock($sp, LOCK_EX | LOCK_NB)) { fclose($sp); return $raus(429, 0, 'LAEUFT'); }
+    @chmod($p['datadir'] . '/textbefehl.sperre', 0600);
+    $jetzt = time();
+    $schl = $name . '|' . $geraet;
+    $stand = array();
+    foreach (db_json_lesen($p['datadir'] . '/textbefehl.json') as $a => $t) {
+        if (is_string($a) && is_int($t) && $jetzt - $t >= 0 && $jetzt - $t < 60) { $stand[$a] = $t; }
+    }
+    if (isset($stand[$schl]) && $jetzt - $stand[$schl] < DB_TB_DOPPELT_S) {
+        flock($sp, LOCK_UN);
+        fclose($sp);
+        return $raus(429, 0, 'DOPPELT');
+    }
+    $stand[$schl] = $jetzt;
+    db_json_schreiben($p['datadir'] . '/textbefehl.json', $stand, 0600);
+    $felder = array('aktion' => 'textbefehl', 'token' => $al['token'], 'name' => $name,
+                    'absender' => preg_match('/^[a-z0-9_\-]{1,32}\z/', $p['plugin']) ? $p['plugin'] : 'dashboard');
+    if ($geraet !== '') { $felder['geraet'] = $geraet; }
+    $t0 = microtime(true);
+    list($http, $koerper) = db_tb_post(db_tb_webport(), '/plugins/' . $al['ordner'] . '/index.php', $felder);
+    $felder = array();
+    $al = array();
+    flock($sp, LOCK_UN);
+    fclose($sp);
+    list($ok, $grund) = db_tb_antwort($http, $koerper);
+    db_log(sprintf('Textbefehl %s an %s: %s (Alexa NG HTTP %d, %d ms).', $name, $geraet !== '' ? $geraet : 'Standardgeraet',
+                   $grund, $http, (int) round((microtime(true) - $t0) * 1000)));
+    return $raus(200, $ok, $grund);
 }
 
 /* ---------------- O1: Einmalmeldung nach der Umleitung ----------------
@@ -5281,6 +5728,7 @@ function db_eingabe_felder()
             'verlauf_punkte' => 'text', 'tafelsteuerung' => 'haken', 'tafel_mqtt' => 'haken',
             'tafel_mqtt_praefix' => 'text', 'pin_frei' => 'text', 'ambient' => 'haken',
             'mqtt_ein' => 'haken', 'befehle_mqtt_ein' => 'haken', 'haus_abfahrt_ein' => 'haken',
+            'alexa_textbefehl_ein' => 'haken',
             'ruhe_nach' => 'text', 'ruhe_uhr' => 'haken', 'ruhe_wetter' => 'haken',
             'ruhe_kacheln' => 'text', 'ruhe_seite' => 'text', 'ruhe_hell' => 'text',
             'ruhe_bild' => 'datei', 'eco_nach' => 'text', 'eco_hell' => 'text',
@@ -5428,8 +5876,9 @@ function db_entwurf_form($d)
         foreach ($kroh as $k) {
             if (!is_array($k)) { return null; }
             $kn = array();
-            foreach (array('uuid', 'titel', 'kachel', 'groesse', 'symbol') as $f) {
-                if (!array_key_exists($f, $k) || ($f === 'symbol' && $k[$f] === null)) { continue; }
+            // 0.9.50: dazu textbefehl und geraet der Kachel Textbefehl.
+            foreach (array('uuid', 'titel', 'kachel', 'groesse', 'symbol', 'textbefehl', 'geraet') as $f) {
+                if (!array_key_exists($f, $k) || (($f === 'symbol' || $f === 'geraet') && $k[$f] === null)) { continue; }
                 if (!is_string($k[$f])) { return null; }
                 $kn[$f] = $k[$f];
             }
@@ -5462,7 +5911,7 @@ function db_entwurf_form($d)
 function db_entwurf_orte($orte, $entwurf)
 {
     $felder = array('seite', 'schluessel', 'name', 'spalten', 'pin', 'kacheln', 'form',
-                    'titel', 'kachel', 'groesse', 'sichtbar', 'symbol', 'schritte');
+                    'titel', 'kachel', 'groesse', 'sichtbar', 'symbol', 'schritte', 'textbefehl', 'geraet');
     $aus = array();
     foreach ((array) $orte as $o) {
         if (!is_array($o) || count($o) !== 3 || !isset($o[0], $o[1], $o[2])

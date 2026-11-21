@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.49 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.50 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,21 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.50
+
+- **Neu – Kachel „Textbefehl“ (Alexa NG, ab Werk aus):** Eine Kachel ohne Loxone-Baustein, im Designer über den Knopf „+ Textbefehl“ angelegt (wie die Szene, Vorgabegröße 2x1). Ein Tippen auf „Auslösen“ lässt Alexa NG auf diesem LoxBerry einen dort freigegebenen Textbefehl ausführen (Alexa NG ab 1.0.20, `aktion=textbefehl`), als hätte jemand den Satz zum Echo gesagt. Die Kachel trägt `textbefehl` (den Namen aus der Liste „Freigegebene Textbefehle“ von Alexa NG: Kleinbuchstaben, Ziffern und `_`, höchstens 40 Zeichen) und wahlfrei `geraet` (einen Echo aus der Geräteliste von Alexa NG; leer heißt Standardgerät von Alexa NG). Der Designer bietet beides als Auswahlliste an, gelesen aus Alexa NG; ohne Alexa NG sagt er das in einem Satz und nimmt Name und Echo als Text.
+- **Neu – Einstellung „Textbefehle von Alexa NG auf Kacheln erlauben“ (ab Werk aus):** Ohne den Haken geht nichts an Alexa NG, und die Kachel zeigt „Textbefehle sind ausgeschaltet“. In Alexa NG muss zusätzlich „Textbefehle aus Loxone annehmen“ eingeschaltet sein.
+- **Wie gesendet wird:** Das Tablet ruft den Endpunkt des Dashboards auf (`aktion=textbefehl&seite=…&kachel=<Nr>` mit dem Tafel-Token; Schalten muss erlaubt sein, die PIN der Seite gilt – wie bei der Szene). Der LoxBerry liest bei jedem Druck Aktionstoken, Freigabeliste, den Haken „Textbefehle aus Loxone annehmen“ und die Geräteliste aus den Dateien von Alexa NG (der Ordner aus der Plugin-Datenbank, so wie die Plugins mit Sprachmodul einander finden) und sendet per POST an `http://127.0.0.1:<Webport>/plugins/<ordner>/index.php`, das Token im Rumpf, nie in einer Adresse. Das Token steht nie in der Antwort an das Tablet, in einer Nutzlast, im Designer, im Protokoll, in `seiten.json` oder in der Sicherung. Fehlt Alexa NG, fehlt ihr Aktionstoken, sind Textbefehle dort aus oder ist der Name nicht freigegeben, wird nichts gesendet.
+- **Rückmeldung auf dem Tablet:** eine Blase mit „Alexa NG hat den Textbefehl ausgeführt.“ oder dem Grund in Klartext (zum Beispiel Stundengrenze, nicht bei Amazon angemeldet, unbekannter Echo, gesperrt, Alexa NG fehlt, ausgeschaltet). Derselbe Textbefehl an denselben Echo binnen 5 s geht nicht ein zweites Mal hinaus („Eben schon gesendet“); läuft gerade ein anderer, wird der zweite abgewiesen statt zu warten, und die Kachel nimmt bis zur Antwort keinen zweiten Druck an. Antwortet Alexa NG nicht binnen 25 s, sagt die Blase, dass offen ist, ob der Textbefehl ausgeführt wurde. Leitet der Webserver des LoxBerry auf https um, sendet diese Fassung nicht und sagt es.
+- **Speichern:** Ist Alexa NG da und nimmt Textbefehle an, muss der Name freigegeben sein und ein angegebener Echo in ihrer Geräteliste stehen; sonst weist der Designer die Kachel ab, markiert das Feld, und nichts wird gespeichert. Fehlt Alexa NG, ist ihre Konfiguration unlesbar, sind Textbefehle dort aus, fehlt ihr Aktionstoken, hat sie ihre Geräteliste noch nicht geholt oder ist der Haken hier aus, wird gespeichert, und je Lage nennt ein Satz alle betroffenen Kacheln.
+- **Reiter Test:** neue Prüfzeile „Textbefehle über Alexa NG?“: aus (grau); Alexa NG fehlt, unlesbar, ohne Aktionstoken, ausgeschaltet, Textbefehle dort aus, keiner freigegeben oder eine Kachel nennt einen nicht freigegebenen Namen (Kreuz); sonst Haken mit der Zahl der freigegebenen Textbefehle. Sie liest nur Dateien und löst nichts aus.
+- **Geändert – fremde Schlüssel einer Seite und eines Szenenschritts werden genannt statt still entfernt:** wie bei den Kacheln verworfen und in demselben einen Satz genannt („Schlüssel nicht übernommen, weil diese Fassung sie nicht kennt: Seite „A“: …; Seite „A“, Kachel 1, Schritt 1: …“). Bekannt sind bei der Seite `schluessel`, `name`, `spalten`, `pin` und `kacheln`, beim Schritt `uuid` und `befehl`.
+- **Geändert – unbekannte Schlüssel einer Kachel werden genannt statt still entfernt:** Trägt eine Kachel einen Schlüssel, den diese Fassung für ihre Kachelart nicht kennt, wird er verworfen und mit Seite, Kachel und Namen gemeldet; die Kachel und alle übrigen Angaben werden gespeichert. Das gilt für jede Kachelart gleich, auch für die Kachel Abfahrt. Bekannt sind `uuid`, `titel`, `kachel`, `groesse`, `sichtbar` und `symbol`, bei der Szene dazu `schritte`, bei der Kachel Textbefehl `textbefehl` und `geraet`. Bis 0.9.49 fiel ein solcher Schlüssel bei Baustein-Kacheln und Szenen ohne Hinweis weg, und eine Kachel Abfahrt mit einem fremden Schlüssel wurde abgewiesen, ohne dass etwas gespeichert wurde. Eine ältere `seiten.json` und die Sicherung einer Vorfassung bleiben damit speicherbar und zurückspielbar.
+- **Unverändert:** Ein ungültiger Wert eines bekannten Schlüssels weist die Seite weiter ab, und nichts wird gespeichert, etwa die Größe `9x9` oder eine UUID an einer Kachel Abfahrt.
+- **Wo die Meldung erscheint:** im Designer nach dem Speichern oben in der Meldung, in einem Satz für alle betroffenen Seiten, Kacheln und Schritte („Schlüssel nicht übernommen, weil diese Fassung sie nicht kennt: Seite „…“, Kachel 2: …“). Beim Zurückspielen einer Sicherung, aus einer Datei oder aus dem Sicherungsverlauf, steht derselbe Satz in der Meldung des Zurückspielens, und zwar nur, wenn zurückgespielt wurde. Werte werden nie genannt. Ins Protokoll kommt der Satz nicht. Beim Lesen der Seiten (Tablet, Reiter Dashboards, Öffnen des Designers) erscheint keine Meldung; ein solcher Schlüssel bleibt bis zum nächsten Speichern im Designer in `seiten.json` stehen und wird dann einmal genannt.
+- **Berichtigt – Angabe zu 0.9.49:** Der Reiter Dashboards prüft keine Kacheln; er ändert nur Name, Spalten und PIN einer Seite und lässt die Kacheln, wie sie sind. Die Seitenprüfung läuft im Designer und beim Zurückspielen.
+- Gemessen auf dem Arbeitsrechner unter PHP 7.4 und 8.4: die Seitenprüfung je Kachelart, das Zurückspielen einer Sicherung mit fremdem Kachelschlüssel und das Lesen, jede Korrektur einzeln zurückgebaut, jede ihre Prüfzeile rot (5 Rückbauten). Für die Kachel Textbefehl und die Seiten- und Schrittschlüssel: Speichern, Auslösen gegen eine nachgebildete Alexa NG und gegen die echte Alexa NG 1.0.21 ohne Amazon-Anmeldung (in WSL unter PHP 8.3), der Endpunkt, die Prüfzeile und die Daten des Designers, 44 Prüfzeilen je Fassung, 13 Korrekturen einzeln zurückgebaut, jede machte genau ihre Zeilen rot. Nicht gemessen: Designer und Tafel im Browser (das Skript ist nur auf Syntax geprüft), am Gerät, ein Textbefehl an einem echten Echo mit Amazon-Anmeldung, der Weg über https.
 
 ## Neu in 0.9.49
 
@@ -940,6 +955,12 @@ Text trägt. Wer das erst am Tablet merkt, sucht lange.
   Der Wert eines Kennworts wird nirgends angezeigt, auch nicht verkürzt.
 - Eingaben, die nicht zum Muster passen, werden **abgelehnt und benannt**, nie
   stillschweigend zurechtgebogen.
+- **Kachel Textbefehl (seit 0.9.50, ab Werk aus):** Das Aktionstoken von Alexa NG
+  liest nur der LoxBerry, bei jedem Druck aus der Datei von Alexa NG, und schickt es
+  allein an `127.0.0.1` im Rumpf eines POST. Es steht in keiner Antwort an das Tablet,
+  keiner Nutzlast, keinem Protokoll, nicht in `seiten.json` und nicht in der Sicherung.
+  Ein Textbefehl wirkt, als hätte jemand den Satz zum Echo gesagt – freigegeben wird
+  er in Alexa NG, und nur dort freigegebene Namen gehen hinaus.
 
 ## Was ungeprüft bleibt
 
@@ -971,6 +992,11 @@ Namentlich ungeprüft und deshalb hier genannt:
   gespeichert bleibt der vorige Stand, eine PIN reist nie mit. Das Skript des
   Designers ist dafür mit Node.js an einer nachgebauten Seitenstruktur
   gemessen, nicht in einem Browser.
+- **Die Kachel Textbefehl** (neu in 0.9.50) ist gegen eine nachgebildete Alexa NG und
+  gegen die echte Alexa NG 1.0.21 ohne Amazon-Anmeldung gemessen – bis zu deren Antwort
+  „nicht angemeldet“. Ob ein Echo den Satz ausführt, ist nicht gemessen, ebenso wenig
+  der Weg, wenn der Webserver des LoxBerry auf https umleitet (dann sendet diese
+  Fassung nicht und sagt es).
 - **Die Marke „Aktualisierung läuft"** (neu in 0.9.23) ist in WSL mit einem
   nachgestellten Installer-Ablauf gemessen, nicht an einem LoxBerry. Der
   Benutzerwechsel auf `loxberry` und Apache sind dabei nicht nachgebildet.
