@@ -442,6 +442,13 @@ if ($db_post && isset($_POST['speichern'])) {
     if (!db_tafel_mqtt_praefix_gueltig($db_tmp)) {
         $db_bean[] = 'tafel_mqtt_praefix';
         $db_fehler[] = db_t('EINST.FEHLER_TAFEL_MQTT_PRAEFIX');
+    } elseif (hb_bereich($db_tmp) !== '' && $db_tmp !== (string) $db_cfg['tafel_mqtt_praefix']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        /* 0.9.52 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+         * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+         * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+        $db_bean[] = 'tafel_mqtt_praefix';
+        $db_fehler[] = sprintf(db_t('HAUSBEREICH.FEHLER'), db_e($db_tmp), db_e(hb_bereich($db_tmp)));
     } else {
         $db_cfg['tafel_mqtt_praefix'] = $db_tmp;
     }
@@ -898,6 +905,32 @@ if ($db_post && isset($_POST['log_leeren'])) {
         }
     }
     $db_tab = 'tab-log';
+}
+/* 0.9.52: der Block 'Meldungen an SignalBot' (ab Werk aus), eigenes Formular; eine ungueltige Sperrzeit wird gemeldet. */
+if ($db_post && isset($_POST['meld_speichern']) && !isset($_POST['meld_test'])) {
+    $db_mp = db_paths();
+    $db_mroh = db_json_lesen_streng($db_mp['config'], $db_mlage);
+    if ($db_mlage !== 'ok' && $db_mlage !== 'fehlt') {
+        $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_mp['config']));
+    } else {
+        $db_mcfg = array_merge(db_vorgaben(), is_array($db_mroh) ? $db_mroh : array());
+        $db_mm = array();
+        $db_mb = array();
+        $db_mcfg['meldung'] = meld_formular_lesen($_POST, isset($db_mcfg['meldung']) ? $db_mcfg['meldung'] : null, db_meld_anlaesse(),
+                                                  $db_mm, $db_mb, db_meld_k(), db_meld_haken_vorgabe());
+        foreach ($db_mm as $db_m1) { $db_fehler[] = db_e($db_m1['text']); }
+        if (!$db_mm) {
+            if (db_config_speichern($db_mcfg)) { $db_meldungen[] = db_e(db_t('DB_MELD.GESPEICHERT')); }
+            else { $db_fehler[] = sprintf(db_t('EINST.FEHLER_SPEICHERN'), db_e($db_mp['config'])); }
+        }
+    }
+    $db_tab = 'tab-settings';
+}
+/* 0.9.52: Testmeldung an SignalBot (Knopf im Formular des Blocks). Speichert nichts. */
+if ($db_post && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = db_meld_test();
+    if ($meld_ok) { $db_meldungen[] = db_e($meld_satz); } else { $db_fehler[] = db_e($meld_satz); }
+    $db_tab = 'tab-settings';
 }
 if ($db_post && isset($_POST['test'])) {
     list($db_stand, $db_text) = db_test_aktion((string) $_POST['test']);
@@ -1740,6 +1773,17 @@ if (db_wetter_eigene_gewaehlt($db_cfg)) {
 $db_cfg = $db_cfg_gespeichert;
 $db_zugang = $db_zugang_gespeichert;
 ?>
+
+<?php /* 0.9.52: Meldungen an SignalBot (ab Werk aus), eigenes Formular */ ?>
+<form action="index.php" method="post">
+  <?php echo db_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+  <div class="sm-hilfe"><?= db_e(db_t('DB_MELD.H')) ?></div>
+<?= db_meld_form_html($db_cfg) ?>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-aktion" name="meld_speichern" value="1"><?= db_e(db_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
 
 <h2><?= db_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= db_t('EINST.SICH_ERKLAERUNG') ?></div>

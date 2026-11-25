@@ -4,7 +4,7 @@ Liest die Struktur des **Loxone Miniservers** aus und baut daraus per
 Drag-and-Drop moderne Kachel-Dashboards, die sich auf jedem Tablet ohne
 Loxone-App aufrufen lassen.
 
-> **Fassung 0.9.51 — Anmeldung und Befehle sind am Gerät gemessen.** Am
+> **Fassung 0.9.52 — Anmeldung und Befehle sind am Gerät gemessen.** Am
 > 07.09.2026 an einem Miniserver mit Firmware 17.2.8.28 nachgemessen:
 > Anmeldung (Hashverfahren des Benutzers SHA1), Wiederanmeldung mit
 > gespeichertem Token, die Strukturdatei (666 Bausteine, 3610 Zustände), der
@@ -23,6 +23,12 @@ Loxone-App aufrufen lassen.
 > einem Fehler des Anwenders klingt. Dazu löste eine Szene hinter einer
 > unsichtbaren Kachel die **falsche** Szene aus. Beides steht auf der
 > Release-Seite zu `v0.9.13`.
+
+## Neu in 0.9.52
+
+- **Themen-Präfix auf einem gemeinsamen Bereich (Entscheidung des Hausherrn 23.11.2026 „Nur gemeinsame Bereiche“):** Ein MQTT-Präfix, das einer der gemeinsamen Bereiche unter `haus/` ist oder darin beginnt (`haus/<bereich>` bzw. `haus/<bereich>/…` für abfahrt, abfuhr, alarm, ansage, anwesenheit, energie, fahrzeug, kalender, klima, pv, raumklima, sonne, speicher, strompreis, szene, tag, tuer, usv, wetter), weisen Speichern im Reiter *Einstellungen* und das Zurückspielen einer Sicherung jetzt mit Namen ab: Dort liefern die Plugins einander Zustände ohne eigenes Präfix. `haus` allein und andere Präfixe unter `haus/` (etwa `haus/fenster`) bleiben erlaubt; Groß und Klein zählen wie bei MQTT. Ist ein solches Präfix schon gespeichert, ändert sich am Betrieb nichts – das Plugin sendet weiter darunter, nennt es einmal im Protokoll, und der Reiter *Test* zeigt die Zeile „Liegt das Themen-Präfix außerhalb der gemeinsamen Bereiche unter haus/?“ rot. Liste und Texte kommen aus dem gemeinsamen Modul `haus_bereiche.php` bzw. `haus_bereiche.py` im Dienst.
+- **Statusmeldungen an SignalBot (Entscheidung des Hausherrn 24.11.2026), ab Werk aus:** Im Reiter Einstellungen gibt es den Block „Meldungen an SignalBot“. Eingeschaltet meldet das Plugin unter `haus/meldung/dashboard` an das Plugin SignalBot (gemeinsames Modul `meldung.php`), wenn der Dienst die Verbindung zum Miniserver verliert und wenn sie wieder steht, und wenn sich eine benannte Tafel länger als 5 Minuten nicht meldet und wenn sie sich wieder meldet – je Wechsel einmal, je Anlass abwählbar. Dieselbe Meldung höchstens einmal in der eingestellten Sperrzeit (ab Werk 60 Minuten), insgesamt höchstens 10 je Stunde. Nötig ist SignalBot ab 0.9.44 mit „Meldungen unter haus/meldung annehmen“; der Knopf „Testmeldung senden“ prüft den Weg.
+- Gemeinsames Sicherungsmodul auf 1.3.0 nachgezogen (Einheitlichkeit, wie in der Welle Lade-Beanstandungen); am Verhalten von „Einstellungen sichern“ und „Einstellungen zurückspielen“ ändert sich nichts.
 
 ## Neu in 0.9.51
 

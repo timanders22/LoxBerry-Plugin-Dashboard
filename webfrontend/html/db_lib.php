@@ -26,6 +26,8 @@ if (!function_exists('db_e')) {
  * Laden nur Funktionen an und antwortet bei direktem Aufruf mit 403. Die Beschreibung dieser Linie steht in
  * db_sicherung_beschreibung(). */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 0.9.52)
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 0.9.52, Regeln/07)
 
 /* Die Obergrenze der Wartezeit steht GENAU EINMAL: hier. Das Formular in der
  * Oberflaeche liest sie von hier, db_befehl_absetzen() kappt danach. Bis
@@ -241,6 +243,7 @@ function db_vorgaben()
         'ansage_ein'     => 1,
         'ansage_frist'   => 60,
         'ansage_gong'    => 1,
+        'meldung'        => meld_vorgaben(db_meld_anlaesse(), db_meld_haken_vorgabe()),     // 0.9.52: Meldungen an SignalBot, ab Werk aus
         // Kurzes Ruetteln beim Antippen. Nur Android kann das; wo nicht,
         // passiert nichts.
         'haptik'         => 1,
@@ -4103,6 +4106,175 @@ function db_sicherung_bauen()
  * (bis Modul 1.2.0: seine Vorgabe; Entscheidung des Hausherrn 12.11.2026 "Ja, behalten", einheitlich mit den
  * uebrigen Linien); jeder andere fehlende Schluessel ist eine Beanstandung.
  */
+/* ---------------- Statusmeldungen an SignalBot (0.9.52, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (db_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (db_meld_will()); der Sender trennt die Wege wieder (db_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function db_meld_anlaesse()
+{
+    return array('miniserver_weg' => db_t('DB_MELD.L_MINISERVER_WEG'), 'miniserver_wieder' => db_t('DB_MELD.L_MINISERVER_WIEDER'), 'tafel_weg' => db_t('DB_MELD.L_TAFEL_WEG'), 'tafel_wieder' => db_t('DB_MELD.L_TAFEL_WIEDER'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function db_meld_haken_vorgabe()
+{
+    return array('miniserver_weg' => 1, 'miniserver_wieder' => 1, 'tafel_weg' => 1, 'tafel_wieder' => 1);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function db_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = db_config(); }
+    return false;
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function db_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = db_config(); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, db_meld_anlaesse(), db_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function db_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = db_config(); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, db_meld_anlaesse(), db_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function db_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(db_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function db_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = db_config(); }
+    return db_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(db_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function db_meld_k()
+{
+    return array('plugin' => (string) db_paths()['plugin'], 'ordner' => (string) db_paths()['datadir'], 'home' => (string) db_paths()['home'], 'name' => 'Dashboard', 't' => function ($s) { return db_t($s); });
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function db_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = db_config(); }
+    $anl = db_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !db_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function db_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = db_config(); }
+    $b = db_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, db_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        db_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function db_meld_test()
+{
+    $r = meld_testmeldung(db_meld_k());
+    db_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function db_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = db_config(); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = db_meld_k();
+    $o = array();
+    /* 0.9.52: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" name="meld_speichern" value="1" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(db_meld_block($cfg), db_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(db_meld_block($cfg), db_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
+
+/**
+ * Die Flanken fuer die Meldung (0.9.52, Entscheidung des Hausherrn 24.11.2026, F2). $was: 'miniserver' oder 'tafel';
+ * $stand: Name => 1 (da) oder 0 (weg); $grund: Klartext fuer "Miniserver weg". Merker meld_<was>.json im Datenordner: je
+ * Name der letzte Stand; ein Name ohne Merker wird nur gemerkt, ein fehlender faellt heraus. Block aus: nichts senden,
+ * Merker verwerfen. Rueckgabe aus, nichts, die Regel des Moduls oder die Lage der Quittung.
+ */
+function db_meld_flanke($was, array $stand, $grund = '', $cfg = null)
+{
+    if ($cfg === null) { $cfg = db_config(); }
+    if (!in_array($was, array('miniserver', 'tafel'), true)) { return 'aufruf'; }
+    $f = db_paths()['datadir'] . '/meld_' . $was . '.json';
+    if (!db_meld_aktiv($cfg)) { if (is_file($f)) { @unlink($f); } return 'aus'; }
+    $vor = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    $vor = is_array($vor) ? $vor : array();
+    $neu = array();
+    $l = array();
+    foreach ($stand as $n => $ok) {
+        $n = (string) $n;
+        if (($was === 'tafel' && !db_tafel_name_gueltig($n)) || ($was === 'miniserver' && $n !== 'miniserver') || !in_array($ok, array(0, 1), true)) {
+            continue;
+        }
+        $neu[$n] = $ok;
+        if (!array_key_exists($n, $vor) || (int) $vor[$n] === $ok) { continue; }
+        if ($was === 'miniserver') {
+            $a = $ok ? 'miniserver_wieder' : 'miniserver_weg';
+            $t = $ok ? db_t('DB_MELD.MS_WIEDER') : sprintf(db_t('DB_MELD.MS_WEG'), (string) $grund !== '' ? (string) $grund : '-');
+        } else {
+            $a = $ok ? 'tafel_wieder' : 'tafel_weg';
+            $t = sprintf(db_t($ok ? 'DB_MELD.TAFEL_WIEDER' : 'DB_MELD.TAFEL_WEG'), $n);
+        }
+        $l[] = array('schluessel' => $a . '|' . $n, 'anlass' => $a, 'text' => $t);
+    }
+    @file_put_contents($f, json_encode((object) $neu));
+    if (!$l) { return 'nichts'; }
+    $r = db_meld_senden($l, $cfg);
+    if (!is_array($r)) { return 'aus'; }
+    if ($r['regel'] !== '') { return $r['regel']; }
+    return (is_array($r['q']) && isset($r['q']['lage'])) ? (string) $r['q']['lage'] : 'gesendet';
+}
+
+/** Der Eingang des Dienstes (php -r aus bin/dashboard_dienst.py): {"was", "stand", "grund"} auf der Standardeingabe.
+ *  Ausgabe EINE Zeile MELDUNG;ERGEBNIS=<r>, Rueckgabe 0 (2 bei einem unbrauchbaren Auftrag). */
+function db_meld_bruecke()
+{
+    $d = json_decode((string) stream_get_contents(STDIN), true);
+    if (!is_array($d) || !isset($d['was'], $d['stand']) || !is_string($d['was']) || !is_array($d['stand'])) {
+        echo "MELDUNG;ERGEBNIS=AUFRUF\n";
+        return 2;
+    }
+    $r = db_meld_flanke($d['was'], $d['stand'], (isset($d['grund']) && is_string($d['grund'])) ? substr($d['grund'], 0, 300) : '');
+    echo 'MELDUNG;ERGEBNIS=' . preg_replace('/[^A-Za-z_-]/', '', (string) $r) . "\n";
+    return $r === 'aufruf' ? 2 : 0;
+}
+
 function db_sicherung_beschreibung()
 {
     $p = db_paths();
@@ -4113,6 +4285,7 @@ function db_sicherung_beschreibung()
     foreach (db_sicherung_nachgezogen() as $k) {
         $schluessel[$k] = array('fehlt' => 'behalten');
     }
+    $schluessel['meldung'] = meld_sicherung_knoten(db_meld_anlaesse(), db_meld_k());     // 0.9.52: fehlt -> behalten
     return array(
         'kennzeichen' => 'dashboard',
         'hinweis' => html_entity_decode(strip_tags(db_t('EINST.SICH_KOPF')), ENT_QUOTES, 'UTF-8'),
@@ -4122,6 +4295,10 @@ function db_sicherung_beschreibung()
         'teile_jetzt' => array('seiten' => function () { return array('seiten' => db_seiten()); }, 'zugang' => 'db_zugang'),
         'pruefen' => function ($k, $w) {
             $g = db_sicherung_wert_pruefen($k, $w);
+            /* 0.9.52: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+            if ($g === '' && $k === 'tafel_mqtt_praefix' && is_string($w) && hb_bereich($w) !== '') {
+                $g = db_e(sprintf(db_t('HAUSBEREICH.SICH_W'), hb_bereich($w)));
+            }
             return $g === '' ? '' : sprintf(db_t('EINST.SICH_WERT'), db_e($k), $g);
         },
         'quer' => 'db_sicherung_quer',
@@ -6108,4 +6285,29 @@ function db_cron_eintraege()
         }
     }
     return $aus;
+}
+
+/**
+ * 0.9.52 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot.
+ * Dazu der Vergleich der Liste mit der, die der Dienst in seinen Zustand schreibt (haus_bereiche).
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function db_pruef_praefix_haus($cfg)
+{
+    $p = db_mqtt_praefix($cfg);
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        return array(0, sprintf(db_t('HAUSBEREICH.A_NEIN'), db_e($p), db_e($b)));
+    }
+    $z = (is_array(db_status_mqtt_stand()) && isset(db_status_mqtt_stand()['haus_bereiche'])) ? db_status_mqtt_stand()['haus_bereiche'] : null;
+    if (!is_array($z)) {
+        return array(-1, sprintf(db_t('HAUSBEREICH.A_UNBEKANNT'), db_e($p)));
+    }
+    if ($z !== hb_bereiche()) {
+        return array(0, sprintf(db_t('HAUSBEREICH.A_LISTE'), db_e(implode(', ', hb_bereiche())),
+            db_e(implode(', ', array_map('strval', $z)))));
+    }
+    return array(1, sprintf(db_t('HAUSBEREICH.A_JA'), db_e($p)));
 }

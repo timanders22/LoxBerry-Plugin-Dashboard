@@ -31,8 +31,10 @@ data/plugins/<ordner>/status_mqtt.json (lage, letzte Werte, zaehler, ts) fuer de
 from __future__ import annotations
 
 import asyncio
+import os   # 0.9.52: fuer haus_bereiche.py (Regeln/07)
 import re
 import socket
+import sys   # 0.9.52
 import time
 
 TAKT = 60                 # fest; zwei Takte = 120 s < Tmc 180 s der Analogwertvalidierung im Musterprojekt
@@ -181,7 +183,7 @@ class StatusMqtt:
 
     def __init__(self, *, config, praefix_regel, general_pfad: str, abbild_pfad: str, struktur_pfad: str,
                  seiten_pfad: str, stand_pfad: str, json_lesen, json_schreiben, log, laeuft,
-                 sender=senden, takt: int = TAKT, uhr=time.time, tafeln_pfad: str = ""):
+                 sender=senden, takt: int = TAKT, uhr=time.time, tafeln_pfad: str = "", meld=None):
         self.config = config
         self.praefix_regel = praefix_regel
         self.general_pfad = general_pfad
@@ -197,6 +199,7 @@ class StatusMqtt:
         self.takt = takt
         self.uhr = uhr
         self.tafeln_pfad = tafeln_pfad
+        self.meld = meld     # 0.9.52: Aufruf (was, stand) fuer die Meldung an SignalBot, None = keiner
         self._tafel_vorher: dict = {}
         self.zaehler = 0
         self.gesendet_einmal = False
@@ -226,6 +229,12 @@ class StatusMqtt:
         """Ein Sendetakt. Rueckgabe: der geschriebene Stand."""
         cfg = self.config()
         jetzt = int(self.uhr())
+        if self.meld is not None:     # 0.9.52: die Tafeln an SignalBot, unabhaengig von mqtt_ein (Meldung ab Werk aus)
+            try:
+                je = tafel_lage(self.json_lesen(self.tafeln_pfad) if self.tafeln_pfad else {}, jetzt)["je"]
+                self.meld("tafel", {n: w for n, w in je.items() if w in (0, 1)})
+            except Exception as f:     # die Aufgabe darf den Dienst nie mitreissen
+                self._melden("meldung", "Meldung an SignalBot (Tafeln): %s" % f)
         try:
             an = _ganz(cfg.get("mqtt_ein"), 1) == 1
         except Exception:
@@ -235,6 +244,7 @@ class StatusMqtt:
             self.json_schreiben(self.stand_pfad, stand)
             return stand
         praefix = self._praefix(cfg)
+        praefix_haus_melden(praefix)   # 0.9.52: im gemeinsamen Bereich? melden, nicht anhalten
         abbild = self.json_lesen(self.abbild_pfad)
         abbild = abbild if isinstance(abbild, dict) else {}
         w = werte(abbild, cfg, self.json_lesen(self.struktur_pfad), self.json_lesen(self.seiten_pfad), jetzt)
@@ -250,7 +260,8 @@ class StatusMqtt:
             n, lage, fehler = 0, "fehler", str(f)[:200]
             self._melden("fehler", "Zustand ueber MQTT: Senden an den UDP-Eingang %d misslungen (%s)." % (port, f))
         # "abbild": die Eingaben der Rechnung - der Reiter Test rechnet damit dieselbe Regel in PHP nach.
-        stand = {"ts": jetzt, "lage": lage, "praefix": praefix, "port": port, "werte": w,
+        stand = {"haus_bereiche": list(_haus_bereiche().HB_BEREICHE),   # 0.9.52
+                 "ts": jetzt, "lage": lage, "praefix": praefix, "port": port, "werte": w,
                  "zaehler": self.zaehler, "zeilen": n, "fehler": fehler, "tafeln": tl["je"],
                  "abbild": {"ts": abbild.get("ts"), "weg": abbild.get("weg", ""), "ok": abbild.get("ok", 0)}}
         self.json_schreiben(self.stand_pfad, stand)
@@ -278,3 +289,22 @@ class StatusMqtt:
                 if not self.laeuft():
                     break
                 await asyncio.sleep(0.5)
+
+def _haus_bereiche():
+    """0.9.52 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): das gemeinsame
+    Modul haus_bereiche.py neben dem Dienst, beim ersten Aufruf geladen."""
+    hier = os.path.dirname(os.path.abspath(__file__))
+    if hier not in sys.path:
+        sys.path.insert(0, hier)
+    import haus_bereiche  # noqa: E402
+    return haus_bereiche
+
+
+def praefix_haus_melden(praefix):
+    """0.9.52: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich unter
+    haus/ faellt; der Versand bleibt, wie er ist. Rueckgabe der gemeldete Bereich oder ""."""
+    hb = _haus_bereiche()
+    bereich = hb.hb_melden_faellig(praefix)
+    if bereich:
+        __import__("logging").getLogger("dashboard").warning("%s", hb.hb_logtext(praefix, bereich))
+    return bereich

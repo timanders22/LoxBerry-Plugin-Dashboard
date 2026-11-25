@@ -222,6 +222,9 @@ VORGABEN = {
     "ansage_ein": 1,
     "ansage_frist": 60,
     "ansage_gong": 1,
+    # 0.9.52: Statusmeldungen an SignalBot (Block des gemeinsamen Moduls, ab Werk aus) - dieselbe Vorgabe wie
+    # db_vorgaben(); als dict(...), damit der Reiter Test nur den Schluessel 'meldung' zaehlt.
+    "meldung": dict(ein=0, haken=dict(miniserver_weg=1, miniserver_wieder=1, tafel_weg=1, tafel_wieder=1), sperre_min=60),
     "ruhe_kacheln": 6,       # Verknuepfungen, 0 bis 12
     "ruhe_seite": "",        # leer = die Seite, die gerade offen ist
     "ruhe_hell": 60,         # Prozent - "unaufdringlich" heisst dunkler
@@ -1153,6 +1156,61 @@ def abo_datei_anlegen(cfg: dict) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# 0.9.52: Statusmeldungen an SignalBot (Entscheidung des Hausherrn 24.11.2026, F2 "Ja, ab Werk aus")
+#
+# Der Dienst gibt nur den STAND weiter - Verbindung zum Miniserver (1/0) und je benannte Tafel (1/0) -, und nur, wenn
+# er sich im Speicher geaendert hat, in einem eigenen Faden (die Quittung von SignalBot darf keine Schleife aufhalten).
+# Merker, Block, Haken, Sperre, Bremse und Versand stehen in db_meld_flanke() (db_lib.php, gemeinsames Modul
+# meldung.php). Ins Protokoll kommt nur das Ergebnis, nie ein Text.
+# ---------------------------------------------------------------------------
+_MELD_STAND: dict = {}
+_MELD_CODE = ("putenv('LBHOMEDIR=' . $argv[2]); putenv('LBPPLUGINDIR=' . $argv[3]); require $argv[1]; "
+              "exit(db_meld_bruecke());")
+
+
+def meld_ausfuehren(auftrag: dict) -> str:
+    """Den Auftrag an db_meld_bruecke() geben. Rueckgabe die Ausgabezeile oder ""."""
+    import subprocess  # noqa: PLC0415
+    lib = os.path.join(HOME, "webfrontend", "html", "plugins", ORDNER, "db_lib.php")
+    if not os.path.isfile(lib):
+        return ""
+    php = "php"
+    for k in ("/usr/bin/php", "/usr/local/bin/php"):
+        if os.path.isfile(k):
+            php = k
+            break
+    try:
+        r = subprocess.run([php, "-r", _MELD_CODE, "--", lib, HOME, ORDNER],
+                           input=json.dumps(auftrag, ensure_ascii=False).encode("utf-8"),
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, check=False)
+    except Exception as fehler:     # ein Nebenweg darf den Dienst nie anhalten
+        _LOG.warning("Meldung an SignalBot: Aufruf scheiterte (%s).", type(fehler).__name__)
+        return ""
+    zeilen = r.stdout.decode("ascii", "replace").strip().splitlines()
+    zeile = zeilen[-1] if zeilen else ""
+    if r.returncode != 0 or not zeile.startswith("MELDUNG;"):
+        _LOG.warning("Meldung an SignalBot: Rueckgabe %s, Ausgabe %r", r.returncode, zeile[:80])
+    elif "ERGEBNIS=nichts" not in zeile and "ERGEBNIS=aus" not in zeile:
+        _LOG.info("Meldung an SignalBot: %s", zeile[8:80])
+    return zeile
+
+
+def meld_flanke(was: str, stand: dict, grund: str = "", faden: bool = True) -> bool:
+    """Den Stand weitergeben, wenn er sich geaendert hat. Rueckgabe: weitergegeben?"""
+    stand = {str(n): (1 if w else 0) for n, w in stand.items()}
+    if _MELD_STAND.get(was) == stand:
+        return False
+    _MELD_STAND[was] = stand
+    auftrag = {"was": was, "stand": stand, "grund": str(grund or "")[:300]}
+    if faden:
+        import threading  # noqa: PLC0415
+        threading.Thread(target=meld_ausfuehren, args=(auftrag,), name="meldung", daemon=True).start()
+    else:
+        meld_ausfuehren(auftrag)
+    return True
+
+
 def status_mqtt_starten(laeuft):
     """Gruppe 12 (0.9.37, Entwurf 2.1): die Zustandswerte jede Minute ueber den UDP-Eingang des Gateways - eigene
     Aufgabe neben der Miniserver-Verbindung (Bauart tafel_mqtt_starten), also auch im Notnagel und in der Wartezeit.
@@ -1163,7 +1221,7 @@ def status_mqtt_starten(laeuft):
         general_pfad=os.path.join(HOME, "config", "system", "general.json"),
         abbild_pfad=DATEI_ABBILD, struktur_pfad=DATEI_STRUKTUR, seiten_pfad=DATEI_DASHBOARD,
         stand_pfad=DATEI_STATUS_MQTT, json_lesen=json_lesen, json_schreiben=json_schreiben, log=_LOG,
-        laeuft=laeuft, tafeln_pfad=DATEI_TAFELN)
+        laeuft=laeuft, tafeln_pfad=DATEI_TAFELN, meld=meld_flanke)     # 0.9.52: Tafeln an SignalBot
     return asyncio.ensure_future(sender.laufen()), sender
 
 
@@ -1257,6 +1315,7 @@ class Dienst:
                 letzter_verlauf = 0.0
                 _LOG.info("Verbunden. %d Bausteine, %d Zustaende.",
                           len(struktur.get("bausteine") or []), len(ms.zustaende))
+                meld_flanke("miniserver", {"miniserver": 1})     # 0.9.52: Verbindung steht (Meldung an SignalBot)
                 wartezeit = 5
                 letzte_pruefung = 0.0
                 letztes_abbild = ""
@@ -1324,6 +1383,8 @@ class Dienst:
                 # oder Anhalten. Das Abbild sagt es, bevor es jemand liest.
                 abbild_gestoert("Der Dienst wurde angehalten." if not self.laeuft
                                 else "Die Verbindung zum Miniserver ist abgerissen.")
+                if self.laeuft:     # 0.9.52: Abriss (Meldung an SignalBot); ein Anhalten ist kein Abriss
+                    meld_flanke("miniserver", {"miniserver": 0}, "Die Verbindung zum Miniserver ist abgerissen.")
             except asyncio.CancelledError:
                 if ms is not None:
                     await ms.schliessen()
@@ -1336,6 +1397,7 @@ class Dienst:
                 json_schreiben(DATEI_ZUSTAND, {"ok": 0, "ts": int(time.time()),
                                                "weg": "", "fehler": grund})
                 abbild_gestoert(grund)
+                meld_flanke("miniserver", {"miniserver": 0}, grund)     # 0.9.52: keine Verbindung (Meldung an SignalBot)
                 if int(cfg.get("http_rueckfall") or 0):
                     await self.http_weg(cfg, tabelle)
             finally:
