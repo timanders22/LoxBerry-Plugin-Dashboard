@@ -36,6 +36,24 @@
 # Skript, wenn ein Plugin deinstalliert wird, dessen NAME mit "dashboard" beginnt; $2 ist dann DESSEN Name. Dann
 # gehoert der Lauf nicht uns: nichts tun - keinen Dienst und keine Bruecke anhalten, nichts loeschen. Verglichen
 # wird ohne Gross- und Kleinschreibung (NAME in plugin.cfg: dashboard). Bauart Sprachsteuerung 0.12.7.
+# [upgrade_daten] Eine liegengebliebene Sicherung des Datenordners (gemeinsamer Baustein upgrade_daten.sh)
+# [upgrade_daten] mit abraeumen - sie kann Zugangsdaten aus dem Datenordner tragen (Regeln/06).
+case "$3" in
+    ''|.|..|*/*) ;;
+    *)  if [ -n "$5" ] && [ -d "$5/data/plugins" ] && [ -f "$5/config/system/general.json" ]; then
+            for UPGD_R in "$5/data/plugins/$3.upgrade_daten" "$5/data/plugins/$3.upgrade_daten.neu" \
+                          "$5/data/plugins/$3.upgrade_daten.alt"; do
+                [ -e "$UPGD_R" ] || [ -L "$UPGD_R" ] || continue
+                rm -rf "$UPGD_R"
+                if [ -e "$UPGD_R" ] || [ -L "$UPGD_R" ]; then
+                    echo "<WARNING> Die Sicherung des Datenordners liess sich nicht entfernen: $UPGD_R"
+                else
+                    echo "<OK> Sicherung des Datenordners entfernt: $UPGD_R"
+                fi
+            done
+        fi ;;
+esac
+
 if [ -n "${2:-}" ] && [ "$(printf '%s' "$2" | tr 'A-Z' 'a-z')" != "dashboard" ]; then
     echo "<INFO> Deinstallation von '$2' - dieses Skript gehoert zu 'dashboard' und tut nichts."
     exit 0
